@@ -111,6 +111,11 @@ defmodule XqliteEcto3.Connection do
   # as a separate field in its error reporting.
   # ---------------------------------------------------------------------------
 
+  @unique_index_re ~r/UNIQUE constraint failed: index (.+)/
+  @unique_columns_re ~r/UNIQUE constraint failed: (.+)/
+  @check_re ~r/CHECK constraint failed: (.+)/
+  @not_null_re ~r/NOT NULL constraint failed: (.+)/
+
   @impl true
   def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_unique, message: msg}, _opts) do
     [unique: extract_constraint_name(msg)]
@@ -126,7 +131,7 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_check, message: msg}, _opts) do
     name =
-      case Regex.run(~r/CHECK constraint failed: (.+)/, msg) do
+      case Regex.run(@check_re, msg) do
         [_, name] -> name
         _ -> nil
       end
@@ -136,7 +141,7 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_not_null, message: msg}, _opts) do
     name =
-      case Regex.run(~r/NOT NULL constraint failed: (.+)/, msg) do
+      case Regex.run(@not_null_re, msg) do
         [_, col] -> col
         _ -> nil
       end
@@ -147,12 +152,12 @@ defmodule XqliteEcto3.Connection do
   def to_constraints(_, _), do: []
 
   defp extract_constraint_name(msg) when is_binary(msg) do
-    case Regex.run(~r/UNIQUE constraint failed: index (.+)/, msg) do
+    case Regex.run(@unique_index_re, msg) do
       [_, index_name] ->
         String.trim(index_name, "'")
 
       _ ->
-        case Regex.run(~r/UNIQUE constraint failed: (.+)/, msg) do
+        case Regex.run(@unique_columns_re, msg) do
           [_, columns] -> derive_index_name(columns)
           _ -> nil
         end
