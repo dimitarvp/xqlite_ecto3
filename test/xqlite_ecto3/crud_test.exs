@@ -209,4 +209,41 @@ defmodule XqliteEcto3.CrudTest do
 
     assert Repo.all(from u in User, where: u.name == "Nina") == []
   end
+
+  test "nested transaction commits inner" do
+    {:ok, _} =
+      Repo.transaction(fn ->
+        {:ok, _} = Repo.insert(%User{name: "Outer"})
+
+        {:ok, _} =
+          Repo.transaction(fn ->
+            {:ok, _} = Repo.insert(%User{name: "Inner"})
+          end)
+      end)
+
+    import Ecto.Query
+
+    names =
+      Repo.all(from u in User, select: u.name, order_by: u.name)
+
+    assert names == ["Inner", "Outer"]
+  end
+
+  test "nested transaction inner rollback fails the outer transaction" do
+    result =
+      Repo.transaction(fn ->
+        {:ok, _} = Repo.insert(%User{name: "Also gone"})
+
+        Repo.transaction(fn ->
+          {:ok, _} = Repo.insert(%User{name: "Gone"})
+          Repo.rollback(:inner_fail)
+        end)
+      end)
+
+    assert {:error, :rollback} = result
+
+    import Ecto.Query
+
+    assert Repo.all(from u in User, select: u.name) == []
+  end
 end

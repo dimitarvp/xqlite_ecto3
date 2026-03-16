@@ -133,6 +133,7 @@ defmodule XqliteEcto3 do
   def loaders(:date, type), do: [&date_decode/1, type]
   def loaders(:time, type), do: [&time_decode/1, type]
   def loaders(:time_usec, type), do: [&time_decode/1, type]
+  def loaders(:decimal, type), do: [&decimal_decode/1, type]
   def loaders(:map, type), do: [&json_decode/1, type]
   def loaders({:map, _}, type), do: [&json_decode/1, type]
   def loaders({:array, _}, type), do: [&json_decode/1, type]
@@ -189,6 +190,12 @@ defmodule XqliteEcto3 do
   end
 
   defp time_decode(val), do: {:ok, val}
+
+  defp decimal_decode(val) when is_binary(val), do: {:ok, Decimal.new(val)}
+  defp decimal_decode(val) when is_integer(val), do: {:ok, Decimal.new(val)}
+  defp decimal_decode(val) when is_float(val), do: {:ok, Decimal.from_float(val)}
+  defp decimal_decode(nil), do: {:ok, nil}
+  defp decimal_decode(%Decimal{} = val), do: {:ok, val}
 
   defp json_decode(val) when is_binary(val) do
     case Jason.decode(val) do
