@@ -177,7 +177,6 @@ defmodule XqliteEcto3.Driver do
     {:ok, nil, state}
   end
 
-
   defp execute_with_cancel(conn, sql, params, timeout) do
     {:ok, token} = NIF.create_cancel_token()
     timer_ref = Process.send_after(self(), {:cancel_query, token}, timeout)

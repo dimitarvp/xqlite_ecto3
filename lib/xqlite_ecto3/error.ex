@@ -8,11 +8,12 @@ defmodule XqliteEcto3.Error do
   constraint type by parsing the message prefix.
   """
 
-  defexception [:message, :statement, :constraint_type]
+  defexception [:message, :statement, :type, :constraint_type]
 
   @type t :: %__MODULE__{
           message: String.t(),
           statement: String.t() | nil,
+          type: atom() | nil,
           constraint_type: atom() | nil
         }
 
@@ -20,24 +21,24 @@ defmodule XqliteEcto3.Error do
   Wraps an error reason into an `XqliteEcto3.Error` exception.
   """
   def wrap({:constraint_violation, subtype, msg}) do
-    %__MODULE__{message: msg, constraint_type: subtype}
+    %__MODULE__{message: msg, type: :constraint_violation, constraint_type: subtype}
   end
 
   def wrap({:cannot_fetch_row, msg}) when is_binary(msg) do
     {constraint_type, clean_msg} = classify_constraint_from_message(msg)
-    %__MODULE__{message: clean_msg, constraint_type: constraint_type}
+    %__MODULE__{message: clean_msg, type: :cannot_fetch_row, constraint_type: constraint_type}
   end
 
   def wrap({:sql_input_error, %{message: msg}}) do
-    %__MODULE__{message: msg}
+    %__MODULE__{message: msg, type: :sql_input_error}
   end
 
   def wrap({tag, msg}) when is_atom(tag) and is_binary(msg) do
-    %__MODULE__{message: msg}
+    %__MODULE__{message: msg, type: tag}
   end
 
   def wrap(reason) when is_atom(reason) do
-    %__MODULE__{message: Atom.to_string(reason)}
+    %__MODULE__{message: Atom.to_string(reason), type: reason}
   end
 
   def wrap(reason) do

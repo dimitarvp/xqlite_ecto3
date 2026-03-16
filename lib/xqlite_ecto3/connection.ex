@@ -121,7 +121,10 @@ defmodule XqliteEcto3.Connection do
     [unique: extract_constraint_name(msg)]
   end
 
-  def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_primary_key, message: msg}, _opts) do
+  def to_constraints(
+        %XqliteEcto3.Error{constraint_type: :constraint_primary_key, message: msg},
+        _opts
+      ) do
     [unique: extract_constraint_name(msg)]
   end
 
@@ -139,7 +142,10 @@ defmodule XqliteEcto3.Connection do
     [check: name]
   end
 
-  def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_not_null, message: msg}, _opts) do
+  def to_constraints(
+        %XqliteEcto3.Error{constraint_type: :constraint_not_null, message: msg},
+        _opts
+      ) do
     name =
       case Regex.run(@not_null_re, msg) do
         [_, col] -> col
