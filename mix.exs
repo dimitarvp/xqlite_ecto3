@@ -28,7 +28,7 @@ defmodule XqliteEcto3.MixProject do
     [
       {:ecto_sql, "~> 3.12"},
       {:db_connection, "~> 2.7"},
-      {:xqlite, "~> 0.5.1"},
+      {:xqlite, "~> 0.5.2"},
       {:jason, "~> 1.4"}
     ]
   end

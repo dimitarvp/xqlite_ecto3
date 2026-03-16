@@ -94,14 +94,9 @@ defmodule XqliteEcto3.Driver do
   @impl DBConnection
   def handle_execute(query, params, opts, state) do
     timeout = Keyword.get(opts, :timeout, 15_000)
-
     sql = IO.iodata_to_binary(query.statement)
 
     case execute_with_cancel(state.conn, sql, params, timeout) do
-      {:ok, %{columns: [], rows: []} = result} ->
-        {:ok, affected} = NIF.changes(state.conn)
-        {:ok, query, %{result | num_rows: affected}, state}
-
       {:ok, result} ->
         {:ok, query, result, state}
 
@@ -134,11 +129,11 @@ defmodule XqliteEcto3.Driver do
   end
 
 
-  defp execute_with_cancel(conn, statement, params, timeout) do
+  defp execute_with_cancel(conn, sql, params, timeout) do
     {:ok, token} = NIF.create_cancel_token()
     timer_ref = Process.send_after(self(), {:cancel_query, token}, timeout)
 
-    result = NIF.query_cancellable(conn, statement, params, token)
+    result = NIF.query_with_changes_cancellable(conn, sql, params, token)
 
     Process.cancel_timer(timer_ref)
 
