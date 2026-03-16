@@ -21,6 +21,7 @@ defmodule XqliteEcto3 do
     driver: :xqlite_ecto3
 
   @behaviour Ecto.Adapter.Storage
+  @behaviour Ecto.Adapter.Structure
 
   @impl Ecto.Adapter.Storage
   def storage_up(opts) do
@@ -66,6 +67,48 @@ defmodule XqliteEcto3 do
     else
       :down
     end
+  end
+
+  @impl Ecto.Adapter.Structure
+  def structure_dump(default, config) do
+    database = Keyword.fetch!(config, :database)
+    path = config[:dump_path] || Path.join(default, "structure.sql")
+
+    case System.cmd("sqlite3", [database, ".dump"], stderr_to_stdout: true) do
+      {dump, 0} ->
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, dump)
+        {:ok, path}
+
+      {output, _code} ->
+        {:error, output}
+    end
+  end
+
+  @impl Ecto.Adapter.Structure
+  def structure_load(default, config) do
+    database = Keyword.fetch!(config, :database)
+    path = config[:dump_path] || Path.join(default, "structure.sql")
+
+    case File.read(path) do
+      {:ok, sql} ->
+        {:ok, conn} = XqliteNIF.open(database)
+        result = XqliteNIF.execute_batch(conn, sql)
+        XqliteNIF.close(conn)
+
+        case result do
+          :ok -> {:ok, path}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, "Could not read #{path}: #{inspect(reason)}"}
+    end
+  end
+
+  @impl Ecto.Adapter.Structure
+  def dump_cmd(_args, _opts, _config) do
+    raise "dump_cmd is not supported — use structure_dump/2 instead"
   end
 
   @impl Ecto.Adapter.Migration
