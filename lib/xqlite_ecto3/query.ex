@@ -22,6 +22,8 @@ defmodule XqliteEcto3.Query do
     defp encode_param(%Date{} = d), do: Date.to_iso8601(d)
     defp encode_param(%Time{} = t), do: Time.to_iso8601(t)
     defp encode_param(%Decimal{} = d), do: Decimal.to_string(d, :normal)
+    defp encode_param(value) when is_map(value), do: Jason.encode!(value)
+    defp encode_param(value) when is_list(value), do: Jason.encode!(value)
     defp encode_param(value), do: value
   end
 
