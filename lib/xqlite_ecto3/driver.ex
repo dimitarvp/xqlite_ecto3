@@ -1,0 +1,153 @@
+defmodule XqliteEcto3.Driver do
+  @moduledoc false
+
+  @behaviour DBConnection
+
+  alias XqliteNIF, as: NIF
+
+  defstruct [:conn, :transaction_status, :path]
+
+  @impl DBConnection
+  def connect(opts) do
+    database = Keyword.fetch!(opts, :database)
+    busy_timeout = Keyword.get(opts, :busy_timeout, 5_000)
+    journal_mode = Keyword.get(opts, :journal_mode, :wal)
+
+    with {:ok, conn} <- NIF.open(database),
+         {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
+         {:ok, _} <- NIF.set_pragma(conn, "journal_mode", Atom.to_string(journal_mode)),
+         {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", true),
+         {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000) do
+      {:ok,
+       %__MODULE__{
+         conn: conn,
+         transaction_status: :idle,
+         path: database
+       }}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl DBConnection
+  def disconnect(_err, state) do
+    NIF.close(state.conn)
+    :ok
+  end
+
+  @impl DBConnection
+  def checkout(state) do
+    {:ok, state}
+  end
+
+  @impl DBConnection
+  def ping(state) do
+    case NIF.query(state.conn, "SELECT 1", []) do
+      {:ok, _} -> {:ok, state}
+      {:error, reason} -> {:disconnect, reason, state}
+    end
+  end
+
+  @impl DBConnection
+  def handle_status(_, state) do
+    {state.transaction_status, state}
+  end
+
+  @impl DBConnection
+  def handle_begin(_opts, state) do
+    case NIF.begin(state.conn, :immediate) do
+      :ok ->
+        {:ok, nil, %{state | transaction_status: :transaction}}
+
+      {:error, reason} ->
+        {:disconnect, reason, state}
+    end
+  end
+
+  @impl DBConnection
+  def handle_commit(_opts, state) do
+    case NIF.commit(state.conn) do
+      :ok ->
+        {:ok, nil, %{state | transaction_status: :idle}}
+
+      {:error, reason} ->
+        {:disconnect, reason, state}
+    end
+  end
+
+  @impl DBConnection
+  def handle_rollback(_opts, state) do
+    case NIF.rollback(state.conn) do
+      :ok ->
+        {:ok, nil, %{state | transaction_status: :idle}}
+
+      {:error, reason} ->
+        {:disconnect, reason, state}
+    end
+  end
+
+  @impl DBConnection
+  def handle_prepare(%XqliteEcto3.Query{} = query, _opts, state) do
+    {:ok, %{query | ref: make_ref()}, state}
+  end
+
+  @impl DBConnection
+  def handle_execute(query, params, opts, state) do
+    timeout = Keyword.get(opts, :timeout, 15_000)
+
+    sql = IO.iodata_to_binary(query.statement)
+
+    case execute_with_cancel(state.conn, sql, params, timeout) do
+      {:ok, %{columns: [], rows: []} = result} ->
+        {:ok, affected} = NIF.changes(state.conn)
+        {:ok, query, %{result | num_rows: affected}, state}
+
+      {:ok, result} ->
+        {:ok, query, result, state}
+
+      {:error, :operation_cancelled} ->
+        {:error, %DBConnection.ConnectionError{message: "query timed out"}, state}
+
+      {:error, reason} ->
+        {:error, XqliteEcto3.Error.wrap(reason), state}
+    end
+  end
+
+  @impl DBConnection
+  def handle_close(_query, _opts, state) do
+    {:ok, nil, state}
+  end
+
+  @impl DBConnection
+  def handle_declare(_query, _params, _opts, state) do
+    {:error, %RuntimeError{message: "cursor declare not yet implemented"}, state}
+  end
+
+  @impl DBConnection
+  def handle_fetch(_query, _cursor, _opts, state) do
+    {:error, %RuntimeError{message: "cursor fetch not yet implemented"}, state}
+  end
+
+  @impl DBConnection
+  def handle_deallocate(_query, _cursor, _opts, state) do
+    {:ok, nil, state}
+  end
+
+
+  defp execute_with_cancel(conn, statement, params, timeout) do
+    {:ok, token} = NIF.create_cancel_token()
+    timer_ref = Process.send_after(self(), {:cancel_query, token}, timeout)
+
+    result = NIF.query_cancellable(conn, statement, params, token)
+
+    Process.cancel_timer(timer_ref)
+
+    receive do
+      {:cancel_query, ^token} -> :ok
+    after
+      0 -> :ok
+    end
+
+    result
+  end
+end
