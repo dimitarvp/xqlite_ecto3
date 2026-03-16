@@ -13,11 +13,16 @@ defmodule XqliteEcto3.Driver do
     busy_timeout = Keyword.get(opts, :busy_timeout, 5_000)
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
 
+    synchronous = Keyword.get(opts, :synchronous, :normal)
+    temp_store = Keyword.get(opts, :temp_store, :memory)
+
     with {:ok, conn} <- NIF.open(database),
          {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
-         {:ok, _} <- NIF.set_pragma(conn, "journal_mode", Atom.to_string(journal_mode)),
+         {:ok, _} <- NIF.set_pragma(conn, "journal_mode", to_string(journal_mode)),
          {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", true),
-         {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000) do
+         {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000),
+         {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
+         {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)) do
       {:ok,
        %__MODULE__{
          conn: conn,
