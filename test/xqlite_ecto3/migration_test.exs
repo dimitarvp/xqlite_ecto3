@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.MigrationTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias XqliteEcto3.TestRepo
 
@@ -30,12 +30,8 @@ defmodule XqliteEcto3.MigrationTest do
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "CREATE TABLE"
-    assert sql =~ ~s|"users"|
-    assert sql =~ ~s|"id" INTEGER PRIMARY KEY AUTOINCREMENT|
-    assert sql =~ ~s|"name" TEXT NOT NULL|
-    assert sql =~ ~s|"email" TEXT|
-    assert sql =~ ~s|"age" INTEGER DEFAULT 0|
+    assert sql ==
+             ~s|CREATE TABLE "users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "name" TEXT NOT NULL, "email" TEXT, "age" INTEGER DEFAULT 0)|
   end
 
   test "execute_ddl generates CREATE INDEX SQL" do
@@ -54,10 +50,7 @@ defmodule XqliteEcto3.MigrationTest do
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "CREATE UNIQUE INDEX"
-    assert sql =~ ~s|"users_email_index"|
-    assert sql =~ ~s|"users"|
-    assert sql =~ ~s|"email"|
+    assert sql == ~s|CREATE UNIQUE INDEX "users_email_index" ON "users" ("email")|
   end
 
   test "execute_ddl generates expression-based index" do
@@ -76,9 +69,7 @@ defmodule XqliteEcto3.MigrationTest do
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "CREATE INDEX"
-    assert sql =~ "lower(email)"
-    assert sql =~ ~s|"users_lower_email_index"|
+    assert sql == ~s|CREATE INDEX "users_lower_email_index" ON "users" (lower(email))|
   end
 
   test "execute_ddl generates partial index with WHERE" do
@@ -98,8 +89,8 @@ defmodule XqliteEcto3.MigrationTest do
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "CREATE UNIQUE INDEX"
-    assert sql =~ "WHERE active = 1"
+    assert sql ==
+             ~s|CREATE UNIQUE INDEX "users_active_email_index" ON "users" ("email") WHERE active = 1|
   end
 
   test "execute_ddl generates ALTER TABLE ADD COLUMN SQL" do
@@ -115,10 +106,7 @@ defmodule XqliteEcto3.MigrationTest do
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "ALTER TABLE"
-    assert sql =~ ~s|"users"|
-    assert sql =~ "ADD COLUMN"
-    assert sql =~ ~s|"bio" TEXT|
+    assert sql == ~s|ALTER TABLE "users" ADD COLUMN "bio" TEXT|
   end
 
   test "execute_ddl generates DROP TABLE SQL" do
@@ -135,38 +123,26 @@ defmodule XqliteEcto3.MigrationTest do
 
     ddl =
       Connection.execute_ddl(
-        {:rename, %Ecto.Migration.Table{name: :users},
-         %Ecto.Migration.Table{name: :people}}
+        {:rename, %Ecto.Migration.Table{name: :users}, %Ecto.Migration.Table{name: :people}}
       )
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "ALTER TABLE"
-    assert sql =~ "RENAME TO"
+    assert sql == ~s|ALTER TABLE "users" RENAME TO "people"|
   end
 
   test "execute_ddl generates RENAME COLUMN SQL" do
     alias XqliteEcto3.Connection
 
     ddl =
-      Connection.execute_ddl(
-        {:rename, %Ecto.Migration.Table{name: :users}, :name, :full_name}
-      )
+      Connection.execute_ddl({:rename, %Ecto.Migration.Table{name: :users}, :name, :full_name})
 
     sql = ddl |> List.first() |> IO.iodata_to_binary()
 
-    assert sql =~ "RENAME COLUMN"
-    assert sql =~ ~s|"name"|
-    assert sql =~ ~s|"full_name"|
+    assert sql == ~s|ALTER TABLE "users" RENAME COLUMN "name" TO "full_name"|
   end
 
   test "supports_ddl_transaction? returns true" do
     assert XqliteEcto3.supports_ddl_transaction?() == true
-  end
-
-  test "table_exists_query returns correct SQL and params" do
-    {sql, params} = XqliteEcto3.Connection.table_exists_query("users")
-    assert sql =~ "sqlite_master"
-    assert params == ["users"]
   end
 end

@@ -1,49 +1,71 @@
 defmodule XqliteEcto3.ConstraintsTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias XqliteEcto3.TestRepo, as: Repo
-  alias XqliteEcto3.Test.User
   import Ecto.Changeset
+  import XqliteEcto3.TableHelper
+
+  defmodule CU do
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    schema "constr_users" do
+      field(:name, :string)
+      field(:email, :string)
+      field(:age, :integer)
+      field(:active, :boolean, default: true)
+      timestamps()
+    end
+
+    def changeset(user, attrs \\ %{}),
+      do: user |> cast(attrs, [:name, :email, :age, :active]) |> validate_required([:name])
+  end
+
+  defmodule CP do
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    schema "constr_posts" do
+      field(:title, :string)
+      field(:body, :string)
+      belongs_to(:user, XqliteEcto3.ConstraintsTest.CU)
+      timestamps()
+    end
+
+    def changeset(post, attrs \\ %{}),
+      do: post |> cast(attrs, [:title, :body, :user_id]) |> validate_required([:title])
+  end
+
+  defmodule CC do
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    schema "constr_constrained" do
+      field(:value, :integer)
+      field(:label, :string)
+    end
+
+    def changeset(struct, attrs \\ %{}),
+      do: struct |> cast(attrs, [:value, :label]) |> validate_required([:label])
+  end
+
+  setup_all do
+    create_table!(
+      "constr_users",
+      user_columns(),
+      ["CREATE UNIQUE INDEX IF NOT EXISTS constr_users_email_index ON constr_users(email)"]
+    )
+
+    create_table!("constr_posts", post_columns("constr_users"))
+
+    create_table!(
+      "constr_constrained",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, value INTEGER CHECK(value > 0), label TEXT NOT NULL"
+    )
+  end
 
   setup do
-    Repo.query!("DROP TABLE IF EXISTS posts")
-    Repo.query!("DROP TABLE IF EXISTS users")
-    Repo.query!("DROP TABLE IF EXISTS constrained")
-
-    Repo.query!("""
-    CREATE TABLE users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT,
-      age INTEGER,
-      active INTEGER DEFAULT 1,
-      inserted_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-    """)
-
-    Repo.query!("CREATE UNIQUE INDEX users_email_index ON users(email)")
-
-    Repo.query!("""
-    CREATE TABLE posts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      body TEXT,
-      user_id INTEGER REFERENCES users(id) ON DELETE RESTRICT,
-      inserted_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-    """)
-
-    Repo.query!("""
-    CREATE TABLE constrained (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      value INTEGER CHECK(value > 0),
-      label TEXT NOT NULL
-    )
-    """)
-
-    :ok
+    clear_tables!(["constr_posts", "constr_users", "constr_constrained"])
   end
 
   # ---------------------------------------------------------------------------
@@ -51,38 +73,40 @@ defmodule XqliteEcto3.ConstraintsTest do
   # ---------------------------------------------------------------------------
 
   test "unique_constraint on changeset catches duplicate email" do
-    {:ok, _} = Repo.insert(User.changeset(%User{}, %{name: "Alice", email: "a@b.com"}))
+    {:ok, _} = Repo.insert(CU.changeset(%CU{}, %{name: "Alice", email: "a@b.com"}))
 
     result =
-      %User{}
-      |> User.changeset(%{name: "Bob", email: "a@b.com"})
+      %CU{}
+      |> CU.changeset(%{name: "Bob", email: "a@b.com"})
       |> unique_constraint(:email)
       |> Repo.insert()
 
     assert {:error, changeset} = result
-    assert changeset.errors[:email] != nil
-    {msg, opts} = changeset.errors[:email]
-    assert msg =~ "already been taken"
+    assert {msg, opts} = changeset.errors[:email]
+    assert msg == "has already been taken"
     assert opts[:constraint] == :unique
   end
 
   test "unique_constraint with custom name option" do
-    {:ok, _} = Repo.insert(User.changeset(%User{}, %{name: "Alice", email: "a@b.com"}))
+    {:ok, _} = Repo.insert(CU.changeset(%CU{}, %{name: "Alice", email: "a@b.com"}))
 
     result =
-      %User{}
-      |> User.changeset(%{name: "Bob", email: "a@b.com"})
-      |> unique_constraint(:email, name: "users_email_index")
+      %CU{}
+      |> CU.changeset(%{name: "Bob", email: "a@b.com"})
+      |> unique_constraint(:email, name: "constr_users_email_index")
       |> Repo.insert()
 
     assert {:error, changeset} = result
-    assert changeset.errors[:email] != nil
+    assert {msg, opts} = changeset.errors[:email]
+    assert msg == "has already been taken"
+    assert opts[:constraint] == :unique
+    assert opts[:constraint_name] == "constr_users_email_index"
   end
 
   test "unique_constraint does not fire when value is unique" do
     result =
-      %User{}
-      |> User.changeset(%{name: "Alice", email: "unique@b.com"})
+      %CU{}
+      |> CU.changeset(%{name: "Alice", email: "unique@b.com"})
       |> unique_constraint(:email)
       |> Repo.insert()
 
@@ -90,17 +114,19 @@ defmodule XqliteEcto3.ConstraintsTest do
   end
 
   test "unique_constraint on update catches duplicate" do
-    {:ok, _} = Repo.insert(User.changeset(%User{}, %{name: "Alice", email: "taken@b.com"}))
-    {:ok, bob} = Repo.insert(User.changeset(%User{}, %{name: "Bob", email: "bob@b.com"}))
+    {:ok, _} = Repo.insert(CU.changeset(%CU{}, %{name: "Alice", email: "taken@b.com"}))
+    {:ok, bob} = Repo.insert(CU.changeset(%CU{}, %{name: "Bob", email: "bob@b.com"}))
 
     result =
       bob
-      |> User.changeset(%{email: "taken@b.com"})
+      |> CU.changeset(%{email: "taken@b.com"})
       |> unique_constraint(:email)
       |> Repo.update()
 
     assert {:error, changeset} = result
-    assert changeset.errors[:email] != nil
+    assert {msg, opts} = changeset.errors[:email]
+    assert msg == "has already been taken"
+    assert opts[:constraint] == :unique
   end
 
   # ---------------------------------------------------------------------------
@@ -113,23 +139,22 @@ defmodule XqliteEcto3.ConstraintsTest do
   # ---------------------------------------------------------------------------
 
   test "FK violation raises ConstraintError without matching changeset constraint" do
-    alias XqliteEcto3.Test.Post
+    error =
+      assert_raise Ecto.ConstraintError, fn ->
+        %CP{}
+        |> CP.changeset(%{title: "Orphan", user_id: 999_999})
+        |> Repo.insert()
+      end
 
-    assert_raise Ecto.ConstraintError, ~r/foreign_key_constraint/, fn ->
-      %Post{}
-      |> Post.changeset(%{title: "Orphan", user_id: 999_999})
-      |> Repo.insert()
-    end
+    assert error.type == :foreign_key
   end
 
   test "FK allows valid reference" do
-    alias XqliteEcto3.Test.Post
-
-    {:ok, user} = Repo.insert(User.changeset(%User{}, %{name: "Owner"}))
+    {:ok, user} = Repo.insert(CU.changeset(%CU{}, %{name: "Owner"}))
 
     result =
-      %Post{}
-      |> Post.changeset(%{title: "Valid post", user_id: user.id})
+      %CP{}
+      |> CP.changeset(%{title: "Valid post", user_id: user.id})
       |> Repo.insert()
 
     assert {:ok, post} = result
@@ -143,39 +168,22 @@ defmodule XqliteEcto3.ConstraintsTest do
   # The name in to_constraints is the expression text (e.g., "value > 0").
   # ---------------------------------------------------------------------------
 
-  defmodule Constrained do
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    schema "constrained" do
-      field :value, :integer
-      field :label, :string
-    end
-
-    def changeset(struct, attrs) do
-      struct
-      |> cast(attrs, [:value, :label])
-      |> validate_required([:label])
-    end
-  end
-
   test "check_constraint on changeset catches violation" do
     result =
-      %Constrained{}
-      |> Constrained.changeset(%{value: -5, label: "negative"})
+      %CC{}
+      |> CC.changeset(%{value: -5, label: "negative"})
       |> check_constraint(:value, name: "value > 0")
       |> Repo.insert()
 
     assert {:error, changeset} = result
-    assert changeset.errors[:value] != nil
-    {_msg, opts} = changeset.errors[:value]
+    assert {_msg, opts} = changeset.errors[:value]
     assert opts[:constraint] == :check
   end
 
   test "check_constraint allows valid values" do
     result =
-      %Constrained{}
-      |> Constrained.changeset(%{value: 10, label: "positive"})
+      %CC{}
+      |> CC.changeset(%{value: 10, label: "positive"})
       |> check_constraint(:value, name: "value > 0")
       |> Repo.insert()
 
@@ -187,18 +195,23 @@ defmodule XqliteEcto3.ConstraintsTest do
   # ---------------------------------------------------------------------------
 
   test "NOT NULL violation raises ConstraintError" do
-    assert_raise Ecto.ConstraintError, ~r/not_null_constraint/, fn ->
-      Repo.insert(%User{name: nil})
-    end
+    error =
+      assert_raise Ecto.ConstraintError, fn ->
+        Repo.insert(%CU{name: nil})
+      end
+
+    assert error.type == :not_null
   end
 
   test "NOT NULL caught by changeset validate_required" do
     result =
-      %User{}
-      |> User.changeset(%{})
+      %CU{}
+      |> CU.changeset(%{})
       |> Repo.insert()
 
     assert {:error, changeset} = result
-    assert changeset.errors[:name] != nil
+    assert {msg, opts} = changeset.errors[:name]
+    assert msg == "can't be blank"
+    assert opts[:validation] == :required
   end
 end

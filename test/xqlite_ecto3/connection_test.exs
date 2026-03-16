@@ -35,7 +35,9 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "update with returning" do
     result = SQL.update(nil, "users", [:name], [{:id, 1}], [:id, :name])
-    assert to_sql(result) == ~s|UPDATE "users" SET "name" = ? WHERE "id" = ? RETURNING "id","name"|
+
+    assert to_sql(result) ==
+             ~s|UPDATE "users" SET "name" = ? WHERE "id" = ? RETURNING "id","name"|
   end
 
   test "update with nil filter" do
@@ -148,20 +150,23 @@ defmodule XqliteEcto3.ConnectionTest do
   # Error.wrap
   # ---------------------------------------------------------------------------
 
-  test "Error.wrap preserves constraint_type" do
+  test "Error.wrap preserves constraint_type and type" do
     error = XqliteEcto3.Error.wrap({:constraint_violation, :constraint_unique, "UNIQUE failed"})
+    assert error.type == :constraint_violation
     assert error.constraint_type == :constraint_unique
     assert error.message == "UNIQUE failed"
   end
 
-  test "Error.wrap handles generic tuple errors" do
+  test "Error.wrap preserves type for generic tuple errors" do
     error = XqliteEcto3.Error.wrap({:no_such_table, "no such table: foo"})
+    assert error.type == :no_such_table
     assert error.message == "no such table: foo"
     assert error.constraint_type == nil
   end
 
-  test "Error.wrap handles atom errors" do
+  test "Error.wrap preserves type for atom errors" do
     error = XqliteEcto3.Error.wrap(:connection_closed)
+    assert error.type == :connection_closed
     assert error.message == "connection_closed"
   end
 end

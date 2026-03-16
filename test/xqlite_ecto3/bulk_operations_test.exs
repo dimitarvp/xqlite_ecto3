@@ -1,27 +1,32 @@
 defmodule XqliteEcto3.BulkOperationsTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias XqliteEcto3.TestRepo, as: Repo
-  alias XqliteEcto3.Test.User
   import Ecto.Query
+  import XqliteEcto3.TableHelper
+
+  defmodule BU do
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    schema "bulk_users" do
+      field(:name, :string)
+      field(:email, :string)
+      field(:age, :integer)
+      field(:active, :boolean, default: true)
+      timestamps()
+    end
+
+    def changeset(user, attrs \\ %{}),
+      do: user |> cast(attrs, [:name, :email, :age, :active]) |> validate_required([:name])
+  end
+
+  setup_all do
+    create_table!("bulk_users", user_columns())
+  end
 
   setup do
-    Repo.query!("DROP TABLE IF EXISTS posts")
-    Repo.query!("DROP TABLE IF EXISTS users")
-
-    Repo.query!("""
-    CREATE TABLE users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT,
-      age INTEGER,
-      active INTEGER DEFAULT 1,
-      inserted_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-    """)
-
-    :ok
+    clear_table!("bulk_users")
   end
 
   # ---------------------------------------------------------------------------
@@ -32,21 +37,22 @@ defmodule XqliteEcto3.BulkOperationsTest do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     {count, nil} =
-      Repo.insert_all(User, [
+      Repo.insert_all(BU, [
         %{name: "Alice", inserted_at: now, updated_at: now},
         %{name: "Bob", inserted_at: now, updated_at: now},
         %{name: "Carol", inserted_at: now, updated_at: now}
       ])
 
     assert count == 3
-    assert length(Repo.all(User)) == 3
+    names = Repo.all(from(u in BU, select: u.name, order_by: u.name))
+    assert names == ["Alice", "Bob", "Carol"]
   end
 
   test "insert_all with keyword lists" do
     now = NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
     {count, nil} =
-      Repo.insert_all(User, [
+      Repo.insert_all(BU, [
         [name: "Dave", inserted_at: now, updated_at: now],
         [name: "Eve", inserted_at: now, updated_at: now]
       ])
@@ -55,7 +61,7 @@ defmodule XqliteEcto3.BulkOperationsTest do
   end
 
   test "insert_all returns 0 for empty list" do
-    {count, nil} = Repo.insert_all(User, [])
+    {count, nil} = Repo.insert_all(BU, [])
     assert count == 0
   end
 
@@ -64,7 +70,7 @@ defmodule XqliteEcto3.BulkOperationsTest do
 
     {count, users} =
       Repo.insert_all(
-        User,
+        BU,
         [
           %{name: "Fay", inserted_at: now, updated_at: now},
           %{name: "Gus", inserted_at: now, updated_at: now}
@@ -73,7 +79,6 @@ defmodule XqliteEcto3.BulkOperationsTest do
       )
 
     assert count == 2
-    assert length(users) == 2
     names = Enum.map(users, & &1.name) |> Enum.sort()
     assert names == ["Fay", "Gus"]
   end
@@ -86,12 +91,11 @@ defmodule XqliteEcto3.BulkOperationsTest do
     seed_users(3)
 
     {count, nil} =
-      Repo.update_all(User, set: [active: false])
+      Repo.update_all(BU, set: [active: false])
 
     assert count == 3
 
-    users = Repo.all(from u in User, where: u.active == false)
-    assert length(users) == 3
+    assert Repo.all(from(u in BU, where: u.active == true)) == []
   end
 
   test "update_all with where clause" do
@@ -99,25 +103,25 @@ defmodule XqliteEcto3.BulkOperationsTest do
 
     {count, nil} =
       Repo.update_all(
-        from(u in User, where: u.age > 2),
+        from(u in BU, where: u.age > 2),
         set: [name: "Updated"]
       )
 
     assert count == 3
 
-    updated = Repo.all(from u in User, where: u.name == "Updated")
-    assert length(updated) == 3
+    names = Repo.all(from(u in BU, select: u.name, order_by: u.age))
+    assert names == ["User 1", "User 2", "Updated", "Updated", "Updated"]
   end
 
   test "update_all with inc" do
     seed_users(3)
 
     {count, nil} =
-      Repo.update_all(User, inc: [age: 10])
+      Repo.update_all(BU, inc: [age: 10])
 
     assert count == 3
 
-    ages = Repo.all(from u in User, select: u.age, order_by: u.age)
+    ages = Repo.all(from(u in BU, select: u.age, order_by: u.age))
     assert ages == [11, 12, 13]
   end
 
@@ -126,7 +130,7 @@ defmodule XqliteEcto3.BulkOperationsTest do
 
     {count, nil} =
       Repo.update_all(
-        from(u in User, where: u.age > 999),
+        from(u in BU, where: u.age > 999),
         set: [name: "Nobody"]
       )
 
@@ -140,24 +144,25 @@ defmodule XqliteEcto3.BulkOperationsTest do
   test "delete_all removes all rows" do
     seed_users(5)
 
-    {count, nil} = Repo.delete_all(User)
+    {count, nil} = Repo.delete_all(BU)
 
     assert count == 5
-    assert Repo.all(User) == []
+    assert Repo.all(BU) == []
   end
 
   test "delete_all with where clause" do
     seed_users(5)
 
     {count, nil} =
-      Repo.delete_all(from u in User, where: u.age <= 2)
+      Repo.delete_all(from(u in BU, where: u.age <= 2))
 
     assert count == 2
-    assert length(Repo.all(User)) == 3
+    names = Repo.all(from(u in BU, select: u.name, order_by: u.age))
+    assert names == ["User 3", "User 4", "User 5"]
   end
 
   test "delete_all returns 0 on empty table" do
-    {count, nil} = Repo.delete_all(User)
+    {count, nil} = Repo.delete_all(BU)
     assert count == 0
   end
 
@@ -171,7 +176,7 @@ defmodule XqliteEcto3.BulkOperationsTest do
     for i <- 1..n do
       {:ok, _} =
         Repo.insert(
-          User.changeset(%User{}, %{name: "User #{i}", age: i})
+          BU.changeset(%BU{}, %{name: "User #{i}", age: i})
           |> Ecto.Changeset.put_change(:inserted_at, now)
           |> Ecto.Changeset.put_change(:updated_at, now)
         )
