@@ -5,7 +5,7 @@ defmodule XqliteEcto3.Driver do
 
   alias XqliteNIF, as: NIF
 
-  defstruct [:conn, :transaction_status, :path]
+  defstruct [:conn, :transaction_status, :path, savepoint: 0]
 
   @impl DBConnection
   def connect(opts) do
@@ -54,35 +54,76 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def handle_begin(_opts, state) do
-    case NIF.begin(state.conn, :immediate) do
-      :ok ->
-        {:ok, nil, %{state | transaction_status: :transaction}}
+  def handle_begin(opts, state) do
+    case Keyword.get(opts, :mode, :transaction) do
+      :savepoint ->
+        name = "xqlite_sp_#{state.savepoint}"
 
-      {:error, reason} ->
-        {:disconnect, reason, state}
+        case NIF.savepoint(state.conn, name) do
+          :ok ->
+            {:ok, nil, %{state | savepoint: state.savepoint + 1}}
+
+          {:error, reason} ->
+            {:disconnect, reason, state}
+        end
+
+      _mode ->
+        case NIF.begin(state.conn, :immediate) do
+          :ok ->
+            {:ok, nil, %{state | transaction_status: :transaction}}
+
+          {:error, reason} ->
+            {:disconnect, reason, state}
+        end
     end
   end
 
   @impl DBConnection
-  def handle_commit(_opts, state) do
-    case NIF.commit(state.conn) do
-      :ok ->
-        {:ok, nil, %{state | transaction_status: :idle}}
+  def handle_commit(opts, state) do
+    case Keyword.get(opts, :mode, :transaction) do
+      :savepoint ->
+        name = "xqlite_sp_#{state.savepoint - 1}"
 
-      {:error, reason} ->
-        {:disconnect, reason, state}
+        case NIF.release_savepoint(state.conn, name) do
+          :ok ->
+            {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+
+          {:error, reason} ->
+            {:disconnect, reason, state}
+        end
+
+      _mode ->
+        case NIF.commit(state.conn) do
+          :ok ->
+            {:ok, nil, %{state | transaction_status: :idle}}
+
+          {:error, reason} ->
+            {:disconnect, reason, state}
+        end
     end
   end
 
   @impl DBConnection
-  def handle_rollback(_opts, state) do
-    case NIF.rollback(state.conn) do
-      :ok ->
-        {:ok, nil, %{state | transaction_status: :idle}}
+  def handle_rollback(opts, state) do
+    case Keyword.get(opts, :mode, :transaction) do
+      :savepoint ->
+        name = "xqlite_sp_#{state.savepoint - 1}"
 
-      {:error, reason} ->
-        {:disconnect, reason, state}
+        with :ok <- NIF.rollback_to_savepoint(state.conn, name),
+             :ok <- NIF.release_savepoint(state.conn, name) do
+          {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+        else
+          {:error, reason} -> {:disconnect, reason, state}
+        end
+
+      _mode ->
+        case NIF.rollback(state.conn) do
+          :ok ->
+            {:ok, nil, %{state | transaction_status: :idle}}
+
+          {:error, reason} ->
+            {:disconnect, reason, state}
+        end
     end
   end
 
