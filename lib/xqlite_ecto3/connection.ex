@@ -104,10 +104,11 @@ defmodule XqliteEcto3.Connection do
   # Error → Ecto constraint mapping
   #
   # xqlite returns structured error tuples with constraint subtypes.
-  # We pattern match on these directly — no string parsing needed.
-  # This is architecturally equivalent to Postgrex's approach (structured
-  # error fields from the server) rather than ecto_sqlite3's approach
-  # (regex on error message strings).
+  # Constraint classification (unique vs foreign_key vs check) uses the
+  # structured constraint_type atom — no string parsing for that step.
+  # Constraint name extraction still requires parsing the SQLite error
+  # message because SQLite does not provide the constraint/index name
+  # as a separate field in its error reporting.
   # ---------------------------------------------------------------------------
 
   @impl true
