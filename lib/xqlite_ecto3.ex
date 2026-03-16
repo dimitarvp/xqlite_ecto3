@@ -44,9 +44,16 @@ defmodule XqliteEcto3 do
     database = Keyword.fetch!(opts, :database)
 
     case File.rm(database) do
-      :ok -> :ok
-      {:error, :enoent} -> {:error, :already_down}
-      {:error, reason} -> {:error, reason}
+      :ok ->
+        File.rm(database <> "-wal")
+        File.rm(database <> "-shm")
+        :ok
+
+      {:error, :enoent} ->
+        {:error, :already_down}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
