@@ -1030,6 +1030,12 @@ defmodule XqliteEcto3.Connection do
     expr(fragment, sources, query)
   end
 
+  defp window_expr({key, _}, _sources, query) do
+    raise Ecto.QueryError,
+      query: query,
+      message: "window expression `#{inspect(key)}` is not supported by SQLite"
+  end
+
   def order_by(%{order_bys: []}, _sources), do: []
 
   def order_by(%{order_bys: order_bys} = query, sources) do

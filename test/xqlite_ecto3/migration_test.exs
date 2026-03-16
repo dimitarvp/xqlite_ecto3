@@ -60,6 +60,48 @@ defmodule XqliteEcto3.MigrationTest do
     assert sql =~ ~s|"email"|
   end
 
+  test "execute_ddl generates expression-based index" do
+    alias XqliteEcto3.Connection
+
+    ddl =
+      Connection.execute_ddl(
+        {:create,
+         %Ecto.Migration.Index{
+           name: :users_lower_email_index,
+           table: :users,
+           columns: ["lower(email)"],
+           unique: false
+         }}
+      )
+
+    sql = ddl |> List.first() |> IO.iodata_to_binary()
+
+    assert sql =~ "CREATE INDEX"
+    assert sql =~ "lower(email)"
+    assert sql =~ ~s|"users_lower_email_index"|
+  end
+
+  test "execute_ddl generates partial index with WHERE" do
+    alias XqliteEcto3.Connection
+
+    ddl =
+      Connection.execute_ddl(
+        {:create,
+         %Ecto.Migration.Index{
+           name: :users_active_email_index,
+           table: :users,
+           columns: [:email],
+           unique: true,
+           where: "active = 1"
+         }}
+      )
+
+    sql = ddl |> List.first() |> IO.iodata_to_binary()
+
+    assert sql =~ "CREATE UNIQUE INDEX"
+    assert sql =~ "WHERE active = 1"
+  end
+
   test "execute_ddl generates ALTER TABLE ADD COLUMN SQL" do
     alias XqliteEcto3.Connection
 
