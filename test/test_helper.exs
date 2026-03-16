@@ -1,4 +1,5 @@
-db_path = Path.join(System.tmp_dir!(), "xqlite_ecto3_test_#{:erlang.unique_integer([:positive])}.db")
+db_path =
+  Path.join(System.tmp_dir!(), "xqlite_ecto3_test_#{:erlang.unique_integer([:positive])}.db")
 
 Application.put_env(:xqlite_ecto3, XqliteEcto3.TestRepo,
   database: db_path,
