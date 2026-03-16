@@ -1,29 +1,35 @@
 defmodule XqliteEcto3.MixProject do
   use Mix.Project
 
+  @name "XqliteEcto3"
+
   def project do
     [
       app: :xqlite_ecto3,
-      version: "0.1.0",
-      elixir: "~> 1.19",
+      version: "0.1.0-dev",
+      elixir: "~> 1.15",
+      name: @name,
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps()
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   def application do
     [
-      extra_applications: [:logger],
-      mod: {XqliteEcto3.Application, []}
+      extra_applications: [:logger]
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:ecto_sql, "~> 3.12"},
+      {:db_connection, "~> 2.7"},
+      {:xqlite, "~> 0.5.1"},
+      {:jason, "~> 1.4"}
     ]
   end
 end
