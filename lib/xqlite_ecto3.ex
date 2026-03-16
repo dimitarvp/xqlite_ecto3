@@ -144,7 +144,11 @@ defmodule XqliteEcto3 do
 
   defp bool_decode(0), do: {:ok, false}
   defp bool_decode(1), do: {:ok, true}
-  defp bool_decode(x), do: {:ok, x}
+  defp bool_decode(nil), do: {:ok, nil}
+
+  defp bool_decode(x) do
+    {:error, "expected 0 or 1 for boolean column, got: #{inspect(x)}"}
+  end
 
   defp bool_encode(false), do: {:ok, 0}
   defp bool_encode(true), do: {:ok, 1}
