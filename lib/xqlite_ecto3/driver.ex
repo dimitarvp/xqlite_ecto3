@@ -97,6 +97,9 @@ defmodule XqliteEcto3.Driver do
     sql = IO.iodata_to_binary(query.statement)
 
     case execute_with_cancel(state.conn, sql, params, timeout) do
+      {:ok, %{columns: [], changes: changes} = result} ->
+        {:ok, query, %{result | num_rows: changes, rows: nil}, state}
+
       {:ok, result} ->
         {:ok, query, result, state}
 

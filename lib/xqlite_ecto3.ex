@@ -76,8 +76,13 @@ defmodule XqliteEcto3 do
 
   @impl Ecto.Adapter
   def loaders(:boolean, type), do: [&bool_decode/1, type]
+  def loaders(:naive_datetime, type), do: [&naive_datetime_decode/1, type]
   def loaders(:naive_datetime_usec, type), do: [&naive_datetime_decode/1, type]
+  def loaders(:utc_datetime, type), do: [&utc_datetime_decode/1, type]
   def loaders(:utc_datetime_usec, type), do: [&utc_datetime_decode/1, type]
+  def loaders(:date, type), do: [&date_decode/1, type]
+  def loaders(:time, type), do: [&time_decode/1, type]
+  def loaders(:time_usec, type), do: [&time_decode/1, type]
   def loaders(_, type), do: [type]
 
   @impl Ecto.Adapter
@@ -109,4 +114,22 @@ defmodule XqliteEcto3 do
   end
 
   defp utc_datetime_decode(val), do: {:ok, val}
+
+  defp date_decode(val) when is_binary(val) do
+    case Date.from_iso8601(val) do
+      {:ok, d} -> {:ok, d}
+      _ -> {:ok, val}
+    end
+  end
+
+  defp date_decode(val), do: {:ok, val}
+
+  defp time_decode(val) when is_binary(val) do
+    case Time.from_iso8601(val) do
+      {:ok, t} -> {:ok, t}
+      _ -> {:ok, val}
+    end
+  end
+
+  defp time_decode(val), do: {:ok, val}
 end
