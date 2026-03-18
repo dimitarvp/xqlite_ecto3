@@ -1,11 +1,163 @@
-db_path =
+Logger.configure(level: :info)
+
+Application.put_env(:ecto, :primary_key_type, :id)
+Application.put_env(:ecto, :async_integration_tests, false)
+
+ecto = Mix.Project.deps_paths()[:ecto]
+ecto_sql = Mix.Project.deps_paths()[:ecto_sql]
+
+alias Ecto.Integration.TestRepo
+alias Ecto.Integration.PoolRepo
+
+# -- Repo configuration -------------------------------------------------------
+
+test_db =
   Path.join(System.tmp_dir!(), "xqlite_ecto3_test_#{:erlang.unique_integer([:positive])}.db")
 
-Application.put_env(:xqlite_ecto3, XqliteEcto3.TestRepo,
-  database: db_path,
-  pool_size: 5
+pool_db =
+  Path.join(System.tmp_dir!(), "xqlite_ecto3_pool_#{:erlang.unique_integer([:positive])}.db")
+
+Application.put_env(:xqlite_ecto3, TestRepo,
+  adapter: XqliteEcto3,
+  database: test_db,
+  pool: Ecto.Adapters.SQL.Sandbox,
+  show_sensitive_data_on_connection_error: true
 )
 
-{:ok, _} = XqliteEcto3.TestRepo.start_link()
+Application.put_env(:xqlite_ecto3, PoolRepo,
+  adapter: XqliteEcto3,
+  database: pool_db,
+  show_sensitive_data_on_connection_error: true
+)
+
+# Some shared tests read config from the :ecto_sql app
+Application.put_env(:ecto_sql, TestRepo, Application.get_env(:xqlite_ecto3, TestRepo))
+Application.put_env(:ecto_sql, PoolRepo, Application.get_env(:xqlite_ecto3, PoolRepo))
+
+# -- Exclusions (must be before migrations — migration checks these) -----------
+
+excludes = [
+  # SQLite has no native array column type
+  :array_type,
+
+  # SQLite has no SQL-standard isolation levels
+  :transaction_isolation,
+
+  # SQLite multi-row VALUES requires all rows to have the same columns
+  :insert_cell_wise_defaults,
+
+  # SQLite compiled with SQLITE_LIKE_DOESNT_MATCH_BLOBS
+  :like_match_blob,
+
+  # JSON stored as TEXT; without schema Ecto cannot invoke JSON decoder
+  :map_type_schemaless,
+
+  # SQLite is single-writer; no advisory lock mechanism
+  :lock_for_migrations,
+
+  # SQLite has no schema/namespace concept
+  :prefix,
+
+  # SQLite cannot add a PRIMARY KEY column via ALTER TABLE
+  :alter_primary_key,
+
+  # SQLite has no ALTER TABLE MODIFY COLUMN for FK constraints
+  :alter_foreign_key,
+
+  # SQLite has no ALTER TABLE MODIFY COLUMN
+  :modify_column,
+
+  # SQLite ON DELETE SET NULL/DEFAULT applies to all FK columns; no column-list syntax
+  :on_delete_nilify_column_list,
+  :on_delete_default_column_list,
+
+  # SQLite FK violations report no constraint name
+  :foreign_key_constraint,
+
+  # SQLite has no native bitstring type
+  :bitstring_type,
+
+  # SQLite has no native duration/interval type
+  :duration_type,
+
+  # SQLite DELETE grammar does not support JOIN clauses
+  :delete_with_join,
+
+  # --- Needs adapter work (excluded until implemented) ---
+
+  # Adapter must generate parameter reuse SQL for insert_all placeholders
+  :placeholders,
+
+  # Adapter SQL generation for subquery column values in insert_all
+  :insert_select,
+
+  # Adapter can check PRAGMA table_info() before ALTER
+  :add_column_if_not_exists,
+  :remove_column_if_exists,
+
+  # json_extract returns 1/0 for booleans; adapter needs coercion layer
+  :json_extract_path,
+
+  # SQLite stores TEXT; adapter must preserve full ISO 8601 microsecond precision
+  :microsecond_precision,
+
+  # May need PK handling adjustments for user-assigned PKs
+  :assigns_id_type,
+
+  # VALUES works but DELETE+JOIN subtest fails
+  if Version.match?(System.version(), "~> 1.16") do
+    {:location, {"ecto/integration_test/cases/repo.exs", 2281}}
+  else
+    :values_list
+  end
+]
+
+ExUnit.configure(exclude: excludes)
+
+# -- Load shared schemas and migration ----------------------------------------
+
+Code.require_file("#{ecto}/integration_test/support/schemas.exs")
+Code.require_file("#{ecto_sql}/integration_test/support/migration.exs")
+
+# -- Integration case template ------------------------------------------------
+
+defmodule Ecto.Integration.Case do
+  use ExUnit.CaseTemplate
+
+  setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
+  end
+end
+
+# -- Start repos ---------------------------------------------------------------
+
+{:ok, _} = XqliteEcto3.ensure_all_started(TestRepo.config(), :temporary)
+
+_ = XqliteEcto3.storage_down(TestRepo.config())
+:ok = XqliteEcto3.storage_up(TestRepo.config())
+
+_ = XqliteEcto3.storage_down(PoolRepo.config())
+:ok = XqliteEcto3.storage_up(PoolRepo.config())
+
+{:ok, _} = TestRepo.start_link()
+{:ok, _} = PoolRepo.start_link()
+
+# -- Run migrations ------------------------------------------------------------
+
+case Ecto.Migrator.migrated_versions(PoolRepo) do
+  [] ->
+    :ok = Ecto.Migrator.up(PoolRepo, 0, Ecto.Integration.Migration, log: false)
+
+  _ ->
+    :ok = Ecto.Migrator.down(PoolRepo, 0, Ecto.Integration.Migration, log: false)
+    :ok = Ecto.Migrator.up(PoolRepo, 0, Ecto.Integration.Migration, log: false)
+end
+
+:ok = Ecto.Migrator.up(TestRepo, 0, Ecto.Integration.Migration, log: false)
+
+# -- Sandbox -------------------------------------------------------------------
+
+Ecto.Adapters.SQL.Sandbox.mode(TestRepo, :manual)
+Process.flag(:trap_exit, true)
 
 ExUnit.start()

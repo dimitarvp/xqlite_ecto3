@@ -1,0 +1,39 @@
+# Ecto Integration Test Tags
+
+Status of every exclusion tag from the shared ecto/ecto_sql integration test suite.
+Bundled SQLite version: **3.51.3**.
+
+| Tag | Status | Notes |
+|-----|--------|-------|
+| `:add_column_if_not_exists` | needs adapter work | no SQL syntax; adapter can check `PRAGMA table_info()` first |
+| `:alter_foreign_key` | excluded | SQLite has no ALTER TABLE MODIFY COLUMN for FK constraints |
+| `:alter_primary_key` | excluded | SQLite cannot add a PRIMARY KEY column via ALTER TABLE |
+| `:array_type` | excluded | SQLite has no native array column type |
+| `:assigns_id_type` | needs adapter work | user-assigned PKs work in SQLite; may need PK handling adjustments |
+| `:bitstring_type` | excluded | SQLite has no native bitstring type |
+| `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
+| `:delete_with_join` | excluded | SQLite DELETE grammar does not support JOIN clauses |
+| `:duration_type` | excluded | SQLite has no native duration/interval type |
+| `:foreign_key_constraint` | excluded | SQLite FK violations report no constraint name |
+| `:insert_cell_wise_defaults` | excluded | SQLite multi-row VALUES requires all rows to have the same columns |
+| `:insert_select` | needs adapter work | SQLite supports `INSERT INTO ... SELECT`; adapter SQL generation gap |
+| `:json_extract_path` | needs adapter work | `json_extract` returns 1/0 for booleans; adapter needs coercion layer |
+| `:like_match_blob` | excluded | SQLite compiled with `SQLITE_LIKE_DOESNT_MATCH_BLOBS` rejects LIKE on BLOBs |
+| `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
+| `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
+| `:microsecond_precision` | needs adapter work | SQLite stores TEXT; full ISO 8601 with microseconds round-trips if adapter preserves it |
+| `:modify_column` | excluded | SQLite has no ALTER TABLE MODIFY COLUMN |
+| `:multicolumn_distinct` | supported | SQLite DISTINCT applies to full rows |
+| `:on_delete_default_all` | supported | SQLite supports `ON DELETE SET DEFAULT` |
+| `:on_delete_default_column_list` | excluded | SQLite `ON DELETE SET DEFAULT` applies to all FK columns; no column-list syntax |
+| `:on_delete_nilify_column_list` | excluded | SQLite `ON DELETE SET NULL` applies to all FK columns; no column-list syntax |
+| `:placeholders` | needs adapter work | SQLite supports named/positional params; adapter must generate reuse SQL |
+| `:prefix` | excluded | SQLite has no schema/namespace concept |
+| `:remove_column_if_exists` | needs adapter work | no SQL syntax; adapter can check `PRAGMA table_info()` first |
+| `:right_join` | supported | SQLite 3.39+ supports RIGHT JOIN and FULL OUTER JOIN |
+| `:selected_as_with_group_by` | supported | SQLite allows column alias references in GROUP BY |
+| `:selected_as_with_having` | supported | SQLite allows column alias references in HAVING |
+| `:selected_as_with_order_by` | supported | SQLite allows column alias references in ORDER BY |
+| `:selected_as_with_order_by_expression` | supported | SQLite allows expressions on aliases in ORDER BY |
+| `:transaction_isolation` | excluded | SQLite has no SQL-standard isolation levels |
+| `:values_list` | partial | VALUES works; only the `delete_all` subtest fails (DELETE has no JOIN) |
