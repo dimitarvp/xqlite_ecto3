@@ -12,6 +12,7 @@ Bundled SQLite version: **3.51.3**.
 | `:assigns_id_type` | needs adapter work | user-assigned PKs work in SQLite; may need PK handling adjustments |
 | `:bitstring_type` | excluded | SQLite has no native bitstring type |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
+| `:concurrent_poolrepo_transactions` | excluded | SQLite single-writer: concurrent transactions from separate processes deadlock with pool_size 1 |
 | `:delete_with_join` | excluded | SQLite DELETE grammar does not support JOIN clauses |
 | `:duration_type` | excluded | SQLite has no native duration/interval type |
 | `:foreign_key_constraint` | excluded | SQLite FK violations report no constraint name |
@@ -35,5 +36,6 @@ Bundled SQLite version: **3.51.3**.
 | `:selected_as_with_having` | supported | SQLite allows column alias references in HAVING |
 | `:selected_as_with_order_by` | supported | SQLite allows column alias references in ORDER BY |
 | `:selected_as_with_order_by_expression` | supported | SQLite allows expressions on aliases in ORDER BY |
+| `:transaction_checkout_raises` | needs adapter work | handle_status/checkout interaction with raw BEGIN query |
 | `:transaction_isolation` | excluded | SQLite has no SQL-standard isolation levels |
 | `:values_list` | partial | VALUES works; only the `delete_all` subtest fails (DELETE has no JOIN) |
