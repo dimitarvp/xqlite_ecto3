@@ -29,6 +29,10 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: clean_msg, type: :cannot_fetch_row, constraint_type: constraint_type}
   end
 
+  def wrap({:sqlite_failure, _code, _ext_code, msg}) when is_binary(msg) do
+    %__MODULE__{message: "SQLite failure: " <> msg, type: :sqlite_failure}
+  end
+
   def wrap({:sql_input_error, %{message: msg}}) do
     %__MODULE__{message: msg, type: :sql_input_error}
   end

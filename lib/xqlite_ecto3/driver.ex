@@ -52,7 +52,7 @@ defmodule XqliteEcto3.Driver do
   def ping(state) do
     case NIF.query(state.conn, "SELECT 1", []) do
       {:ok, _} -> {:ok, state}
-      {:error, reason} -> {:disconnect, reason, state}
+      {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
     end
   end
 
@@ -72,7 +72,7 @@ defmodule XqliteEcto3.Driver do
             {:ok, nil, %{state | savepoint: state.savepoint + 1}}
 
           {:error, reason} ->
-            {:disconnect, reason, state}
+            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
 
       _mode ->
@@ -81,7 +81,7 @@ defmodule XqliteEcto3.Driver do
             {:ok, nil, %{state | transaction_status: :transaction}}
 
           {:error, reason} ->
-            {:disconnect, reason, state}
+            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
     end
   end
@@ -97,7 +97,7 @@ defmodule XqliteEcto3.Driver do
             {:ok, nil, %{state | savepoint: state.savepoint - 1}}
 
           {:error, reason} ->
-            {:disconnect, reason, state}
+            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
 
       _mode ->
@@ -106,7 +106,7 @@ defmodule XqliteEcto3.Driver do
             {:ok, nil, %{state | transaction_status: :idle}}
 
           {:error, reason} ->
-            {:disconnect, reason, state}
+            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
     end
   end
@@ -121,7 +121,7 @@ defmodule XqliteEcto3.Driver do
              :ok <- NIF.release_savepoint(state.conn, name) do
           {:ok, nil, %{state | savepoint: state.savepoint - 1}}
         else
-          {:error, reason} -> {:disconnect, reason, state}
+          {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
 
       _mode ->
@@ -130,7 +130,7 @@ defmodule XqliteEcto3.Driver do
             {:ok, nil, %{state | transaction_status: :idle}}
 
           {:error, reason} ->
-            {:disconnect, reason, state}
+            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
     end
   end

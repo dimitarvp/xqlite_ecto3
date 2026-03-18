@@ -134,6 +134,7 @@ defmodule XqliteEcto3 do
   def loaders(:time, type), do: [&time_decode/1, type]
   def loaders(:time_usec, type), do: [&time_decode/1, type]
   def loaders(:decimal, type), do: [&decimal_decode/1, type]
+  def loaders(:uuid, type), do: [&uuid_string_load/1, type]
   def loaders(:map, type), do: [&json_decode/1, type]
   def loaders({:map, _}, type), do: [&json_decode/1, type]
   def loaders({:array, _}, type), do: [&json_decode/1, type]
@@ -141,6 +142,7 @@ defmodule XqliteEcto3 do
 
   @impl Ecto.Adapter
   def dumpers(:boolean, type), do: [type, &bool_encode/1]
+  def dumpers(:uuid, _type), do: [&uuid_string_dump/1]
   def dumpers(_, type), do: [type]
 
   defp bool_decode(0), do: {:ok, false}
@@ -154,6 +156,29 @@ defmodule XqliteEcto3 do
   defp bool_encode(false), do: {:ok, 0}
   defp bool_encode(true), do: {:ok, 1}
   defp bool_encode(x), do: {:ok, x}
+
+  # SQLite stores UUIDs as TEXT. Ecto.UUID.dump/1 produces raw 16-byte binary,
+  # but the xqlite NIF can't bind raw bytes as text without a utf-8 error.
+  # Keep the string representation so it binds as TEXT.
+  defp uuid_string_dump(nil), do: {:ok, nil}
+
+  defp uuid_string_dump(<<_::128>> = raw) do
+    Ecto.UUID.cast(raw)
+  end
+
+  defp uuid_string_dump(value) when is_binary(value), do: {:ok, value}
+  defp uuid_string_dump(value), do: {:ok, value}
+
+  # SQLite stores UUIDs as TEXT strings. Ecto.UUID.load/1 expects raw
+  # 16-byte binary and raises on strings. Convert string UUIDs to the raw
+  # form before the type's load/1 runs.
+  defp uuid_string_load(nil), do: {:ok, nil}
+
+  defp uuid_string_load(val) when is_binary(val) and byte_size(val) != 16 do
+    Ecto.UUID.dump(val)
+  end
+
+  defp uuid_string_load(val), do: {:ok, val}
 
   defp naive_datetime_decode(val) when is_binary(val) do
     case NaiveDateTime.from_iso8601(val) do

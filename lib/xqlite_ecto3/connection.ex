@@ -1437,7 +1437,15 @@ defmodule XqliteEcto3.Connection do
   defp expr(%Ecto.Query.Tagged{value: binary, type: :binary}, _sources, _query)
        when is_binary(binary) do
     hex = Base.encode16(binary, case: :lower)
-    [?x, ?', hex, ?']
+
+    if String.valid?(binary) do
+      # xqlite NIF binds valid-UTF8 binaries as TEXT. SQLite distinguishes
+      # TEXT from BLOB in comparisons, so the inline literal must match the
+      # stored type. CAST(x'…' AS TEXT) produces a TEXT value.
+      ["CAST(x'", hex, "' AS TEXT)"]
+    else
+      [?x, ?', hex, ?']
+    end
   end
 
   defp expr(%Ecto.Query.Tagged{value: expr, type: :binary_id}, sources, query) do
@@ -1756,7 +1764,7 @@ defmodule XqliteEcto3.Connection do
   defp options_expr(options), do: [?\s, to_string(options)]
 
   # composite FK is handled at table level
-  defp reference_expr(%Reference{with: [_]}, _table, _name), do: []
+  defp reference_expr(%Reference{with: [_ | _]}, _table, _name), do: []
 
   defp reference_expr(%Reference{} = ref, table, name) do
     [
@@ -1838,7 +1846,7 @@ defmodule XqliteEcto3.Connection do
       columns
       |> Enum.filter(fn c ->
         case c do
-          {_op, _name, %Reference{with: [_]}, _opts} -> true
+          {_op, _name, %Reference{with: [_ | _]}, _opts} -> true
           _ -> false
         end
       end)
