@@ -96,6 +96,9 @@ excludes = [
   # Sandbox ownership error message formatting — needs adapter investigation
   {:location, {"deps/ecto_sql/integration_test/sql/sandbox.exs", 39}},
 
+  # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
+  {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
+
   # INSERT ... SELECT ... ON CONFLICT generates invalid SQL
   {:location, {"deps/ecto/integration_test/cases/repo.exs", 897}},
   {:location, {"deps/ecto/integration_test/cases/repo.exs", 937}},

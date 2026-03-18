@@ -18,9 +18,9 @@ Code.require_file("#{ecto_sql}/integration_test/sql/sql.exs", __DIR__)
 Code.require_file("#{ecto_sql}/integration_test/sql/stream.exs", __DIR__)
 Code.require_file("#{ecto_sql}/integration_test/sql/subquery.exs", __DIR__)
 Code.require_file("#{ecto_sql}/integration_test/sql/transaction.exs", __DIR__)
+Code.require_file("#{ecto_sql}/integration_test/sql/logging.exs", __DIR__)
 
 # Skipped (SQLite fundamental limitations):
-# Code.require_file("#{ecto_sql}/integration_test/sql/alter.exs", __DIR__)
-# Code.require_file("#{ecto_sql}/integration_test/sql/lock.exs", __DIR__)
-# Code.require_file("#{ecto_sql}/integration_test/sql/logging.exs", __DIR__)
+# Code.require_file("#{ecto_sql}/integration_test/sql/alter.exs", __DIR__)  # all tests use MODIFY COLUMN
+# Code.require_file("#{ecto_sql}/integration_test/sql/lock.exs", __DIR__)   # advisory locks, N/A for SQLite
 # Code.require_file("#{ecto_sql}/integration_test/sql/query_many.exs", __DIR__)

@@ -1,7 +1,7 @@
 # Ecto Integration Test Tags
 
 Status of every exclusion tag from the shared ecto/ecto_sql integration test suite.
-Bundled SQLite version: **3.51.3**.
+Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
 
 | Tag | Status | Notes |
 |-----|--------|-------|
