@@ -7,12 +7,15 @@ defmodule XqliteEcto3.Driver do
 
   defstruct [:conn, :transaction_status, :path, savepoint: 0]
 
+  # connect_timeout is enforced by DBConnection around this call. NIF.open is a
+  # blocking dirty-NIF call that cannot be interrupted mid-syscall, so the
+  # practical effect is limited to slow filesystems (NFS, network mounts).
+  # For local files, sqlite3_open returns near-instantly.
   @impl DBConnection
   def connect(opts) do
     database = Keyword.fetch!(opts, :database)
     busy_timeout = Keyword.get(opts, :busy_timeout, 5_000)
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
-
     synchronous = Keyword.get(opts, :synchronous, :normal)
     temp_store = Keyword.get(opts, :temp_store, :memory)
 
@@ -163,18 +166,55 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def handle_declare(_query, _params, _opts, state) do
-    {:error, %RuntimeError{message: "cursor declare not yet implemented"}, state}
+  def handle_declare(query, params, _opts, state) do
+    sql = IO.iodata_to_binary(query.statement)
+
+    case NIF.stream_open(state.conn, sql, params) do
+      {:ok, handle} ->
+        case NIF.stream_get_columns(handle) do
+          {:ok, columns} ->
+            {:ok, query, %{handle: handle, columns: columns}, state}
+
+          {:error, reason} ->
+            NIF.stream_close(handle)
+            {:error, XqliteEcto3.Error.wrap(reason), state}
+        end
+
+      {:error, reason} ->
+        {:error, XqliteEcto3.Error.wrap(reason), state}
+    end
+  end
+
+  @stream_batch_size 500
+
+  @impl DBConnection
+  def handle_fetch(_query, cursor, _opts, state) do
+    case NIF.stream_fetch(cursor.handle, @stream_batch_size) do
+      {:ok, %{rows: rows}} ->
+        result = %{
+          columns: cursor.columns,
+          rows: rows,
+          num_rows: length(rows)
+        }
+
+        {:cont, result, state}
+
+      :done ->
+        {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
+
+      {:error, reason} ->
+        {:error, XqliteEcto3.Error.wrap(reason), state}
+    end
   end
 
   @impl DBConnection
-  def handle_fetch(_query, _cursor, _opts, state) do
-    {:error, %RuntimeError{message: "cursor fetch not yet implemented"}, state}
-  end
-
-  @impl DBConnection
-  def handle_deallocate(_query, _cursor, _opts, state) do
+  def handle_deallocate(_query, cursor, _opts, state) do
+    NIF.stream_close(cursor.handle)
     {:ok, nil, state}
+  end
+
+  defp execute_with_cancel(conn, sql, params, :infinity) do
+    NIF.query_with_changes(conn, sql, params)
   end
 
   defp execute_with_cancel(conn, sql, params, timeout) do
