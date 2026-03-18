@@ -159,6 +159,15 @@ _ = XqliteEcto3.storage_down(TestRepo.config())
 _ = XqliteEcto3.storage_down(PoolRepo.config())
 :ok = XqliteEcto3.storage_up(PoolRepo.config())
 
+# Pre-set WAL mode before the pool opens connections. This avoids a race where
+# pool connections try "PRAGMA journal_mode = wal" (a write operation) while a
+# migration holds a write lock, causing transient "database is locked" errors.
+for db <- [test_db, pool_db] do
+  {:ok, conn} = XqliteNIF.open(db)
+  {:ok, _} = XqliteNIF.set_pragma(conn, "journal_mode", "wal")
+  XqliteNIF.close(conn)
+end
+
 {:ok, _} = TestRepo.start_link()
 {:ok, _} = PoolRepo.start_link()
 
