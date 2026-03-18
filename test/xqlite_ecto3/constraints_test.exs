@@ -1,7 +1,7 @@
 defmodule XqliteEcto3.ConstraintsTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.TestRepo, as: Repo
+  alias Ecto.Integration.TestRepo, as: Repo
   import Ecto.Changeset
   import XqliteEcto3.TableHelper
 
@@ -65,6 +65,7 @@ defmodule XqliteEcto3.ConstraintsTest do
   end
 
   setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_tables!(["constr_posts", "constr_users", "constr_constrained"])
   end
 

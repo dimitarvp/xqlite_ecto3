@@ -1,7 +1,11 @@
 defmodule XqliteEcto3.MigrationTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.TestRepo
+  alias Ecto.Integration.TestRepo
+
+  setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
+  end
 
   test "create and drop table via raw SQL" do
     TestRepo.query!("CREATE TABLE IF NOT EXISTS mig_test (id INTEGER PRIMARY KEY, name TEXT)")

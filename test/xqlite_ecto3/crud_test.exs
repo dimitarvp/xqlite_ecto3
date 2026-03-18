@@ -1,7 +1,7 @@
 defmodule XqliteEcto3.CrudTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.TestRepo, as: Repo
+  alias Ecto.Integration.TestRepo, as: Repo
   import Ecto.Query
   import XqliteEcto3.TableHelper
 
@@ -26,6 +26,7 @@ defmodule XqliteEcto3.CrudTest do
   end
 
   setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("crud_users")
   end
 

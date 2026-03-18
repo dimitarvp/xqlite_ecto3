@@ -1,7 +1,7 @@
 defmodule XqliteEcto3.ErrorPathsTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.TestRepo, as: Repo
+  alias Ecto.Integration.TestRepo, as: Repo
   import Ecto.Query
   import XqliteEcto3.TableHelper
 
@@ -30,6 +30,7 @@ defmodule XqliteEcto3.ErrorPathsTest do
   end
 
   setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("err_users")
   end
 

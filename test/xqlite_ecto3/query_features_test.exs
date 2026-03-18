@@ -1,7 +1,7 @@
 defmodule XqliteEcto3.QueryFeaturesTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.TestRepo, as: Repo
+  alias Ecto.Integration.TestRepo, as: Repo
   import Ecto.Query
   import XqliteEcto3.TableHelper
 
@@ -42,6 +42,7 @@ defmodule XqliteEcto3.QueryFeaturesTest do
   end
 
   setup do
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_tables!(["qf_posts", "qf_users"])
 
     {:ok, u1} = Repo.insert(QU.changeset(%QU{}, %{name: "Alice", age: 30, email: "a@b.com"}))
