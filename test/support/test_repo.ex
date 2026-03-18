@@ -7,6 +7,11 @@ defmodule Ecto.Integration.TestRepo do
     adapter: XqliteEcto3
 
   def uuid, do: Ecto.UUID
+
+  # Stubs for PostgreSQL-specific prefix operations referenced by shared migration tests.
+  # SQLite has no schema/namespace concept; these are never executed (tests tagged :prefix).
+  def create_prefix(_prefix), do: "SELECT 1"
+  def drop_prefix(_prefix), do: "SELECT 1"
 end
 
 defmodule Ecto.Integration.PoolRepo do
