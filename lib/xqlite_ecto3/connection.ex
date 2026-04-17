@@ -32,6 +32,15 @@ defmodule XqliteEcto3.Connection do
     busy_timeout: 5_000
   ]
 
+  @unique_index_re ~r/UNIQUE constraint failed: index (.+)/
+  @unique_columns_re ~r/UNIQUE constraint failed: (.+)/
+  @check_re ~r/CHECK constraint failed: (.+)/
+  @not_null_re ~r/NOT NULL constraint failed: (.+)/
+
+  # Operators handled by the generated handle_call/2 clauses below. Must match
+  # the keys of the `binary_ops` keyword list used for code generation.
+  @binary_ops [:==, :!=, :<=, :>=, :<, :>, :+, :-, :*, :/, :and, :or, :like]
+
   # ---------------------------------------------------------------------------
   # Connection lifecycle — delegates to XqliteEcto3.Driver via DBConnection
   # ---------------------------------------------------------------------------
@@ -105,11 +114,6 @@ defmodule XqliteEcto3.Connection do
   # message because SQLite does not provide the constraint/index name
   # as a separate field in its error reporting.
   # ---------------------------------------------------------------------------
-
-  @unique_index_re ~r/UNIQUE constraint failed: index (.+)/
-  @unique_columns_re ~r/UNIQUE constraint failed: (.+)/
-  @check_re ~r/CHECK constraint failed: (.+)/
-  @not_null_re ~r/NOT NULL constraint failed: (.+)/
 
   @impl true
   def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_unique, message: msg}, _opts) do
@@ -761,7 +765,7 @@ defmodule XqliteEcto3.Connection do
     like: " LIKE "
   ]
 
-  @binary_ops Keyword.keys(binary_ops)
+  true = @binary_ops == Keyword.keys(binary_ops)
 
   Enum.map(binary_ops, fn {op, str} ->
     def handle_call(unquote(op), 2), do: {:binary_op, unquote(str)}

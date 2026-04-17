@@ -7,6 +7,8 @@ defmodule XqliteEcto3.Driver do
 
   defstruct [:conn, :transaction_status, :path, savepoint: 0]
 
+  @default_stream_batch_size 500
+
   # connect_timeout is enforced by DBConnection around this call. NIF.open is a
   # blocking dirty-NIF call that cannot be interrupted mid-syscall, so the
   # practical effect is limited to slow filesystems (NFS, network mounts).
@@ -175,8 +177,6 @@ defmodule XqliteEcto3.Driver do
   def handle_close(_query, _opts, state) do
     {:ok, nil, state}
   end
-
-  @default_stream_batch_size 500
 
   @impl DBConnection
   def handle_declare(query, params, opts, state) do
