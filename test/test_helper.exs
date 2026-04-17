@@ -87,14 +87,8 @@ excludes = [
   # SQLite single-writer: concurrent transactions from separate processes deadlock
   {:location, {"deps/ecto_sql/integration_test/sql/transaction.exs", 161}},
 
-  # handle_status/checkout interaction needs adapter work
-  :transaction_checkout_raises,
-
   # SQLite has no DISTINCT ON (expr) — only row-level DISTINCT
   :subquery_in_distinct,
-
-  # Sandbox ownership error message formatting — needs adapter investigation
-  {:location, {"deps/ecto_sql/integration_test/sql/sandbox.exs", 39}},
 
   # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
@@ -105,8 +99,11 @@ excludes = [
 
   # --- Needs adapter work (excluded until implemented) ---
 
-  # Adapter must generate parameter reuse SQL for insert_all placeholders
-  :placeholders,
+  # repo.exs:1092 "Repo.insert_all upserts and fills in placeholders with
+  # conditioned on_conflict query" combines placeholders + with_conflict_target
+  # in a way our adapter doesn't yet handle. All other :placeholders tests
+  # pass, so we narrow this to a single-test location exclusion.
+  {:location, {"deps/ecto/integration_test/cases/repo.exs", 1092}},
 
   # Adapter SQL generation for subquery column values in insert_all
   :insert_select,
@@ -118,11 +115,17 @@ excludes = [
   # json_extract returns 1/0 for booleans; adapter needs coercion layer
   :json_extract_path,
 
-  # SQLite stores TEXT; adapter must preserve full ISO 8601 microsecond precision
+  # SQLite's datetime functions (strftime %f) only produce millisecond
+  # precision. interval.exs datetime_add tests fail because of rounding
+  # errors at the microsecond level. Non-arithmetic microsecond round-trips
+  # pass (see our types_test.exs and the naive_datetime_usec/utc_datetime_usec
+  # tests in type.exs).
   :microsecond_precision,
 
-  # May need PK handling adjustments for user-assigned PKs
-  :assigns_id_type,
+  # migration.exs:664 "modify foreign key's on_update constraint" is tagged
+  # :assigns_id_type but actually uses ALTER COLUMN (SQLite limitation).
+  # The 3 other :assigns_id_type tests pass, so narrow the exclusion.
+  {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}},
 
   # VALUES works but DELETE+JOIN subtest fails
   if Version.match?(System.version(), "~> 1.16") do
