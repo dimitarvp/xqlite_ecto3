@@ -54,12 +54,12 @@ defmodule XqliteEcto3.Connection do
   @impl true
   def prepare_execute(conn, _name, sql, params, opts) do
     query = %XqliteEcto3.Query{statement: sql, ref: make_ref()}
-    conn |> DBConnection.prepare_execute(query, params, opts) |> unwrap_or_raise()
+    DBConnection.prepare_execute(conn, query, params, opts)
   end
 
   @impl true
   def execute(conn, %XqliteEcto3.Query{ref: ref} = cached, params, opts) when ref != nil do
-    conn |> DBConnection.execute(cached, params, opts) |> unwrap_or_raise()
+    DBConnection.execute(conn, cached, params, opts)
   end
 
   def execute(conn, %XqliteEcto3.Query{} = query, params, opts) do
@@ -71,17 +71,9 @@ defmodule XqliteEcto3.Connection do
 
     case DBConnection.prepare_execute(conn, query, params, opts) do
       {:ok, %XqliteEcto3.Query{}, result} -> {:ok, result}
-      other -> unwrap_or_raise(other)
+      other -> other
     end
   end
-
-  # Known error structs must be returned (not raised) so ecto_sql's
-  # raise_sql_call_error can enrich them (e.g. Sandbox docs suffix).
-  defp unwrap_or_raise({:ok, _, _} = ok), do: ok
-  defp unwrap_or_raise({:error, %XqliteEcto3.Error{}} = err), do: err
-  defp unwrap_or_raise({:error, %DBConnection.ConnectionError{}} = err), do: err
-  defp unwrap_or_raise({:error, %DBConnection.OwnershipError{}} = err), do: err
-  defp unwrap_or_raise({:error, err}), do: raise(err)
 
   @impl true
   def query(conn, sql, params, opts) do
