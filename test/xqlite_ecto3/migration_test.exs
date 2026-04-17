@@ -149,4 +149,48 @@ defmodule XqliteEcto3.MigrationTest do
   test "supports_ddl_transaction? returns true" do
     assert XqliteEcto3.supports_ddl_transaction?() == true
   end
+
+  # ---------------------------------------------------------------------------
+  # Raw DDL input (execute_ddl/1 fallthrough heads)
+  #
+  # In migrations users can write `execute "CREATE TRIGGER ..."` which passes a
+  # raw string straight to the adapter. Ecto also historically accepts keyword
+  # lists (for PG/MySQL-style per-adapter DDL). We support the string form and
+  # explicitly reject keyword lists.
+  # ---------------------------------------------------------------------------
+
+  alias XqliteEcto3.Connection
+
+  test "execute_ddl passes raw SQL strings through unchanged" do
+    sql =
+      "CREATE TRIGGER t_update BEFORE UPDATE ON users BEGIN UPDATE users SET updated_at = CURRENT_TIMESTAMP WHERE id = OLD.id; END"
+
+    assert Connection.execute_ddl(sql) == [sql]
+  end
+
+  test "execute_ddl accepts arbitrary SQLite-specific DDL strings" do
+    assert Connection.execute_ddl("VACUUM") == ["VACUUM"]
+    assert Connection.execute_ddl("PRAGMA foreign_keys = ON") == ["PRAGMA foreign_keys = ON"]
+  end
+
+  test "execute_ddl with a keyword list raises with an explanatory message" do
+    error =
+      assert_raise ArgumentError, fn ->
+        Connection.execute_ddl(postgres: "CREATE EXTENSION ...", mysql: "CREATE EVENT ...")
+      end
+
+    assert error.message == "SQLite adapter does not support keyword lists in execute"
+  end
+
+  test "execute_ddl raw string actually executes through Repo.query!" do
+    TestRepo.query!("""
+    CREATE TABLE IF NOT EXISTS raw_ddl_test (id INTEGER PRIMARY KEY, n INTEGER)
+    """)
+
+    TestRepo.query!("INSERT INTO raw_ddl_test VALUES (1, 42)")
+    result = TestRepo.query!("SELECT n FROM raw_ddl_test WHERE id = 1")
+    assert result.rows == [[42]]
+
+    TestRepo.query!("DROP TABLE raw_ddl_test")
+  end
 end
