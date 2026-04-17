@@ -45,23 +45,12 @@ defmodule XqliteEcto3.Connection do
   @impl true
   def prepare_execute(conn, _name, sql, params, opts) do
     query = %XqliteEcto3.Query{statement: sql, ref: make_ref()}
-
-    case DBConnection.prepare_execute(conn, query, params, opts) do
-      {:ok, _, _} = ok -> ok
-      {:error, %XqliteEcto3.Error{} = err} -> {:error, err}
-      {:error, %DBConnection.ConnectionError{} = err} -> {:error, err}
-      {:error, err} -> raise err
-    end
+    conn |> DBConnection.prepare_execute(query, params, opts) |> unwrap_or_raise()
   end
 
   @impl true
   def execute(conn, %XqliteEcto3.Query{ref: ref} = cached, params, opts) when ref != nil do
-    case DBConnection.execute(conn, cached, params, opts) do
-      {:ok, _, _} = ok -> ok
-      {:error, %XqliteEcto3.Error{} = err} -> {:error, err}
-      {:error, %DBConnection.ConnectionError{} = err} -> {:error, err}
-      {:error, err} -> raise err
-    end
+    conn |> DBConnection.execute(cached, params, opts) |> unwrap_or_raise()
   end
 
   def execute(conn, %XqliteEcto3.Query{} = query, params, opts) do
@@ -73,11 +62,19 @@ defmodule XqliteEcto3.Connection do
 
     case DBConnection.prepare_execute(conn, query, params, opts) do
       {:ok, %XqliteEcto3.Query{}, result} -> {:ok, result}
-      {:error, %XqliteEcto3.Error{} = err} -> {:error, err}
-      {:error, %DBConnection.ConnectionError{} = err} -> {:error, err}
-      {:error, err} -> raise err
+      other -> unwrap_or_raise(other)
     end
   end
+
+  # Ecto.Adapters.SQL.raise_sql_call_error/1 expects {:error, err} to reach
+  # it so it can wrap OwnershipError with the Sandbox docs link. Return every
+  # error that's already a known struct so the wrapper can do its job; raise
+  # only truly unknown shapes (which would indicate a driver bug).
+  defp unwrap_or_raise({:ok, _, _} = ok), do: ok
+  defp unwrap_or_raise({:error, %XqliteEcto3.Error{}} = err), do: err
+  defp unwrap_or_raise({:error, %DBConnection.ConnectionError{}} = err), do: err
+  defp unwrap_or_raise({:error, %DBConnection.OwnershipError{}} = err), do: err
+  defp unwrap_or_raise({:error, err}), do: raise(err)
 
   @impl true
   def query(conn, sql, params, opts) do
