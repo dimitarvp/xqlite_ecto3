@@ -150,15 +150,6 @@ defmodule XqliteEcto3.MigrationTest do
     assert XqliteEcto3.supports_ddl_transaction?() == true
   end
 
-  # ---------------------------------------------------------------------------
-  # Raw DDL input (execute_ddl/1 fallthrough heads)
-  #
-  # In migrations users can write `execute "CREATE TRIGGER ..."` which passes a
-  # raw string straight to the adapter. Ecto also historically accepts keyword
-  # lists (for PG/MySQL-style per-adapter DDL). We support the string form and
-  # explicitly reject keyword lists.
-  # ---------------------------------------------------------------------------
-
   alias XqliteEcto3.Connection
 
   test "execute_ddl passes raw SQL strings through unchanged" do

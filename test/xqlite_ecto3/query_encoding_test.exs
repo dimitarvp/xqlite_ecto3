@@ -3,10 +3,6 @@ defmodule XqliteEcto3.QueryEncodingTest do
 
   alias XqliteEcto3.Query
 
-  # DBConnection.Query.encode/3 must produce a list of primitives that the
-  # xqlite NIF can bind. Our implementation in Query module converts Ecto /
-  # Elixir types to NIF-safe values. Tests verify every clause.
-
   defp encode(params), do: DBConnection.Query.encode(%Query{statement: "?"}, params, [])
 
   describe "encode booleans" do

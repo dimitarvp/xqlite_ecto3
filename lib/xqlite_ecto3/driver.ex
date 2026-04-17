@@ -56,13 +56,10 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
+  # Raw BEGIN/COMMIT/ROLLBACK via query bypass handle_begin/commit/rollback,
+  # so state.transaction_status drifts. Ask SQLite directly.
   @impl DBConnection
   def handle_status(_opts, state) do
-    # Query SQLite's actual autocommit state. Users can run raw "BEGIN" /
-    # "COMMIT" / "ROLLBACK" via query/execute that bypass handle_begin /
-    # handle_commit / handle_rollback, so state.transaction_status alone
-    # would drift out of sync. xqlite exposes sqlite3_get_autocommit via
-    # transaction_status/1 ({:ok, true} if in a transaction).
     case NIF.transaction_status(state.conn) do
       {:ok, true} ->
         {:transaction, %{state | transaction_status: :transaction}}
@@ -117,9 +114,6 @@ defmodule XqliteEcto3.Driver do
       _mode ->
         case NIF.commit(state.conn) do
           :ok ->
-            # COMMIT ends the outer transaction and implicitly releases all
-            # active savepoints. Reset the counter so a fresh transaction
-            # starts savepoint naming from 0.
             {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
           {:error, reason} ->
@@ -144,9 +138,6 @@ defmodule XqliteEcto3.Driver do
       _mode ->
         case NIF.rollback(state.conn) do
           :ok ->
-            # ROLLBACK ends the outer transaction and implicitly discards all
-            # active savepoints. Reset the counter so a fresh transaction
-            # starts savepoint naming from 0.
             {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
           {:error, reason} ->
@@ -185,9 +176,6 @@ defmodule XqliteEcto3.Driver do
     {:ok, nil, state}
   end
 
-  # Default number of rows fetched per handle_fetch call when streaming.
-  # Users can override via `Repo.stream(query, max_rows: N)` or the equivalent
-  # opts passed to DBConnection.stream.
   @default_stream_batch_size 500
 
   @impl DBConnection
@@ -238,8 +226,6 @@ defmodule XqliteEcto3.Driver do
     {:ok, nil, state}
   end
 
-  # Ecto.Repo.stream/2 uses the `:max_rows` option. DBConnection passes it
-  # through to the driver. Respect it, fall back to our default otherwise.
   defp batch_size_from_opts(opts) do
     case Keyword.get(opts, :max_rows, @default_stream_batch_size) do
       n when is_integer(n) and n > 0 -> n
@@ -258,17 +244,12 @@ defmodule XqliteEcto3.Driver do
     try do
       NIF.query_with_changes_cancellable(conn, sql, params, token)
     after
-      # Either the query finished before the timer (stop the canceller) or
-      # the canceller fired (already exited). Ensure no stray process remains.
       send(canceller, :stop)
     end
   end
 
-  # The query runs synchronously on the caller process via the dirty NIF,
-  # so a Process.send_after to self() would never be delivered in time.
-  # We need a separate process that actually fires NIF.cancel_operation/1
-  # after the timeout elapses. The canceller exits immediately when told
-  # to stop (happy path) or after cancelling (timeout path).
+  # The dirty NIF blocks this process, so Process.send_after(self(), ...)
+  # would never deliver. A separate process is required.
   defp spawn_canceller(token, timeout) do
     parent = self()
     ref = make_ref()
@@ -284,8 +265,6 @@ defmodule XqliteEcto3.Driver do
       end
     end)
     |> tap(fn _pid ->
-      # Wait for the canceller to be ready so there's no window where the
-      # query could complete before the canceller's `receive` is armed.
       receive do
         {^ref, :ready} -> :ok
       after

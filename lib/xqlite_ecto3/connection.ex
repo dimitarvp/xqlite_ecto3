@@ -66,10 +66,8 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  # Ecto.Adapters.SQL.raise_sql_call_error/1 expects {:error, err} to reach
-  # it so it can wrap OwnershipError with the Sandbox docs link. Return every
-  # error that's already a known struct so the wrapper can do its job; raise
-  # only truly unknown shapes (which would indicate a driver bug).
+  # Known error structs must be returned (not raised) so ecto_sql's
+  # raise_sql_call_error can enrich them (e.g. Sandbox docs suffix).
   defp unwrap_or_raise({:ok, _, _} = ok), do: ok
   defp unwrap_or_raise({:error, %XqliteEcto3.Error{}} = err), do: err
   defp unwrap_or_raise({:error, %DBConnection.ConnectionError{}} = err), do: err

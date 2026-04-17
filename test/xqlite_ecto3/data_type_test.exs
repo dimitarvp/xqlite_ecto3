@@ -3,9 +3,6 @@ defmodule XqliteEcto3.DataTypeTest do
 
   alias XqliteEcto3.DataType
 
-  # Every clause of column_type/2 must have a direct test. These values are
-  # used in CREATE TABLE DDL generation; getting them wrong corrupts schemas.
-
   describe "INTEGER family" do
     test ":id maps to INTEGER" do
       assert DataType.column_type(:id, []) == "INTEGER"

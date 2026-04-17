@@ -1,10 +1,6 @@
 defmodule XqliteEcto3.AdapterCallbacksTest do
   use ExUnit.Case, async: true
 
-  # Direct tests for adapter-level callbacks declared in lib/xqlite_ecto3.ex:
-  # autogenerate/1, loaders/2, dumpers/2, lock_for_migrations/3,
-  # supports_ddl_transaction?/0.
-
   describe "autogenerate/1" do
     test ":id returns nil (SQLite assigns via INTEGER PRIMARY KEY AUTOINCREMENT)" do
       assert XqliteEcto3.autogenerate(:id) == nil
@@ -128,7 +124,6 @@ defmodule XqliteEcto3.AdapterCallbacksTest do
     end
 
     test "unknown type returns [type] without custom loader" do
-      # An unknown type falls through to the base case with no custom decoder.
       assert XqliteEcto3.loaders(:string, :string) == [:string]
     end
   end

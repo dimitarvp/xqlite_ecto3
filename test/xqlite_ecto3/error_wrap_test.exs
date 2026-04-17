@@ -3,9 +3,6 @@ defmodule XqliteEcto3.ErrorWrapTest do
 
   alias XqliteEcto3.Error
 
-  # Every clause in Error.wrap/1 must have a direct test. Integration tests
-  # exercise these paths indirectly, but direct unit tests are the contract.
-
   describe "wrap/1 on {:constraint_violation, subtype, msg}" do
     test "preserves subtype as constraint_type and :constraint_violation as type" do
       e = Error.wrap({:constraint_violation, :constraint_unique, "UNIQUE failed"})

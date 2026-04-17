@@ -3,13 +3,8 @@ defmodule XqliteEcto3.ConnectionErrorWrappingTest do
 
   alias Ecto.Integration.TestRepo
 
-  # These tests verify that errors from the DBConnection layer are routed
-  # through Ecto.Adapters.SQL.raise_sql_call_error/1 so that adapter-wide
-  # error enrichment (like the Sandbox docs suffix) gets applied.
-
   describe "DBConnection.OwnershipError" do
     test "message is enriched with 'See Ecto.Adapters.SQL.Sandbox docs' when raised via Repo.query!" do
-      # No Sandbox.checkout — caller process does not own any connection.
       error =
         assert_raise DBConnection.OwnershipError, fn ->
           TestRepo.query!("SELECT 1")

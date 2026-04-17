@@ -1,10 +1,6 @@
 defmodule XqliteEcto3.CancellationTest do
   use ExUnit.Case, async: true
 
-  # Ecto's :timeout option should actually cancel running queries via xqlite's
-  # progress-handler cancel tokens. This is the killer differentiator over
-  # exqlite's uncancellable dirty-NIF approach. Verify end-to-end.
-
   alias XqliteEcto3.Driver
   alias XqliteNIF, as: NIF
 
@@ -22,8 +18,6 @@ defmodule XqliteEcto3.CancellationTest do
         busy_timeout: 1_000
       )
 
-    # A recursive CTE that generates 1M rows is a cheap way to simulate a
-    # long-running query. With :memory journal it runs entirely in-process.
     slow_sql = """
     WITH RECURSIVE cnt(x) AS (
       SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 10000000
@@ -44,8 +38,6 @@ defmodule XqliteEcto3.CancellationTest do
       elapsed = System.monotonic_time(:millisecond) - started
 
       assert {:error, %DBConnection.ConnectionError{message: "query timed out"}, _} = result
-      # SQLite checks the progress handler every 8 VM steps; should be fast.
-      # Allow 2 seconds max to catch genuine hangs.
       assert elapsed < 2_000, "cancellation took #{elapsed}ms, expected under 2s"
     end
 
@@ -74,7 +66,6 @@ defmodule XqliteEcto3.CancellationTest do
     end
 
     test "cancel does not leak cancel_query messages into mailbox", %{state: state, slow_sql: sql} do
-      # Drain mailbox first
       receive do
         _ -> :drained
       after
@@ -84,7 +75,6 @@ defmodule XqliteEcto3.CancellationTest do
       query = %XqliteEcto3.Query{statement: sql, ref: make_ref()}
       {:error, _, _} = Driver.handle_execute(query, [], [timeout: 50], state)
 
-      # After handle_execute returns, no cancel_query message should remain.
       refute_received {:cancel_query, _}
     end
   end
@@ -95,8 +85,6 @@ defmodule XqliteEcto3.CancellationTest do
       slow_sql: sql
     } do
       {:ok, token} = NIF.create_cancel_token()
-
-      # Schedule a cancellation in a separate process.
       parent = self()
 
       spawn_link(fn ->
