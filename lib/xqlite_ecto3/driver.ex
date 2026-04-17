@@ -57,8 +57,22 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def handle_status(_, state) do
-    {state.transaction_status, state}
+  def handle_status(_opts, state) do
+    # Query SQLite's actual autocommit state. Users can run raw "BEGIN" /
+    # "COMMIT" / "ROLLBACK" via query/execute that bypass handle_begin /
+    # handle_commit / handle_rollback, so state.transaction_status alone
+    # would drift out of sync. xqlite exposes sqlite3_get_autocommit via
+    # transaction_status/1 ({:ok, true} if in a transaction).
+    case NIF.transaction_status(state.conn) do
+      {:ok, true} ->
+        {:transaction, %{state | transaction_status: :transaction}}
+
+      {:ok, false} ->
+        {:idle, %{state | transaction_status: :idle}}
+
+      {:error, _reason} ->
+        {:error, state}
+    end
   end
 
   @impl DBConnection
@@ -103,7 +117,10 @@ defmodule XqliteEcto3.Driver do
       _mode ->
         case NIF.commit(state.conn) do
           :ok ->
-            {:ok, nil, %{state | transaction_status: :idle}}
+            # COMMIT ends the outer transaction and implicitly releases all
+            # active savepoints. Reset the counter so a fresh transaction
+            # starts savepoint naming from 0.
+            {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
           {:error, reason} ->
             {:disconnect, XqliteEcto3.Error.wrap(reason), state}
@@ -127,7 +144,10 @@ defmodule XqliteEcto3.Driver do
       _mode ->
         case NIF.rollback(state.conn) do
           :ok ->
-            {:ok, nil, %{state | transaction_status: :idle}}
+            # ROLLBACK ends the outer transaction and implicitly discards all
+            # active savepoints. Reset the counter so a fresh transaction
+            # starts savepoint naming from 0.
+            {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
           {:error, reason} ->
             {:disconnect, XqliteEcto3.Error.wrap(reason), state}
@@ -165,15 +185,22 @@ defmodule XqliteEcto3.Driver do
     {:ok, nil, state}
   end
 
+  # Default number of rows fetched per handle_fetch call when streaming.
+  # Users can override via `Repo.stream(query, max_rows: N)` or the equivalent
+  # opts passed to DBConnection.stream.
+  @default_stream_batch_size 500
+
   @impl DBConnection
-  def handle_declare(query, params, _opts, state) do
+  def handle_declare(query, params, opts, state) do
     sql = IO.iodata_to_binary(query.statement)
 
     case NIF.stream_open(state.conn, sql, params) do
       {:ok, handle} ->
         case NIF.stream_get_columns(handle) do
           {:ok, columns} ->
-            {:ok, query, %{handle: handle, columns: columns}, state}
+            batch_size = batch_size_from_opts(opts)
+
+            {:ok, query, %{handle: handle, columns: columns, batch_size: batch_size}, state}
 
           {:error, reason} ->
             NIF.stream_close(handle)
@@ -185,11 +212,9 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  @stream_batch_size 500
-
   @impl DBConnection
   def handle_fetch(_query, cursor, _opts, state) do
-    case NIF.stream_fetch(cursor.handle, @stream_batch_size) do
+    case NIF.stream_fetch(cursor.handle, cursor.batch_size) do
       {:ok, %{rows: rows}} ->
         result = %{
           columns: cursor.columns,
@@ -213,24 +238,59 @@ defmodule XqliteEcto3.Driver do
     {:ok, nil, state}
   end
 
+  # Ecto.Repo.stream/2 uses the `:max_rows` option. DBConnection passes it
+  # through to the driver. Respect it, fall back to our default otherwise.
+  defp batch_size_from_opts(opts) do
+    case Keyword.get(opts, :max_rows, @default_stream_batch_size) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> @default_stream_batch_size
+    end
+  end
+
   defp execute_with_cancel(conn, sql, params, :infinity) do
     NIF.query_with_changes(conn, sql, params)
   end
 
-  defp execute_with_cancel(conn, sql, params, timeout) do
+  defp execute_with_cancel(conn, sql, params, timeout) when is_integer(timeout) do
     {:ok, token} = NIF.create_cancel_token()
-    timer_ref = Process.send_after(self(), {:cancel_query, token}, timeout)
+    canceller = spawn_canceller(token, timeout)
 
-    result = NIF.query_with_changes_cancellable(conn, sql, params, token)
-
-    Process.cancel_timer(timer_ref)
-
-    receive do
-      {:cancel_query, ^token} -> :ok
+    try do
+      NIF.query_with_changes_cancellable(conn, sql, params, token)
     after
-      0 -> :ok
+      # Either the query finished before the timer (stop the canceller) or
+      # the canceller fired (already exited). Ensure no stray process remains.
+      send(canceller, :stop)
     end
+  end
 
-    result
+  # The query runs synchronously on the caller process via the dirty NIF,
+  # so a Process.send_after to self() would never be delivered in time.
+  # We need a separate process that actually fires NIF.cancel_operation/1
+  # after the timeout elapses. The canceller exits immediately when told
+  # to stop (happy path) or after cancelling (timeout path).
+  defp spawn_canceller(token, timeout) do
+    parent = self()
+    ref = make_ref()
+
+    spawn(fn ->
+      send(parent, {ref, :ready})
+
+      receive do
+        :stop -> :ok
+      after
+        timeout ->
+          _ = NIF.cancel_operation(token)
+      end
+    end)
+    |> tap(fn _pid ->
+      # Wait for the canceller to be ready so there's no window where the
+      # query could complete before the canceller's `receive` is armed.
+      receive do
+        {^ref, :ready} -> :ok
+      after
+        1_000 -> :ok
+      end
+    end)
   end
 end
