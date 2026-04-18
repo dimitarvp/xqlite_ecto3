@@ -115,10 +115,6 @@ excludes = [
   # pass, so we narrow this to a single-test location exclusion.
   {:location, {"deps/ecto/integration_test/cases/repo.exs", 1092}},
 
-  # Adapter can check PRAGMA table_info() before ALTER
-  :add_column_if_not_exists,
-  :remove_column_if_exists,
-
   # (A) The "with primitive values" variant of json_extract_path touches
   # booleans in a SELECT clause (`select: o.metadata["enabled"] == true`).
   # SQLite's json_extract returns 1/0 for JSON booleans, Elixir's

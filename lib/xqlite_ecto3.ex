@@ -144,6 +144,117 @@ defmodule XqliteEcto3 do
     fun.()
   end
 
+  # SQLite does not support `ADD COLUMN IF NOT EXISTS` or `DROP COLUMN IF EXISTS`
+  # at the grammar level. We implement the semantic by pre-checking the current
+  # columns via `PRAGMA table_info` once per `alter` block, filtering out
+  # conditional changes that are no-ops (column already present for
+  # :add_if_not_exists, column absent for :remove_if_exists), normalizing the
+  # survivors to plain `:add` / `:remove`, and delegating the filtered alter to
+  # the standard Ecto.Adapters.SQL flow. Commands that are not an alter pass
+  # through unchanged. ecto_sqlite3 does not implement this — we're filling a
+  # real ecosystem gap.
+  @impl Ecto.Adapter.Migration
+  def execute_ddl(meta, {:alter, %Ecto.Migration.Table{} = table, changes}, opts) do
+    if Enum.any?(changes, &conditional_change?/1) do
+      existing = fetch_existing_columns!(meta, table, opts)
+
+      case resolve_conditional_changes(changes, existing) do
+        [] ->
+          {:ok, []}
+
+        resolved ->
+          Ecto.Adapters.SQL.execute_ddl(
+            meta,
+            XqliteEcto3.Connection,
+            {:alter, table, resolved},
+            opts
+          )
+      end
+    else
+      Ecto.Adapters.SQL.execute_ddl(meta, XqliteEcto3.Connection, {:alter, table, changes}, opts)
+    end
+  end
+
+  def execute_ddl(meta, command, opts) do
+    Ecto.Adapters.SQL.execute_ddl(meta, XqliteEcto3.Connection, command, opts)
+  end
+
+  defp conditional_change?({:add_if_not_exists, _, _, _}), do: true
+  defp conditional_change?({:remove_if_exists, _, _}), do: true
+  defp conditional_change?({:remove_if_exists, _}), do: true
+  defp conditional_change?(_), do: false
+
+  defp fetch_existing_columns!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    {:ok, %{rows: rows}} =
+      Ecto.Adapters.SQL.query(
+        meta,
+        "SELECT name FROM pragma_table_info(?1)",
+        [to_string(name)],
+        opts
+      )
+
+    rows
+    |> Enum.map(fn [col_name] -> col_name end)
+    |> MapSet.new()
+  end
+
+  # Thread the live column set through the changes so two
+  # `add_if_not_exists :foo` inside the same alter block resolve correctly:
+  # the first emits `ADD COLUMN foo`, the second sees foo now present and
+  # becomes a no-op. Same for mixed `add` then `remove_if_exists`, etc.
+  defp resolve_conditional_changes(changes, initial_existing) do
+    {resolved, _final_state} =
+      Enum.flat_map_reduce(changes, initial_existing, fn change, current ->
+        resolve_change(change, current)
+      end)
+
+    resolved
+  end
+
+  defp resolve_change({:add_if_not_exists, name, type, add_opts}, current) do
+    key = to_string(name)
+
+    if MapSet.member?(current, key) do
+      {[], current}
+    else
+      {[{:add, name, type, add_opts}], MapSet.put(current, key)}
+    end
+  end
+
+  defp resolve_change({:remove_if_exists, name, type}, current) do
+    key = to_string(name)
+
+    if MapSet.member?(current, key) do
+      {[{:remove, name, type, []}], MapSet.delete(current, key)}
+    else
+      {[], current}
+    end
+  end
+
+  defp resolve_change({:remove_if_exists, name}, current) do
+    key = to_string(name)
+
+    if MapSet.member?(current, key) do
+      {[{:remove, name}], MapSet.delete(current, key)}
+    else
+      {[], current}
+    end
+  end
+
+  defp resolve_change({:add, name, _type, _opts} = change, current) do
+    {[change], MapSet.put(current, to_string(name))}
+  end
+
+  defp resolve_change({:remove, name, _type, _opts} = change, current) do
+    {[change], MapSet.delete(current, to_string(name))}
+  end
+
+  defp resolve_change({:remove, name} = change, current) do
+    {[change], MapSet.delete(current, to_string(name))}
+  end
+
+  defp resolve_change(change, current), do: {[change], current}
+
   @impl Ecto.Adapter.Schema
   def autogenerate(:id), do: nil
   def autogenerate(:embed_id), do: Ecto.UUID.generate()
