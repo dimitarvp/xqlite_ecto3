@@ -279,7 +279,7 @@ defmodule XqliteEcto3.Connection do
       if header == [] do
         [" VALUES " | Enum.map_intersperse(rows, ?,, fn _ -> "(DEFAULT)" end)]
       else
-        [" (", quote_names(header), ") " | insert_all(rows, counter_offset)]
+        [" (", quote_names(header), ") " | rows_sql(rows, counter_offset, on_conflict)]
       end
 
     [
@@ -290,6 +290,41 @@ defmodule XqliteEcto3.Connection do
       on_conflict(on_conflict, header),
       returning(returning)
     ]
+  end
+
+  # SQLite's parser gets confused by INSERT ... SELECT ... FROM t ON CONFLICT:
+  # without a terminating WHERE / ORDER BY / LIMIT on the SELECT, the
+  # "ON" after FROM reads as the start of a JOIN ON clause, and the
+  # parser fails at the subsequent "DO". Parenthesizing the SELECT is
+  # NOT accepted in this position either. Empirically-verified workaround:
+  # if the SELECT has no trailing WHERE / ORDER BY / LIMIT of its own,
+  # inject a trivially-true WHERE. Queries that already carry one of
+  # those clauses are left alone.
+  defp rows_sql(%Ecto.Query{} = query, _counter, on_conflict) do
+    query =
+      if upsert?(on_conflict) and needs_upsert_disambiguator?(query) do
+        inject_trivial_where(query)
+      else
+        query
+      end
+
+    [all(query)]
+  end
+
+  defp rows_sql(rows, counter, _on_conflict), do: insert_all(rows, counter)
+
+  defp upsert?({:raise, _, _}), do: false
+  defp upsert?(_), do: true
+
+  defp needs_upsert_disambiguator?(%Ecto.Query{wheres: w, order_bys: o, limit: l}) do
+    Enum.empty?(w) and Enum.empty?(o) and is_nil(l)
+  end
+
+  defp inject_trivial_where(%Ecto.Query{} = query) do
+    %{
+      query
+      | wheres: [%Ecto.Query.BooleanExpr{expr: true, op: :and, params: [], file: nil, line: nil}]
+    }
   end
 
   @impl true

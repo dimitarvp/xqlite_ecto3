@@ -107,10 +107,6 @@ excludes = [
   # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 
-  # INSERT ... SELECT ... ON CONFLICT generates invalid SQL
-  {:location, {"deps/ecto/integration_test/cases/repo.exs", 897}},
-  {:location, {"deps/ecto/integration_test/cases/repo.exs", 937}},
-
   # --- Needs adapter work (excluded until implemented) ---
 
   # repo.exs:1092 "Repo.insert_all upserts and fills in placeholders with
