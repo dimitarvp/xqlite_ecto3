@@ -21,14 +21,16 @@ Application.put_env(:xqlite_ecto3, TestRepo,
   adapter: XqliteEcto3,
   database: test_db,
   pool: Ecto.Adapters.SQL.Sandbox,
-  show_sensitive_data_on_connection_error: true
+  show_sensitive_data_on_connection_error: true,
+  support_alter_via_table_rebuild: true
 )
 
 Application.put_env(:xqlite_ecto3, PoolRepo,
   adapter: XqliteEcto3,
   database: pool_db,
   pool_size: 1,
-  show_sensitive_data_on_connection_error: true
+  show_sensitive_data_on_connection_error: true,
+  support_alter_via_table_rebuild: true
 )
 
 # Some shared tests read config from the :ecto_sql app
@@ -71,12 +73,6 @@ excludes = [
   # (permanent SQLite limit) no ALTER TABLE ... ALTER COLUMN for FK
   # constraints — same rebuild-required story as :alter_primary_key.
   :alter_foreign_key,
-
-  # (permanent SQLite limit for the simple ALTER path) SQLite has no
-  # ALTER TABLE MODIFY COLUMN. xqlite_ecto3 task #65 plans to add a
-  # behind-the-flag table-rebuild implementation; until then the
-  # shared-suite :modify_column tests stay excluded.
-  :modify_column,
 
   # SQLite ON DELETE SET NULL/DEFAULT applies to all FK columns; no column-list syntax
   :on_delete_nilify_column_list,

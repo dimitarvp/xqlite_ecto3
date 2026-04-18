@@ -230,34 +230,49 @@ defmodule XqliteEcto3 do
     fun.()
   end
 
-  # SQLite does not support `ADD COLUMN IF NOT EXISTS` or `DROP COLUMN IF EXISTS`
-  # at the grammar level. We implement the semantic by pre-checking the current
-  # columns via `PRAGMA table_info` once per `alter` block, filtering out
-  # conditional changes that are no-ops (column already present for
-  # :add_if_not_exists, column absent for :remove_if_exists), normalizing the
-  # survivors to plain `:add` / `:remove`, and delegating the filtered alter to
-  # the standard Ecto.Adapters.SQL flow. Commands that are not an alter pass
-  # through unchanged. ecto_sqlite3 does not implement this — we're filling a
-  # real ecosystem gap.
+  # SQLite does not support `ADD COLUMN IF NOT EXISTS`, `DROP COLUMN IF EXISTS`,
+  # or `ALTER TABLE ... MODIFY COLUMN`. Two escape hatches:
+  #
+  # 1. Conditional column changes (:add_if_not_exists, :remove_if_exists)
+  #    get filtered via PRAGMA table_info and normalized to :add / :remove
+  #    before falling through to the standard Ecto.Adapters.SQL flow.
+  #
+  # 2. Modify column changes (:modify) trigger the full SQLite 12-step
+  #    table-rebuild dance when the repo is configured with
+  #    `support_alter_via_table_rebuild: true`. Without that flag, :modify
+  #    raises a clear error. The rebuild batches ALL changes in the alter
+  #    block (:modify + :add + :remove + :rename + conditional variants)
+  #    into a single new-table create + INSERT SELECT + drop + rename +
+  #    index/trigger recreation cycle, not N rebuilds for N columns.
   @impl Ecto.Adapter.Migration
   def execute_ddl(meta, {:alter, %Ecto.Migration.Table{} = table, changes}, opts) do
-    if Enum.any?(changes, &conditional_change?/1) do
-      existing = fetch_existing_columns!(meta, table, opts)
+    cond do
+      Enum.any?(changes, &requires_rebuild?/1) ->
+        rebuild_table(meta, table, changes, opts)
 
-      case resolve_conditional_changes(changes, existing) do
-        [] ->
-          {:ok, []}
+      Enum.any?(changes, &conditional_change?/1) ->
+        existing = fetch_existing_columns!(meta, table, opts)
 
-        resolved ->
-          Ecto.Adapters.SQL.execute_ddl(
-            meta,
-            XqliteEcto3.Connection,
-            {:alter, table, resolved},
-            opts
-          )
-      end
-    else
-      Ecto.Adapters.SQL.execute_ddl(meta, XqliteEcto3.Connection, {:alter, table, changes}, opts)
+        case resolve_conditional_changes(changes, existing) do
+          [] ->
+            {:ok, []}
+
+          resolved ->
+            Ecto.Adapters.SQL.execute_ddl(
+              meta,
+              XqliteEcto3.Connection,
+              {:alter, table, resolved},
+              opts
+            )
+        end
+
+      true ->
+        Ecto.Adapters.SQL.execute_ddl(
+          meta,
+          XqliteEcto3.Connection,
+          {:alter, table, changes},
+          opts
+        )
     end
   end
 
@@ -340,6 +355,289 @@ defmodule XqliteEcto3 do
   end
 
   defp resolve_change(change, current), do: {[change], current}
+
+  # ---------------------------------------------------------------------------
+  # Table-rebuild path (for ALTER ... MODIFY COLUMN support)
+  # ---------------------------------------------------------------------------
+
+  # Any change that SQLite's grammar can't do as a plain ALTER requires
+  # rebuilding the whole table. Today that's :modify. Future: might expand
+  # to :alter_primary_key / :alter_foreign_key if shared tests demand.
+  defp requires_rebuild?({:modify, _name, _type, _opts}), do: true
+  defp requires_rebuild?(_), do: false
+
+  defp rebuild_enabled?(meta) do
+    case meta do
+      %{repo: repo} when is_atom(repo) ->
+        repo.config()
+        |> Keyword.get(:support_alter_via_table_rebuild, false)
+
+      _ ->
+        false
+    end
+  end
+
+  defp rebuild_table(meta, table, changes, opts) do
+    unless rebuild_enabled?(meta) do
+      raise ArgumentError,
+            "SQLite does not support ALTER TABLE ... MODIFY COLUMN. xqlite_ecto3 " <>
+              "can implement it via a full table rebuild (create new, copy, drop, " <>
+              "rename, recreate indexes/triggers) but requires the opt-in flag:\n\n" <>
+              "    config :my_app, MyApp.Repo,\n" <>
+              "      support_alter_via_table_rebuild: true\n\n" <>
+              "Consider the cost on large tables: the rebuild acquires a write lock " <>
+              "and rewrites every row."
+    end
+
+    existing_columns = fetch_full_column_info!(meta, table, opts)
+    indexes = fetch_user_indexes!(meta, table, opts)
+    triggers = fetch_table_triggers!(meta, table, opts)
+    autoincrement = fetch_autoincrement_value!(meta, table, opts)
+
+    {new_columns, copy_pairs} =
+      plan_new_schema(existing_columns, changes, autoincrement: not is_nil(autoincrement))
+
+    statements =
+      [
+        "PRAGMA defer_foreign_keys = ON",
+        create_rebuild_table_sql(table, new_columns),
+        copy_rows_sql(table, copy_pairs),
+        "DROP TABLE #{quote_name(table.name)}",
+        ~s|ALTER TABLE "#{table.name}__xqlite_new" RENAME TO #{quote_name(table.name)}|,
+        restore_autoincrement_sql(table, autoincrement)
+      ] ++
+        Enum.map(indexes, & &1.sql) ++
+        Enum.map(triggers, & &1.sql)
+
+    statements
+    |> List.flatten()
+    |> Enum.reject(&is_nil/1)
+    |> Enum.each(&Ecto.Adapters.SQL.query!(meta, &1, [], opts))
+
+    # foreign_key_check returns rows if violations exist. It's a PRAGMA that
+    # only produces rows on failure, so an empty result means clean.
+    case Ecto.Adapters.SQL.query!(
+           meta,
+           "PRAGMA foreign_key_check(#{quote_name(table.name)})",
+           [],
+           opts
+         ) do
+      %{rows: []} ->
+        {:ok, []}
+
+      %{rows: violations} ->
+        raise "table-rebuild for #{inspect(table.name)} left foreign-key violations: " <>
+                inspect(violations) <>
+                ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
+                "dependent tables that reference this one."
+    end
+  end
+
+  defp fetch_full_column_info!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_xinfo(?1) " <>
+          "WHERE hidden NOT IN (1, 2)",
+        [to_string(name)],
+        opts
+      )
+
+    Enum.map(rows, fn [col_name, col_type, notnull, dflt, pk] ->
+      %{name: col_name, type: col_type, notnull: notnull == 1, default: dflt, pk: pk}
+    end)
+  end
+
+  defp fetch_user_indexes!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    # User-created indexes have non-nil `sql`; auto-created ones (from UNIQUE
+    # constraints etc.) have NULL sql and will be recreated automatically when
+    # the new table is created with the same constraints.
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?1 " <>
+          "AND sql IS NOT NULL",
+        [to_string(name)],
+        opts
+      )
+
+    Enum.map(rows, fn [idx_name, sql] -> %{name: idx_name, sql: sql} end)
+  end
+
+  defp fetch_table_triggers!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 " <>
+          "AND sql IS NOT NULL",
+        [to_string(name)],
+        opts
+      )
+
+    Enum.map(rows, fn [trg_name, sql] -> %{name: trg_name, sql: sql} end)
+  end
+
+  defp fetch_autoincrement_value!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    # sqlite_sequence table exists only if any AUTOINCREMENT column in the DB.
+    case Ecto.Adapters.SQL.query(
+           meta,
+           "SELECT seq FROM sqlite_sequence WHERE name = ?1",
+           [to_string(name)],
+           opts
+         ) do
+      {:ok, %{rows: [[seq]]}} -> seq
+      _ -> nil
+    end
+  end
+
+  # Walk the changes list, producing (a) the new column list for the rebuilt
+  # table in declared order and (b) the pairs of (old_name -> new_name) to
+  # copy via INSERT SELECT. Columns added fresh have no matching old column
+  # and are omitted from the copy.
+  defp plan_new_schema(existing, changes, opts) do
+    autoincrement? = Keyword.fetch!(opts, :autoincrement)
+    base = Enum.map(existing, &existing_to_column(&1, autoincrement?))
+
+    # Apply changes in order. Result is a list of %{name, source_name, spec}
+    # where source_name is the old column to copy FROM (nil for added cols),
+    # and spec is the CREATE TABLE column definition iodata.
+    final =
+      Enum.reduce(changes, base, fn change, cols ->
+        apply_change(cols, change)
+      end)
+
+    copy_pairs =
+      for %{name: name, source_name: src} <- final, not is_nil(src), do: {src, name}
+
+    {final, copy_pairs}
+  end
+
+  defp existing_to_column(
+         %{name: name, type: type, notnull: notnull, default: dflt, pk: pk},
+         autoincrement?
+       ) do
+    pk_clause =
+      cond do
+        pk == 1 and autoincrement? -> " PRIMARY KEY AUTOINCREMENT"
+        pk == 1 -> " PRIMARY KEY"
+        true -> ""
+      end
+
+    spec = [
+      ~s|"#{name}"|,
+      " ",
+      if(type in [nil, ""], do: "BLOB", else: type),
+      if(notnull, do: " NOT NULL", else: ""),
+      default_clause(dflt),
+      pk_clause
+    ]
+
+    %{name: name, source_name: name, spec: spec}
+  end
+
+  defp default_clause(nil), do: ""
+  defp default_clause(value), do: [" DEFAULT ", to_string(value)]
+
+  defp apply_change(cols, {:add, name, type, opts}) do
+    cols ++ [%{name: to_string(name), source_name: nil, spec: add_spec(name, type, opts)}]
+  end
+
+  defp apply_change(cols, {:add_if_not_exists, name, type, opts}) do
+    if Enum.any?(cols, &(&1.name == to_string(name))) do
+      cols
+    else
+      apply_change(cols, {:add, name, type, opts})
+    end
+  end
+
+  defp apply_change(cols, {:remove, name, _type, _opts}), do: apply_change(cols, {:remove, name})
+
+  defp apply_change(cols, {:remove, name}) do
+    Enum.reject(cols, &(&1.name == to_string(name)))
+  end
+
+  defp apply_change(cols, {:remove_if_exists, name, _type}),
+    do: apply_change(cols, {:remove_if_exists, name})
+
+  defp apply_change(cols, {:remove_if_exists, name}) do
+    Enum.reject(cols, &(&1.name == to_string(name)))
+  end
+
+  defp apply_change(cols, {:modify, name, type, opts}) do
+    name_s = to_string(name)
+
+    Enum.map(cols, fn col ->
+      if col.name == name_s do
+        %{col | spec: add_spec(name, type, opts)}
+      else
+        col
+      end
+    end)
+  end
+
+  defp apply_change(cols, _other), do: cols
+
+  defp add_spec(name, type, opts) do
+    type_sql = XqliteEcto3.DataType.column_type(type, opts)
+
+    [
+      ~s|"#{name}"|,
+      " ",
+      type_sql,
+      if(Keyword.get(opts, :null) == false, do: " NOT NULL", else: ""),
+      default_spec(Keyword.fetch(opts, :default)),
+      if(Keyword.get(opts, :primary_key, false), do: " PRIMARY KEY", else: "")
+    ]
+  end
+
+  defp default_spec({:ok, nil}), do: " DEFAULT NULL"
+  defp default_spec({:ok, v}) when is_integer(v) or is_float(v), do: [" DEFAULT ", to_string(v)]
+  defp default_spec({:ok, v}) when is_binary(v), do: [" DEFAULT '", v, "'"]
+  defp default_spec({:ok, true}), do: " DEFAULT 1"
+  defp default_spec({:ok, false}), do: " DEFAULT 0"
+  defp default_spec({:ok, {:fragment, frag}}), do: [" DEFAULT ", frag]
+  defp default_spec(:error), do: ""
+
+  defp create_rebuild_table_sql(table, cols) do
+    col_sqls =
+      cols
+      |> Enum.map(& &1.spec)
+      |> Enum.intersperse(", ")
+
+    IO.iodata_to_binary([
+      ~s|CREATE TABLE "#{table.name}__xqlite_new" (|,
+      col_sqls,
+      ")"
+    ])
+  end
+
+  defp copy_rows_sql(table, copy_pairs) do
+    if copy_pairs == [] do
+      nil
+    else
+      {old_cols, new_cols} = Enum.unzip(copy_pairs)
+
+      new_list = Enum.map_join(new_cols, ", ", &~s|"#{&1}"|)
+      old_list = Enum.map_join(old_cols, ", ", &~s|"#{&1}"|)
+
+      ~s|INSERT INTO "#{table.name}__xqlite_new" (#{new_list}) SELECT #{old_list} FROM "#{table.name}"|
+    end
+  end
+
+  # sqlite_sequence has no unique constraint on `name`. ALTER TABLE ... RENAME
+  # TO inserts its own row for the renamed table (seq=0 because the new-table
+  # is empty), so we have to delete first and then re-insert the preserved value.
+  defp restore_autoincrement_sql(_table, nil), do: []
+
+  defp restore_autoincrement_sql(table, seq) do
+    [
+      ~s|DELETE FROM sqlite_sequence WHERE name = '#{table.name}'|,
+      ~s|INSERT INTO sqlite_sequence (name, seq) VALUES ('#{table.name}', #{seq})|
+    ]
+  end
+
+  defp quote_name(name) when is_atom(name), do: quote_name(Atom.to_string(name))
+  defp quote_name(name) when is_binary(name), do: ~s|"#{name}"|
 
   @impl Ecto.Adapter.Schema
   def autogenerate(:id), do: nil
