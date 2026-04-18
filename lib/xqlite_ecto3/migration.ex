@@ -97,4 +97,52 @@ defmodule XqliteEcto3.Migration do
   defp format_values(atoms) when is_list(atoms) do
     Enum.map_join(atoms, ", ", &"'#{&1}'")
   end
+
+  @doc """
+  Builds a `:check` option value that restricts a column to hold a JSON
+  array (any non-array JSON — including objects, scalars, and `null` —
+  is rejected).
+
+  Pair with `XqliteEcto3.Types.Array` (which stores as JSON TEXT) when
+  you want the DB to refuse malformed writes from non-Ecto paths
+  (raw SQL, external tools writing to the same file). Opt-in; nothing
+  auto-applies.
+
+  ## Parameters
+
+    * `column` — atom column name.
+    * `opts` — optional keyword list:
+      * `:name` — constraint name. Defaults to `"\#{column}_array_check"`.
+
+  ## With the helper (ergonomic, SQLite-coupled)
+
+      import XqliteEcto3.Migration
+
+      create table(:posts) do
+        add :tags, :string, check: array_check(:tags)
+      end
+
+  ## Without the helper (portable across adapters supporting `:check`)
+
+      add :tags, :string,
+        check: %{
+          name: "tags_array_check",
+          expr: "json_type(tags) = 'array'"
+        }
+
+  ## Examples
+
+      iex> XqliteEcto3.Migration.array_check(:tags)
+      %{name: "tags_array_check", expr: "json_type(tags) = 'array'"}
+
+      iex> XqliteEcto3.Migration.array_check(:scores, name: "scores_is_array")
+      %{name: "scores_is_array", expr: "json_type(scores) = 'array'"}
+  """
+  @spec array_check(atom(), keyword()) :: %{name: String.t(), expr: String.t()}
+  def array_check(column, opts \\ []) when is_atom(column) do
+    %{
+      name: Keyword.get(opts, :name, "#{column}_array_check"),
+      expr: "json_type(#{column}) = 'array'"
+    }
+  end
 end

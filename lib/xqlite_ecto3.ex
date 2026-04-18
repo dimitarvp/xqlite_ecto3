@@ -58,6 +58,22 @@ defmodule XqliteEcto3 do
   loaded value is UTC-normalized with the offset encoded in the ISO
   text. See its moduledoc for the round-trip caveats.
 
+  ## Array, Instant, Duration types
+
+  `XqliteEcto3.Types.Array` stores Elixir lists as JSON text. Accepts
+  a `:element` parameter for per-element type-checking (`:any` default,
+  or `:string | :integer | :float | :boolean`). Pair with
+  `XqliteEcto3.Migration.array_check/2` in migrations to reject
+  non-array writes at the DB level.
+
+  `XqliteEcto3.Types.Instant` stores moments in time as int64
+  nanoseconds from Unix epoch. Compact + fast for high-volume
+  timestamp workloads (IoT, APM, trading). Loads as `%DateTime{}`.
+
+  `XqliteEcto3.Types.Duration` stores fixed-length time spans as int64
+  nanoseconds. Accepts Elixir 1.17+ `%Duration{}` when the calendar
+  fields (year/month/week) are zero. Loads as integer nanoseconds.
+
   ## JSON path coercion (the `o.metadata["enabled"] == true` case)
 
   SQLite's `json_extract` returns **integer 1 or 0** for JSON booleans.
