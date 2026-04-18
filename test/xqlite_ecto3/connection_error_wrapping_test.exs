@@ -3,34 +3,31 @@ defmodule XqliteEcto3.ConnectionErrorWrappingTest do
 
   alias Ecto.Integration.TestRepo
 
-  describe "DBConnection.OwnershipError" do
-    test "message is enriched with 'See Ecto.Adapters.SQL.Sandbox docs' when raised via Repo.query!" do
-      error =
-        assert_raise DBConnection.OwnershipError, fn ->
-          TestRepo.query!("SELECT 1")
-        end
+  # We assert only on the exception TYPE — that's the structural guarantee
+  # we're responsible for. Ecto's own test suite verifies that ecto_sql
+  # enriches OwnershipError's message with the Sandbox docs pointer; we
+  # don't re-check that text here. If Ecto ever changes the enrichment
+  # wording, our tests stay green.
 
-      assert error.message =~ "See Ecto.Adapters.SQL.Sandbox docs for more information."
+  describe "DBConnection.OwnershipError" do
+    test "Repo.query! without sandbox checkout raises OwnershipError" do
+      assert_raise DBConnection.OwnershipError, fn ->
+        TestRepo.query!("SELECT 1")
+      end
     end
 
-    test "message is enriched when raised via Repo.all on a schema" do
+    test "Repo.all on a schema without sandbox checkout raises OwnershipError" do
       import Ecto.Query
 
-      error =
-        assert_raise DBConnection.OwnershipError, fn ->
-          TestRepo.all(from(p in Ecto.Integration.Post, select: p.id))
-        end
-
-      assert error.message =~ "See Ecto.Adapters.SQL.Sandbox docs for more information."
+      assert_raise DBConnection.OwnershipError, fn ->
+        TestRepo.all(from(p in Ecto.Integration.Post, select: p.id))
+      end
     end
 
-    test "message is enriched when raised via Repo.query! with parameters" do
-      error =
-        assert_raise DBConnection.OwnershipError, fn ->
-          TestRepo.query!("SELECT ?1", [42])
-        end
-
-      assert error.message =~ "See Ecto.Adapters.SQL.Sandbox docs for more information."
+    test "Repo.query! with parameters raises OwnershipError" do
+      assert_raise DBConnection.OwnershipError, fn ->
+        TestRepo.query!("SELECT ?1", [42])
+      end
     end
   end
 end

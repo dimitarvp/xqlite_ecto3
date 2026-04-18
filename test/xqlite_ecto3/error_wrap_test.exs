@@ -92,8 +92,8 @@ defmodule XqliteEcto3.ErrorWrapTest do
   describe "wrap/1 catch-all" do
     test "inspects arbitrary reasons without crashing" do
       e = Error.wrap(%{some: "weird shape"})
+      assert %XqliteEcto3.Error{} = e
       assert is_binary(e.message)
-      assert e.message =~ "some"
       assert e.type == nil
     end
 

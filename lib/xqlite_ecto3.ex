@@ -175,7 +175,7 @@ defmodule XqliteEcto3 do
   defp bool_decode(nil), do: {:ok, nil}
 
   defp bool_decode(x) do
-    {:error, "expected 0 or 1 for boolean column, got: #{inspect(x)}"}
+    {:error, %{reason: :invalid_boolean_value, value: x, expected: [0, 1, nil]}}
   end
 
   defp bool_encode(false), do: {:ok, 0}

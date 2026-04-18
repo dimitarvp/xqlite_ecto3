@@ -49,7 +49,22 @@ defmodule XqliteEcto3.DataType do
   end
 
   def column_type(type, _) do
-    raise ArgumentError,
-          "unsupported type `#{inspect(type)}`"
+    raise XqliteEcto3.UnsupportedTypeError, type: type
+  end
+end
+
+defmodule XqliteEcto3.UnsupportedTypeError do
+  @moduledoc """
+  Raised when `XqliteEcto3.DataType.column_type/2` encounters a value it
+  cannot render as a SQLite column type (non-atom, non-tuple, or a tuple
+  shape that no clause matches). Structured so callers can pattern-match
+  on the `type` field instead of parsing the message.
+  """
+
+  defexception [:type]
+
+  @impl true
+  def message(%__MODULE__{type: type}) do
+    "unsupported type `#{inspect(type)}`"
   end
 end

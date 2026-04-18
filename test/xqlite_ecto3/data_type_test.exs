@@ -131,16 +131,22 @@ defmodule XqliteEcto3.DataTypeTest do
   end
 
   describe "unsupported types" do
-    test "non-atom, non-tuple types raise ArgumentError" do
-      assert_raise ArgumentError, ~r/unsupported type/, fn ->
-        DataType.column_type(123, [])
-      end
+    test "non-atom, non-tuple types raise UnsupportedTypeError carrying the offender" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedTypeError, fn ->
+          DataType.column_type(123, [])
+        end
+
+      assert err.type == 123
     end
 
-    test "unknown tuple types raise ArgumentError" do
-      assert_raise ArgumentError, ~r/unsupported type/, fn ->
-        DataType.column_type({:unknown, :foo}, [])
-      end
+    test "unknown tuple types raise UnsupportedTypeError carrying the offender" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedTypeError, fn ->
+          DataType.column_type({:unknown, :foo}, [])
+        end
+
+      assert err.type == {:unknown, :foo}
     end
   end
 end

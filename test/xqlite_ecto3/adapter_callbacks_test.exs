@@ -50,8 +50,9 @@ defmodule XqliteEcto3.AdapterCallbacksTest do
 
     test ":boolean loader rejects non-0/1 values with structured error" do
       [decoder | _] = XqliteEcto3.loaders(:boolean, :boolean)
-      assert {:error, msg} = decoder.(2)
-      assert msg =~ "expected 0 or 1 for boolean column"
+
+      assert {:error, %{reason: :invalid_boolean_value, value: 2, expected: [0, 1, nil]}} =
+               decoder.(2)
     end
 
     test ":naive_datetime loader parses ISO 8601 strings" do
