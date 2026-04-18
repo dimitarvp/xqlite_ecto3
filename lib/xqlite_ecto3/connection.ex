@@ -702,9 +702,16 @@ defmodule XqliteEcto3.Connection do
 
   def insert_each(values, counter) do
     intersperse_reduce(values, ?,, counter, fn
-      nil, _counter ->
-        raise ArgumentError,
-              "Cell-wise default values are not supported on INSERT statements by SQLite"
+      nil, counter ->
+        # Ecto pads unevenly-keyed rows in insert_all with nil to signal
+        # "this row does not supply this column". SQLite's INSERT expr
+        # grammar doesn't accept the DEFAULT keyword inside a VALUES list,
+        # so we emit NULL instead. Columns that are NULLABLE get NULL;
+        # NOT NULL columns without a default cause a constraint error at
+        # insert time. For NOT NULL columns that DO have a default
+        # declared at the schema level, Ecto's own schema-level default
+        # filling happens before the adapter runs.
+        {"NULL", counter}
 
       {%Ecto.Query{} = query, params_counter}, counter ->
         {[?(, all(query), ?)], counter + params_counter}

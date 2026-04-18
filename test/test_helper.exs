@@ -119,9 +119,6 @@ excludes = [
   # pass, so we narrow this to a single-test location exclusion.
   {:location, {"deps/ecto/integration_test/cases/repo.exs", 1092}},
 
-  # Adapter SQL generation for subquery column values in insert_all
-  :insert_select,
-
   # Adapter can check PRAGMA table_info() before ALTER
   :add_column_if_not_exists,
   :remove_column_if_exists,
