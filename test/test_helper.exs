@@ -126,8 +126,19 @@ excludes = [
   :add_column_if_not_exists,
   :remove_column_if_exists,
 
-  # json_extract returns 1/0 for booleans; adapter needs coercion layer
-  :json_extract_path,
+  # (A) The "with primitive values" variant of json_extract_path touches
+  # booleans in a SELECT clause (`select: o.metadata["enabled"] == true`).
+  # SQLite's json_extract returns 1/0 for JSON booleans, Elixir's
+  # `1 == true` is false, so that specific assertion fails. The fix needs
+  # a coercion layer we haven't designed yet (task #63).
+  {:location, {"deps/ecto/integration_test/cases/type.exs", 362}},
+
+  # (B) The "with fields in path" variant uses dynamic path expressions
+  # (`o.metadata[o.label][1]["name"]`) where the path element is another
+  # field reference, not a literal. Our expr builder for json_extract_path
+  # only handles literal string/integer path components today. Separate
+  # adapter gap — tracked alongside #63.
+  :json_extract_path_with_field,
 
   # SQLite's datetime functions (strftime %f) only produce millisecond
   # precision. interval.exs datetime_add tests fail because of rounding
