@@ -16,6 +16,15 @@ defmodule XqliteEcto3 do
           adapter: XqliteEcto3
       end
 
+  ## Migration helpers
+
+  `XqliteEcto3.Migration` exposes opt-in helpers for SQLite-specific
+  migration patterns — most notably `enum_check/3` for generating a
+  `CHECK (col IN (...))` constraint that mirrors an `Ecto.Enum`'s
+  declared values. Importing those helpers couples your migrations to
+  `xqlite_ecto3`; each helper also documents its inline equivalent if
+  portability matters more than ergonomics.
+
   ## Nested transactions and raw SAVEPOINT SQL
 
   Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
