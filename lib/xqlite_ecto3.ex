@@ -58,6 +58,34 @@ defmodule XqliteEcto3 do
   loaded value is UTC-normalized with the offset encoded in the ISO
   text. See its moduledoc for the round-trip caveats.
 
+  ## JSON path coercion (the `o.metadata["enabled"] == true` case)
+
+  SQLite's `json_extract` returns **integer 1 or 0** for JSON booleans.
+  There is no native boolean type. A query like
+
+      from o in Order, select: o.metadata["enabled"]
+
+  returns `1` or `0`, not `true` or `false`, so `TestRepo.one(...) == true`
+  fails at the Elixir-level comparison. Postgres and MySQL's JSON types
+  preserve booleans natively; SQLite does not.
+
+  **The canonical workaround is Ecto's built-in `type/2`:**
+
+      # Doesn't work — returns 1 or 0
+      from o in Order, select: o.metadata["enabled"]
+
+      # Works — loader coerces 0/1 to false/true
+      from o in Order, select: type(o.metadata["enabled"], :boolean)
+
+  Same pattern applies for any path whose JSON type needs a specific
+  Elixir shape (`:integer`, `:string`, `:naive_datetime`, etc.). The
+  adapter's loaders chain handles the coercion once the type is declared.
+
+  The shared Ecto test suite's `:json_extract_path` tests that don't use
+  `type/2` remain excluded — this matches `ecto_sqlite3`'s stance. The
+  two of four variants that don't hit this case (arrays/objects, embeds)
+  run cleanly.
+
   ## Nested transactions and raw SAVEPOINT SQL
 
   Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
