@@ -78,10 +78,10 @@ defmodule XqliteEcto3.ConnectionTest do
   # to_constraints
   # ---------------------------------------------------------------------------
 
-  test "to_constraints maps unique constraint from structured error" do
+  test "to_constraints maps unique constraint from structured details" do
     error = %XqliteEcto3.Error{
-      message: "UNIQUE constraint failed: users.email",
-      constraint_type: :constraint_unique
+      constraint_type: :constraint_unique,
+      constraint_details: %{table: "users", columns: ["email"]}
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_email_index"]
@@ -89,8 +89,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps composite unique constraint" do
     error = %XqliteEcto3.Error{
-      message: "UNIQUE constraint failed: users.tenant_id, users.email",
-      constraint_type: :constraint_unique
+      constraint_type: :constraint_unique,
+      constraint_details: %{table: "users", columns: ["tenant_id", "email"]}
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_tenant_id_email_index"]
@@ -98,8 +98,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps foreign key constraint" do
     error = %XqliteEcto3.Error{
-      message: "FOREIGN KEY constraint failed",
-      constraint_type: :constraint_foreign_key
+      constraint_type: :constraint_foreign_key,
+      constraint_details: %{}
     }
 
     assert SQL.to_constraints(error, []) == [foreign_key: nil]
@@ -107,8 +107,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps check constraint" do
     error = %XqliteEcto3.Error{
-      message: "CHECK constraint failed: positive_balance",
-      constraint_type: :constraint_check
+      constraint_type: :constraint_check,
+      constraint_details: %{constraint_name: "positive_balance"}
     }
 
     assert SQL.to_constraints(error, []) == [check: "positive_balance"]
@@ -116,8 +116,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps not null constraint" do
     error = %XqliteEcto3.Error{
-      message: "NOT NULL constraint failed: users.name",
-      constraint_type: :constraint_not_null
+      constraint_type: :constraint_not_null,
+      constraint_details: %{table: "users", columns: ["name"]}
     }
 
     assert SQL.to_constraints(error, []) == [not_null: "users.name"]
@@ -125,8 +125,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps primary key as unique" do
     error = %XqliteEcto3.Error{
-      message: "UNIQUE constraint failed: users.id",
-      constraint_type: :constraint_primary_key
+      constraint_type: :constraint_primary_key,
+      constraint_details: %{table: "users", columns: ["id"]}
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_id_index"]
@@ -134,8 +134,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps named index unique constraint" do
     error = %XqliteEcto3.Error{
-      message: "UNIQUE constraint failed: index 'idx_users_email'",
-      constraint_type: :constraint_unique
+      constraint_type: :constraint_unique,
+      constraint_details: %{index_name: "idx_users_email"}
     }
 
     assert SQL.to_constraints(error, []) == [unique: "idx_users_email"]
@@ -150,11 +150,13 @@ defmodule XqliteEcto3.ConnectionTest do
   # Error.wrap
   # ---------------------------------------------------------------------------
 
-  test "Error.wrap preserves constraint_type and type" do
-    error = XqliteEcto3.Error.wrap({:constraint_violation, :constraint_unique, "UNIQUE failed"})
+  test "Error.wrap preserves constraint_type, type and details" do
+    details = %{message: "UNIQUE failed", table: "users", columns: ["email"]}
+    error = XqliteEcto3.Error.wrap({:constraint_violation, :constraint_unique, details})
     assert error.type == :constraint_violation
     assert error.constraint_type == :constraint_unique
     assert error.message == "UNIQUE failed"
+    assert error.constraint_details == details
   end
 
   test "Error.wrap preserves type for generic tuple errors" do

@@ -3,12 +3,14 @@ defmodule XqliteEcto3.ErrorWrapTest do
 
   alias XqliteEcto3.Error
 
-  describe "wrap/1 on {:constraint_violation, subtype, msg}" do
-    test "preserves subtype as constraint_type and :constraint_violation as type" do
-      e = Error.wrap({:constraint_violation, :constraint_unique, "UNIQUE failed"})
+  describe "wrap/1 on {:constraint_violation, subtype, details_map}" do
+    test "preserves subtype, type, message, and details" do
+      details = %{message: "UNIQUE failed", table: "users", columns: ["email"]}
+      e = Error.wrap({:constraint_violation, :constraint_unique, details})
       assert e.type == :constraint_violation
       assert e.constraint_type == :constraint_unique
       assert e.message == "UNIQUE failed"
+      assert e.constraint_details == details
     end
 
     test "handles every constraint subtype atom" do
@@ -26,59 +28,18 @@ defmodule XqliteEcto3.ErrorWrapTest do
             :constraint_unique,
             :constraint_vtab
           ] do
-        e = Error.wrap({:constraint_violation, subtype, "msg"})
+        e = Error.wrap({:constraint_violation, subtype, %{message: "m"}})
         assert e.constraint_type == subtype
         assert e.type == :constraint_violation
       end
     end
-  end
 
-  describe "wrap/1 on {:cannot_fetch_row, msg}" do
-    test "strips 'Error advancing row iterator:' wrapper prefix" do
-      msg = "Error advancing row iterator: UNIQUE constraint failed: users.email"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.type == :cannot_fetch_row
-      assert e.constraint_type == :constraint_unique
-      assert e.message == "UNIQUE constraint failed: users.email"
-    end
-
-    test "classifies PRIMARY KEY" do
-      msg = "Error advancing row iterator: PRIMARY KEY constraint failed: users.id"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.constraint_type == :constraint_primary_key
-    end
-
-    test "classifies FOREIGN KEY (no colon in SQLite message)" do
-      msg = "Error advancing row iterator: FOREIGN KEY constraint failed"
-      e = Error.wrap({:cannot_fetch_row, msg})
+    test "empty details map still wraps cleanly" do
+      e = Error.wrap({:constraint_violation, :constraint_foreign_key, %{}})
+      assert e.type == :constraint_violation
       assert e.constraint_type == :constraint_foreign_key
-    end
-
-    test "classifies CHECK" do
-      msg = "Error advancing row iterator: CHECK constraint failed: value > 0"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.constraint_type == :constraint_check
-    end
-
-    test "classifies NOT NULL" do
-      msg = "Error advancing row iterator: NOT NULL constraint failed: users.name"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.constraint_type == :constraint_not_null
-    end
-
-    test "unclassified messages preserve the original string and nil constraint_type" do
-      msg = "Error advancing row iterator: something unusual"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.type == :cannot_fetch_row
-      assert e.constraint_type == nil
-      assert e.message == msg
-    end
-
-    test "handles missing wrapper prefix" do
-      msg = "UNIQUE constraint failed: users.email"
-      e = Error.wrap({:cannot_fetch_row, msg})
-      assert e.constraint_type == :constraint_unique
-      assert e.message == msg
+      assert e.constraint_details == %{}
+      assert e.message == ""
     end
   end
 

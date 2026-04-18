@@ -32,11 +32,6 @@ defmodule XqliteEcto3.Connection do
     busy_timeout: 5_000
   ]
 
-  @unique_index_re ~r/UNIQUE constraint failed: index (.+)/
-  @unique_columns_re ~r/UNIQUE constraint failed: (.+)/
-  @check_re ~r/CHECK constraint failed: (.+)/
-  @not_null_re ~r/NOT NULL constraint failed: (.+)/
-
   # Operators handled by the generated handle_call/2 clauses below. Must match
   # the keys of the `binary_ops` keyword list used for code generation.
   @binary_ops [:==, :!=, :<=, :>=, :<, :>, :+, :-, :*, :/, :and, :or, :like]
@@ -99,81 +94,72 @@ defmodule XqliteEcto3.Connection do
   # ---------------------------------------------------------------------------
   # Error → Ecto constraint mapping
   #
-  # xqlite returns structured error tuples with constraint subtypes.
-  # Constraint classification (unique vs foreign_key vs check) uses the
-  # structured constraint_type atom — no string parsing for that step.
-  # Constraint name extraction still requires parsing the SQLite error
-  # message because SQLite does not provide the constraint/index name
-  # as a separate field in its error reporting.
+  # xqlite's Rust layer parses SQLite's constraint error message text once
+  # and ships structured details (table, columns, index_name, constraint_name)
+  # alongside the subtype atom. We read those fields directly.
   # ---------------------------------------------------------------------------
 
   @impl true
-  def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_unique, message: msg}, _opts) do
-    [unique: extract_constraint_name(msg)]
+  def to_constraints(
+        %XqliteEcto3.Error{constraint_type: :constraint_unique, constraint_details: d},
+        _opts
+      ) do
+    [unique: unique_index_name(d)]
   end
 
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_primary_key, message: msg},
+        %XqliteEcto3.Error{constraint_type: :constraint_primary_key, constraint_details: d},
         _opts
       ) do
-    [unique: extract_constraint_name(msg)]
+    [unique: unique_index_name(d)]
   end
 
   def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_foreign_key}, _opts) do
     [foreign_key: nil]
   end
 
-  def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_check, message: msg}, _opts) do
-    name =
-      case Regex.run(@check_re, msg) do
-        [_, name] -> name
-        _ -> nil
-      end
-
-    [check: name]
+  def to_constraints(
+        %XqliteEcto3.Error{constraint_type: :constraint_check, constraint_details: d},
+        _opts
+      ) do
+    [check: Map.get(d || %{}, :constraint_name)]
   end
 
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_not_null, message: msg},
+        %XqliteEcto3.Error{constraint_type: :constraint_not_null, constraint_details: d},
         _opts
       ) do
-    name =
-      case Regex.run(@not_null_re, msg) do
-        [_, col] -> col
-        _ -> nil
-      end
-
-    [not_null: name]
+    [not_null: not_null_column(d)]
   end
 
   def to_constraints(_, _), do: []
 
-  defp extract_constraint_name(msg) when is_binary(msg) do
-    case Regex.run(@unique_index_re, msg) do
-      [_, index_name] ->
-        String.trim(index_name, "'")
+  defp unique_index_name(nil), do: nil
 
-      _ ->
-        case Regex.run(@unique_columns_re, msg) do
-          [_, columns] -> derive_index_name(columns)
-          _ -> nil
-        end
-    end
+  defp unique_index_name(%{index_name: name}) when is_binary(name), do: name
+
+  defp unique_index_name(%{table: table, columns: [_ | _] = columns})
+       when is_binary(table) do
+    derive_index_name(table, columns)
   end
 
-  defp extract_constraint_name(_), do: nil
+  defp unique_index_name(_), do: nil
 
-  defp derive_index_name(columns) do
-    columns
-    |> String.split(", ")
-    |> Enum.with_index()
-    |> Enum.map(fn
-      {table_col, 0} -> String.replace(table_col, ".", "_")
-      {table_col, _} -> table_col |> String.split(".") |> List.last()
-    end)
-    |> Enum.concat(["index"])
-    |> Enum.join("_")
+  defp derive_index_name(table, columns) do
+    # Ecto's default :name for unique_constraint is "#{table}_#{column}_index".
+    # Mirror that shape so user-supplied defaults match.
+    Enum.join([table | columns] ++ ["index"], "_")
   end
+
+  defp not_null_column(nil), do: nil
+
+  defp not_null_column(%{table: table, columns: [col | _]})
+       when is_binary(table) and is_binary(col) do
+    "#{table}.#{col}"
+  end
+
+  defp not_null_column(%{columns: [col | _]}) when is_binary(col), do: col
+  defp not_null_column(_), do: nil
 
   defp merge_defaults(opts) do
     Enum.reduce(@default_opts, opts, fn {key, val}, acc ->

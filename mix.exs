@@ -28,7 +28,8 @@ defmodule XqliteEcto3.MixProject do
     [
       {:ecto_sql, "~> 3.12"},
       {:db_connection, "~> 2.7"},
-      {:xqlite, "~> 0.5.2"},
+      {:xqlite, path: "../xqlite", override: true},
+      {:rustler, "~> 0.37", optional: true, only: [:dev, :test]},
       {:jason, "~> 1.4"}
     ]
   end
