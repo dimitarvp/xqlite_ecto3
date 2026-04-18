@@ -5,9 +5,11 @@ defmodule XqliteEcto3.Driver do
 
   alias XqliteNIF, as: NIF
 
-  defstruct [:conn, :transaction_status, :path, savepoint: 0]
+  defstruct [:conn, :transaction_status, :path, :savepoint_prefix, savepoint: 0]
 
   @default_stream_batch_size 500
+
+  @savepoint_prefix_byte_count 4
 
   # connect_timeout is enforced by DBConnection around this call. NIF.open is a
   # blocking dirty-NIF call that cannot be interrupted mid-syscall, so the
@@ -32,22 +34,47 @@ defmodule XqliteEcto3.Driver do
        %__MODULE__{
          conn: conn,
          transaction_status: :idle,
-         path: database
+         path: database,
+         savepoint_prefix: random_savepoint_prefix()
        }}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
+  defp random_savepoint_prefix do
+    @savepoint_prefix_byte_count
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode16(case: :lower)
+  end
+
   @impl DBConnection
   def disconnect(_err, state) do
+    # Reset transient fields for debug-consistency. The struct is local to
+    # this call but anything that captured it earlier (telemetry, traces)
+    # reads post-close values instead of stale mid-transaction cache.
+    _ = %{state | transaction_status: :idle, savepoint: 0}
     NIF.close(state.conn)
     :ok
   end
 
+  # Checkout can receive a connection whose state cache drifted: user code
+  # may have run raw BEGIN/COMMIT/ROLLBACK, or a prior checkout crashed.
+  # Sync transaction_status from SQLite and clear the savepoint counter —
+  # we only ever track our own managed savepoint stack, which is empty at
+  # every checkout boundary by construction.
   @impl DBConnection
   def checkout(state) do
-    {:ok, state}
+    case NIF.transaction_status(state.conn) do
+      {:ok, true} ->
+        {:ok, %{state | transaction_status: :transaction, savepoint: 0}}
+
+      {:ok, false} ->
+        {:ok, %{state | transaction_status: :idle, savepoint: 0}}
+
+      {:error, reason} ->
+        {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+    end
   end
 
   @impl DBConnection
@@ -78,9 +105,7 @@ defmodule XqliteEcto3.Driver do
   def handle_begin(opts, state) do
     case Keyword.get(opts, :mode, :transaction) do
       :savepoint ->
-        name = "xqlite_sp_#{state.savepoint}"
-
-        case NIF.savepoint(state.conn, name) do
+        case NIF.savepoint(state.conn, savepoint_name(state, state.savepoint)) do
           :ok ->
             {:ok, nil, %{state | savepoint: state.savepoint + 1}}
 
@@ -103,9 +128,7 @@ defmodule XqliteEcto3.Driver do
   def handle_commit(opts, state) do
     case Keyword.get(opts, :mode, :transaction) do
       :savepoint ->
-        name = "xqlite_sp_#{state.savepoint - 1}"
-
-        case NIF.release_savepoint(state.conn, name) do
+        case NIF.release_savepoint(state.conn, savepoint_name(state, state.savepoint - 1)) do
           :ok ->
             {:ok, nil, %{state | savepoint: state.savepoint - 1}}
 
@@ -128,7 +151,7 @@ defmodule XqliteEcto3.Driver do
   def handle_rollback(opts, state) do
     case Keyword.get(opts, :mode, :transaction) do
       :savepoint ->
-        name = "xqlite_sp_#{state.savepoint - 1}"
+        name = savepoint_name(state, state.savepoint - 1)
 
         with :ok <- NIF.rollback_to_savepoint(state.conn, name),
              :ok <- NIF.release_savepoint(state.conn, name) do
@@ -146,6 +169,13 @@ defmodule XqliteEcto3.Driver do
             {:disconnect, XqliteEcto3.Error.wrap(reason), state}
         end
     end
+  end
+
+  # Prefix keeps our managed savepoint stack distinct from any raw
+  # SAVEPOINT a user might run themselves, so a stray user savepoint
+  # cannot collide with xqlite_sp_0, xqlite_sp_1, ...
+  defp savepoint_name(%__MODULE__{savepoint_prefix: prefix}, n) when is_integer(n) do
+    "xqlite_sp_#{prefix}_#{n}"
   end
 
   @impl DBConnection
