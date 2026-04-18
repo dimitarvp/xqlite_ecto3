@@ -53,19 +53,29 @@ excludes = [
   # JSON stored as TEXT; without schema Ecto cannot invoke JSON decoder
   :map_type_schemaless,
 
-  # SQLite is single-writer; no advisory lock mechanism
+  # (permanent SQLite limit) no advisory lock mechanism — single-writer
+  # already enforces mutual exclusion, so the concept does not exist.
+  # Covers deps/ecto_sql/integration_test/sql/lock.exs scenarios.
   :lock_for_migrations,
 
-  # SQLite has no schema/namespace concept
+  # (permanent SQLite limit) no schema/namespace concept; ATTACH DATABASE
+  # is the closest approximation but it is deliberately not wired up.
   :prefix,
 
-  # SQLite cannot add a PRIMARY KEY column via ALTER TABLE
+  # (permanent SQLite limit) no ALTER TABLE ... ALTER COLUMN; adding a
+  # PRIMARY KEY column to an existing table is structurally impossible
+  # without a full table rebuild. Covered by deps/ecto_sql/integration_test/
+  # sql/alter.exs.
   :alter_primary_key,
 
-  # SQLite has no ALTER TABLE MODIFY COLUMN for FK constraints
+  # (permanent SQLite limit) no ALTER TABLE ... ALTER COLUMN for FK
+  # constraints — same rebuild-required story as :alter_primary_key.
   :alter_foreign_key,
 
-  # SQLite has no ALTER TABLE MODIFY COLUMN
+  # (permanent SQLite limit for the simple ALTER path) SQLite has no
+  # ALTER TABLE MODIFY COLUMN. xqlite_ecto3 task #65 plans to add a
+  # behind-the-flag table-rebuild implementation; until then the
+  # shared-suite :modify_column tests stay excluded.
   :modify_column,
 
   # SQLite ON DELETE SET NULL/DEFAULT applies to all FK columns; no column-list syntax
@@ -84,7 +94,11 @@ excludes = [
   # SQLite DELETE grammar does not support JOIN clauses
   :delete_with_join,
 
-  # SQLite single-writer: concurrent transactions from separate processes deadlock
+  # (permanent SQLite limit) single-writer architecture — two concurrent
+  # transactions from separate processes on the same file deadlock. WAL
+  # mode relaxes concurrency for readers only; a second writer has to
+  # wait or time out. The test expects true parallelism that SQLite
+  # cannot provide by design.
   {:location, {"deps/ecto_sql/integration_test/sql/transaction.exs", 161}},
 
   # SQLite has no DISTINCT ON (expr) — only row-level DISTINCT

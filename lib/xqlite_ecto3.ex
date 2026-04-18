@@ -15,6 +15,31 @@ defmodule XqliteEcto3 do
           otp_app: :my_app,
           adapter: XqliteEcto3
       end
+
+  ## Nested transactions and raw SAVEPOINT SQL
+
+  Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
+  emits `SAVEPOINT xqlite_sp_<random-prefix>_N`, `RELEASE SAVEPOINT ...`, and
+  `ROLLBACK TO SAVEPOINT ...` to implement nesting. The random prefix is a
+  per-connection token generated at `connect/1` time, and the `N` is a
+  counter of currently-open managed savepoints.
+
+  **Don't mix raw `SAVEPOINT`/`RELEASE`/`ROLLBACK TO SAVEPOINT` SQL inside a
+  `Repo.transaction` callback.** The managed savepoint stack and any raw
+  savepoints you issue live on the same SQLite connection, but the driver
+  tracks only its own counter. A raw `SAVEPOINT myname` executed mid-
+  transaction will not collide with the driver's naming thanks to the random
+  prefix, but a raw `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT` that
+  accidentally hits *above* the driver's counter will unwind state the
+  driver thinks it still owns — leaving subsequent `Repo.transaction` nesting
+  to fail with `SQLite error: no such savepoint` or silently commit changes
+  you did not expect.
+
+  If you need savepoint-like atomicity inside a transaction, use nested
+  `Repo.transaction/2` calls and let the driver manage the stack. If you
+  absolutely must issue raw savepoint SQL (e.g. integrating with a library
+  that predates `Repo.transaction`), keep it strictly within its own pair of
+  raw begin/commit and do not wrap it in `Repo.transaction`.
   """
 
   use Ecto.Adapters.SQL,
