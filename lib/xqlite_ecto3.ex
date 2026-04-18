@@ -48,6 +48,16 @@ defmodule XqliteEcto3 do
   different storage modes, see `XqliteEcto3.Types.UUID` — a parameterized
   type with a per-field `:storage` option.
 
+  ## Timezone-aware timestamps
+
+  `XqliteEcto3.Types.TimestampTZ` stores `DateTime` values as ISO 8601
+  text with the original offset preserved. Unlike Ecto's built-in
+  `:utc_datetime` / `:utc_datetime_usec` which force UTC and drop zone
+  info, this type accepts non-UTC DateTimes on cast and dump without
+  making you shift first. The stored string carries the offset; the
+  loaded value is UTC-normalized with the offset encoded in the ISO
+  text. See its moduledoc for the round-trip caveats.
+
   ## Nested transactions and raw SAVEPOINT SQL
 
   Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
@@ -362,20 +372,6 @@ defmodule XqliteEcto3 do
   end
 
   defp binary_id_dump(value), do: {:ok, value}
-
-  # :binary_id loader runs BEFORE Ecto.UUID.load. It must emit raw 16 bytes
-  # so the next link in the chain (Ecto.UUID) can encode to the 36-char
-  # string form for the schema field. Accepts either storage form from the
-  # DB regardless of current config — flipping the config after rows exist
-  # must not orphan the old rows.
-  defp binary_id_load(nil), do: {:ok, nil}
-  defp binary_id_load(<<_::128>> = raw), do: {:ok, raw}
-
-  defp binary_id_load(str) when is_binary(str) and byte_size(str) == 36 do
-    Ecto.UUID.dump(str)
-  end
-
-  defp binary_id_load(other), do: {:ok, other}
 
   # SQLite stores UUIDs as TEXT. Ecto.UUID.dump/1 produces raw 16-byte binary,
   # but the xqlite NIF can't bind raw bytes as text without a utf-8 error.
