@@ -1,54 +1,61 @@
 defmodule XqliteEcto3.Types.UUID do
   @moduledoc """
-  UUID type for SQLite with explicit per-field storage mode.
+  **Per-field escape hatch for UUID storage mode.** Most schemas should use
+  the standard `:binary_id` type and set the storage mode globally via
+  `config :xqlite_ecto3, :binary_id_storage, :string | :binary`. Use this
+  type only when you genuinely need different modes for different fields
+  in the same schema.
+
+  ## Primary path (recommended for almost all users)
+
+      # config/config.exs
+      config :xqlite_ecto3, :binary_id_storage, :binary
+
+      # schema — standard Ecto, no custom type
+      schema "users" do
+        @primary_key {:id, :binary_id, autogenerate: true}
+        field :name, :string
+      end
+
+  This governs the adapter's dumper, loader, column-type mapping in
+  migrations, and query-param CAST generation uniformly.
+
+  ## Escape hatch (this type)
+
+  Use when different fields in the same schema need different storage
+  modes — e.g. a legacy string-UUID column alongside new BLOB-UUID ones:
+
+      schema "events" do
+        @primary_key {:id, :binary_id, autogenerate: true}  # global config
+        field :trace_id, XqliteEcto3.Types.UUID, storage: :binary  # explicit override
+      end
 
   ## Storage modes
 
-    * `:string` (default) — 36-character ASCII form `"550e8400-e29b-41d4-a716-446655440000"`
-      stored in a TEXT column. Human-readable in the SQLite CLI, portable across
-      tools, easy to export to CSV. 36 bytes per row.
+    * `:string` (default) — 36-character ASCII form stored in a TEXT column.
+      Human-readable in the SQLite CLI, portable, easy to export. 36 bytes
+      per row.
 
-    * `:binary` — raw 16-byte binary stored in a BLOB column. 55% smaller per row,
-      not human-readable, meaningful when a table has millions+ rows.
+    * `:binary` — raw 16-byte binary stored in a BLOB column. 55% smaller
+      per row, not human-readable, meaningful at millions-of-rows scale.
 
-  The Elixir-side representation is **always the 36-character string** regardless
-  of storage mode. Changing a field's storage mode in a migration does not
-  require changes to calling code.
-
-  ## Usage
-
-      schema "users" do
-        # Default :string storage
-        field :id, XqliteEcto3.Types.UUID, autogenerate: true, primary_key: true
-
-        # Explicit :binary storage
-        field :trace_id, XqliteEcto3.Types.UUID, storage: :binary
-      end
+  The Elixir-side representation is **always the 36-character string**
+  regardless of storage mode.
 
   ## Migration
 
-  The migration's column type must match the storage mode. The adapter does not
-  auto-map Ecto field types to migration column types — schemas and migrations
-  are separate sources of truth.
+  The migration's column type must match the storage mode. The adapter
+  does not auto-map Ecto field types to migration column types.
 
       # For :string storage
-      add :id, :string, primary_key: true
+      add :trace_id, :string
 
       # For :binary storage
       add :trace_id, :binary
 
-  ## Why per-field instead of application-wide
-
-  Older versions of this adapter used `config :xqlite_ecto3, :uuid_type, :binary`
-  as a global switch. That knob still exists for `Ecto.Query.Tagged{type: :uuid}`
-  query-param handling (not recommended for new code). This type replaces it for
-  schema fields: different columns in the same repo can now use different
-  storage modes.
-
   ## UUID version
 
-  `autogenerate/1` produces `Ecto.UUID.generate/0` output (v4, random). If UUID v7
-  (time-ordered) is wanted in the future, add a `:version` option.
+  `autogenerate/1` produces `Ecto.UUID.generate/0` output (v4, random).
   """
 
   use Ecto.ParameterizedType

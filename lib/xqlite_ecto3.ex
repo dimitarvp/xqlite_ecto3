@@ -25,13 +25,28 @@ defmodule XqliteEcto3 do
   `xqlite_ecto3`; each helper also documents its inline equivalent if
   portability matters more than ergonomics.
 
-  ## Custom field types
+  ## UUID / binary_id storage
 
-  `XqliteEcto3.Types.UUID` is an `Ecto.ParameterizedType` with a
-  per-field `:storage` option (`:string` default, `:binary` for compact
-  BLOB storage). Different fields in the same schema can use different
-  storage modes — finer-grained than the legacy `config :xqlite_ecto3,
-  :uuid_type` knob.
+  Set `config :xqlite_ecto3, :binary_id_storage, :string | :binary` and
+  use the standard Ecto field type:
+
+      @primary_key {:id, :binary_id, autogenerate: true}
+
+  `:string` (default) stores the 36-character UUID form in a TEXT column.
+  `:binary` stores the raw 16 bytes in a BLOB column — 55% smaller per
+  row, worth it at large scale. The config governs the dumper and the
+  migration column type uniformly; the Elixir-side representation is
+  always the 36-character string either way.
+
+  **Fresh databases only.** Flipping the config after rows exist in
+  `:string` form is not transparent — Ecto's default UUID loader expects
+  raw 16-byte input, so the adapter cannot read back old `:string`-form
+  rows after switching to `:binary`. Either pick a mode at project
+  inception, or run a data migration when switching.
+
+  For the rare case where different fields in the same schema need
+  different storage modes, see `XqliteEcto3.Types.UUID` — a parameterized
+  type with a per-field `:storage` option.
 
   ## Nested transactions and raw SAVEPOINT SQL
 
@@ -296,6 +311,7 @@ defmodule XqliteEcto3 do
   @impl Ecto.Adapter
   def dumpers(:boolean, type), do: [type, &bool_encode/1]
   def dumpers(:uuid, _type), do: [&uuid_string_dump/1]
+  def dumpers(:binary_id, type), do: [type, &binary_id_dump/1]
   def dumpers(_, type), do: [type]
 
   defp bool_decode(0), do: {:ok, false}
@@ -309,6 +325,57 @@ defmodule XqliteEcto3 do
   defp bool_encode(false), do: {:ok, 0}
   defp bool_encode(true), do: {:ok, 1}
   defp bool_encode(x), do: {:ok, x}
+
+  # :binary_id storage mode, read from `config :xqlite_ecto3,
+  # :binary_id_storage`. Defaults to :string. Governs how the :binary_id
+  # dumper shapes its output, how the loader interprets rows, how the
+  # migration column type maps, and how query-param Tagged values are
+  # wrapped in CAST.
+  #
+  # Per-field overrides are available via `XqliteEcto3.Types.UUID` when
+  # different fields in the same schema need different modes.
+  defp binary_id_storage do
+    Application.get_env(:xqlite_ecto3, :binary_id_storage, :string)
+  end
+
+  # :binary_id dumper runs AFTER Ecto.UUID.dump in the chain. Input is
+  # the raw 16-byte binary (from Ecto.UUID.dump) or an already-raw value
+  # that was passed through. Shape the output to match configured storage.
+  #
+  # CRITICAL: every arm returns `{:ok, value}`, never `:error`. Ecto's
+  # process_dumpers halts the whole insert/update on `:error`; we can
+  # occasionally receive values that aren't the expected UUID shape
+  # (e.g. when the same dumper chain is walked for values that weren't
+  # really UUIDs), and aborting the insert is the wrong response.
+  defp binary_id_dump(nil), do: {:ok, nil}
+
+  defp binary_id_dump(<<_::128>> = raw) do
+    case binary_id_storage() do
+      :string ->
+        # Convert raw to 36-char string so NIF binds as TEXT.
+        Ecto.UUID.cast(raw)
+
+      :binary ->
+        # Keep raw for BLOB binding.
+        {:ok, raw}
+    end
+  end
+
+  defp binary_id_dump(value), do: {:ok, value}
+
+  # :binary_id loader runs BEFORE Ecto.UUID.load. It must emit raw 16 bytes
+  # so the next link in the chain (Ecto.UUID) can encode to the 36-char
+  # string form for the schema field. Accepts either storage form from the
+  # DB regardless of current config — flipping the config after rows exist
+  # must not orphan the old rows.
+  defp binary_id_load(nil), do: {:ok, nil}
+  defp binary_id_load(<<_::128>> = raw), do: {:ok, raw}
+
+  defp binary_id_load(str) when is_binary(str) and byte_size(str) == 36 do
+    Ecto.UUID.dump(str)
+  end
+
+  defp binary_id_load(other), do: {:ok, other}
 
   # SQLite stores UUIDs as TEXT. Ecto.UUID.dump/1 produces raw 16-byte binary,
   # but the xqlite NIF can't bind raw bytes as text without a utf-8 error.

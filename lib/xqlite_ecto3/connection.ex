@@ -1467,18 +1467,12 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  defp expr(%Ecto.Query.Tagged{value: expr, type: :binary_id}, sources, query) do
-    case Application.get_env(:xqlite_ecto3, :binary_id_type, :string) do
-      :string ->
-        ["CAST(", expr(expr, sources, query), " AS ", column_type(:string, query), ?)]
-
-      :binary ->
-        [expr(expr, sources, query)]
-    end
-  end
-
-  defp expr(%Ecto.Query.Tagged{value: expr, type: :uuid}, sources, query) do
-    case Application.get_env(:xqlite_ecto3, :uuid_type, :string) do
+  # :binary_id and :uuid query-param Tagged values share the same storage
+  # config. When :string, wrap in CAST so the inline literal matches the
+  # TEXT column's type for comparisons; when :binary, emit bare.
+  defp expr(%Ecto.Query.Tagged{value: expr, type: type}, sources, query)
+       when type in [:binary_id, :uuid] do
+    case Application.get_env(:xqlite_ecto3, :binary_id_storage, :string) do
       :string ->
         ["CAST(", expr(expr, sources, query), " AS ", column_type(:string, query), ?)]
 

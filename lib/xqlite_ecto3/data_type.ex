@@ -37,10 +37,10 @@ defmodule XqliteEcto3.DataType do
 
   def column_type(:array, _opts), do: "TEXT"
   def column_type({:array, _}, _opts), do: "TEXT"
-  def column_type(:binary_id, _opts), do: "TEXT"
+  def column_type(:binary_id, _opts), do: binary_id_column_type()
   def column_type(:map, _opts), do: "TEXT"
   def column_type({:map, _}, _opts), do: "TEXT"
-  def column_type(:uuid, _opts), do: "TEXT"
+  def column_type(:uuid, _opts), do: binary_id_column_type()
 
   def column_type(type, _) when is_atom(type) do
     type
@@ -50,6 +50,17 @@ defmodule XqliteEcto3.DataType do
 
   def column_type(type, _) do
     raise XqliteEcto3.UnsupportedTypeError, type: type
+  end
+
+  # Reads `config :xqlite_ecto3, :binary_id_storage` (default `:string`) and
+  # picks the corresponding SQLite column type for `:binary_id` / `:uuid`
+  # fields in migrations. `:string` → TEXT, `:binary` → BLOB. Governs both
+  # uniformly. `XqliteEcto3.Types.UUID` is a per-field escape hatch.
+  defp binary_id_column_type do
+    case Application.get_env(:xqlite_ecto3, :binary_id_storage, :string) do
+      :string -> "TEXT"
+      :binary -> "BLOB"
+    end
   end
 end
 
