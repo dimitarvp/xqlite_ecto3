@@ -87,9 +87,6 @@ excludes = [
   # SQLite has no native duration/interval type
   :duration_type,
 
-  # SQLite DELETE grammar does not support JOIN clauses
-  :delete_with_join,
-
   # (permanent SQLite limit) single-writer architecture — two concurrent
   # transactions from separate processes on the same file deadlock. WAL
   # mode relaxes concurrency for readers only; a second writer has to

@@ -240,9 +240,8 @@ defmodule XqliteEcto3.Connection do
   end
 
   @impl true
-  def delete_all(%Ecto.Query{joins: [_ | _]}) do
-    # TODO: It is supported but not in the traditional sense
-    raise ArgumentError, "JOINS are not supported on DELETE statements by SQLite"
+  def delete_all(%Ecto.Query{joins: [_ | _]} = query) do
+    delete_all_with_joins(query)
   end
 
   def delete_all(query) do
@@ -259,6 +258,88 @@ defmodule XqliteEcto3.Connection do
       where,
       returning(query, sources)
     ]
+  end
+
+  # SQLite's DELETE grammar has no JOIN / USING / FROM clauses. We rewrite
+  # `DELETE FROM t ...joins... WHERE ...` as
+  # `DELETE FROM t WHERE pk IN (SELECT t0.pk FROM t AS t0 ...joins... WHERE ...)`.
+  #
+  # Conservative by design — any shape we can't confidently rewrite errors out.
+  # In particular we need a concrete main source (table + schema) so we can
+  # read the primary key. Subquery / fragment / values main-sources are
+  # rejected rather than guessed at.
+  defp delete_all_with_joins(query) do
+    sources = create_names(query, [])
+    {main_table_quoted, main_alias, main_schema} = elem(sources, 0)
+
+    assert_concrete_main_source!(main_table_quoted, main_schema, query)
+    pk_name = assert_single_pk!(main_schema, query)
+
+    pk_quoted = quote_name(pk_name)
+    cte = cte(query, sources)
+    from = from(query, sources)
+    joins = join(query, sources)
+    where = where(query, sources)
+    returning = returning(query, sources)
+
+    [
+      cte,
+      "DELETE FROM ",
+      main_table_quoted,
+      " WHERE ",
+      pk_quoted,
+      " IN (SELECT ",
+      main_alias,
+      ?.,
+      pk_quoted,
+      from,
+      joins,
+      where,
+      ?),
+      returning
+    ]
+  end
+
+  defp assert_concrete_main_source!(nil, _schema, query) do
+    raise Ecto.QueryError,
+      query: query,
+      message:
+        "SQLite does not support DELETE with JOIN. xqlite_ecto3 rewrites it to " <>
+          "`DELETE FROM t WHERE pk IN (SELECT ...)`, but the main source is not a " <>
+          "concrete table — subqueries, fragments, and values lists can't be rewritten."
+  end
+
+  defp assert_concrete_main_source!(_table, nil, query) do
+    raise Ecto.QueryError,
+      query: query,
+      message:
+        "SQLite does not support DELETE with JOIN. xqlite_ecto3's rewrite needs a " <>
+          "schema-backed main source so it can identify the primary-key column; got " <>
+          "a schemaless table (no Ecto schema associated)."
+  end
+
+  defp assert_concrete_main_source!(_table, _schema, _query), do: :ok
+
+  defp assert_single_pk!(schema, query) do
+    case schema.__schema__(:primary_key) do
+      [pk] ->
+        pk
+
+      [] ->
+        raise Ecto.QueryError,
+          query: query,
+          message:
+            "SQLite does not support DELETE with JOIN. xqlite_ecto3's rewrite needs " <>
+              "a primary key on #{inspect(schema)} to key the subquery; none is declared."
+
+      pks ->
+        raise Ecto.QueryError,
+          query: query,
+          message:
+            "SQLite does not support DELETE with JOIN. xqlite_ecto3's rewrite needs " <>
+              "a single-column primary key; #{inspect(schema)} declares composite keys " <>
+              "#{inspect(pks)}."
+    end
   end
 
   @impl true
