@@ -140,11 +140,13 @@ excludes = [
   # adapter gap — tracked alongside #63.
   :json_extract_path_with_field,
 
-  # SQLite's datetime functions (strftime %f) only produce millisecond
-  # precision. interval.exs datetime_add tests fail because of rounding
-  # errors at the microsecond level. Non-arithmetic microsecond round-trips
-  # pass (see our types_test.exs and the naive_datetime_usec/utc_datetime_usec
-  # tests in type.exs).
+  # SQLite's strftime %f gives only millisecond precision. interval.exs
+  # datetime_add tests that add microsecond counts round to the nearest
+  # millisecond. The adapter no longer raises on "microsecond" intervals
+  # (it emits fractional-seconds SQL), but the exact-value asserts in the
+  # test still fail when the expected value has a nonzero microsecond
+  # fraction. Non-arithmetic microsecond round-trips pass (TEXT storage
+  # keeps full precision — see types_test.exs).
   :microsecond_precision,
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged

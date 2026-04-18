@@ -1503,9 +1503,14 @@ defmodule XqliteEcto3.Connection do
     end)
   end
 
-  def interval(_, "microsecond", _sources) do
-    raise ArgumentError,
-          "SQLite does not support microsecond precision in datetime intervals"
+  # SQLite's strftime %f is millisecond-precision (3 decimals), so microsecond
+  # arithmetic rounds to the nearest millisecond. We still emit the modifier
+  # as fractional seconds so datetime_add/3 calls with "microsecond" don't
+  # raise. For tests comparing against microsecond-exact values the rounding
+  # is visible; non-arithmetic round-trips via TEXT storage keep full
+  # precision.
+  def interval(count, "microsecond", sources) do
+    "(#{expr(count, sources, nil)} / 1000000.0) || ' seconds'"
   end
 
   def interval(count, "millisecond", sources) do
