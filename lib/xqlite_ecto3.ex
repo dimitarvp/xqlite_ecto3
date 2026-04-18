@@ -25,6 +25,14 @@ defmodule XqliteEcto3 do
   `xqlite_ecto3`; each helper also documents its inline equivalent if
   portability matters more than ergonomics.
 
+  ## Custom field types
+
+  `XqliteEcto3.Types.UUID` is an `Ecto.ParameterizedType` with a
+  per-field `:storage` option (`:string` default, `:binary` for compact
+  BLOB storage). Different fields in the same schema can use different
+  storage modes — finer-grained than the legacy `config :xqlite_ecto3,
+  :uuid_type` knob.
+
   ## Nested transactions and raw SAVEPOINT SQL
 
   Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
