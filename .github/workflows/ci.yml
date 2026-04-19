@@ -1,0 +1,146 @@
+name: XqliteEcto3
+
+env:
+  DEFAULT_ELIXIR: "1.19"
+  DEFAULT_OTP: "28"
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+jobs:
+  format_and_lint:
+    name: Format & lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.DEFAULT_ELIXIR }}
+          otp-version: ${{ env.DEFAULT_OTP }}
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: v0-elixir-lint-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            v0-elixir-lint-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Check Elixir formatting
+        run: mix format --check-formatted
+
+      - name: Elixir compilation (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+  dialyzer:
+    name: Type checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: format_and_lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.DEFAULT_ELIXIR }}
+          otp-version: ${{ env.DEFAULT_OTP }}
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: v0-elixir-dialyzer-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            v0-elixir-dialyzer-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-
+
+      - name: Restore PLT cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            priv/plts
+          key: v0-plt-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            v0-plt-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Create PLT
+        run: mix dialyzer --plt
+
+      - name: Run Dialyzer
+        run: mix dialyzer --format short
+
+  test:
+    name: Tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    needs: format_and_lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+        elixir: ["1.16", "1.17", "1.18", "1.19"]
+        otp: ["26", "27", "28"]
+        exclude:
+          - otp: "28"
+            elixir: "1.18"
+          - otp: "28"
+            elixir: "1.17"
+          - otp: "28"
+            elixir: "1.16"
+          - otp: "27"
+            elixir: "1.16"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore Elixir dependencies cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: v0-elixir-test-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            v0-elixir-test-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-
+
+      - name: Install Elixir dependencies
+        run: mix deps.get
+
+      - name: Compile project
+        run: mix compile
+
+      - name: Run tests
+        run: mix xqlite_ecto3.test.seq
