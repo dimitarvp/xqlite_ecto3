@@ -2,16 +2,28 @@ defmodule XqliteEcto3.MixProject do
   use Mix.Project
 
   @name "XqliteEcto3"
+  @version "0.1.0-dev"
+  @source_url "https://github.com/dimitarvp/xqlite_ecto3"
 
   def project do
     [
       app: :xqlite_ecto3,
-      version: "0.1.0-dev",
+      version: @version,
       elixir: "~> 1.15",
       name: @name,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+
+      # hex
+      description: description(),
+      package: package(),
+
+      # docs
+      docs: docs(),
+
+      # type checking
+      dialyzer: dialyzer()
     ]
   end
 
@@ -28,9 +40,83 @@ defmodule XqliteEcto3.MixProject do
     [
       {:ecto_sql, "~> 3.12"},
       {:db_connection, "~> 2.7"},
-      {:xqlite, path: "../xqlite", override: true},
+      xqlite_dep(),
       {:rustler, "~> 0.37", optional: true, only: [:dev, :test]},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:dialyxir, "~> 1.4", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.20", only: :dev, runtime: false}
+    ]
+  end
+
+  # Upstream-default is the Hex release; devs (and CI for integration testing
+  # unreleased xqlite changes) can point at a working copy via
+  #   export XQLITE_PATH=../xqlite
+  # in their shell or .envrc. Matches the ergonomics xqlite itself uses via
+  # XQLITE_BUILD=true for forced local compilation.
+  defp xqlite_dep do
+    case System.get_env("XQLITE_PATH") do
+      nil -> {:xqlite, "~> 0.5.2"}
+      path -> {:xqlite, path: path, override: true}
+    end
+  end
+
+  defp description,
+    do:
+      "Ecto 3.x adapter backed by xqlite, with per-operation cancel tokens, structured constraint errors, and opt-in SQLite-flavored migration ergonomics."
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => @source_url,
+        "Hexdocs" => "https://hexdocs.pm/xqlite_ecto3"
+      },
+      files: [
+        "lib",
+        ".formatter.exs",
+        "mix.exs",
+        "README.md",
+        "LICENSE.md",
+        "CHANGELOG.md"
+      ]
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      name: @name,
+      source_url: @source_url,
+      source_ref: "v#{String.replace_suffix(@version, "-dev", "")}",
+      extras: ["README.md", "CHANGELOG.md", "LICENSE.md"],
+      groups_for_modules: [
+        "Adapter": [
+          XqliteEcto3,
+          XqliteEcto3.Connection,
+          XqliteEcto3.Driver,
+          XqliteEcto3.Query,
+          XqliteEcto3.DataType,
+          XqliteEcto3.Error
+        ],
+        "Custom Types": [
+          XqliteEcto3.Types.UUID,
+          XqliteEcto3.Types.TimestampTZ,
+          XqliteEcto3.Types.Instant,
+          XqliteEcto3.Types.Duration,
+          XqliteEcto3.Types.Array
+        ],
+        "Migration Helpers": [
+          XqliteEcto3.Migration
+        ]
+      ]
+    ]
+  end
+
+  defp dialyzer do
+    [
+      plt_core_path: "priv/plts/",
+      plt_file: {:no_warn, "priv/plts/core.plt"},
+      plt_add_apps: [:mix, :ecto, :ecto_sql, :db_connection]
     ]
   end
 end
