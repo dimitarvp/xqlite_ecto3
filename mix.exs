@@ -23,7 +23,25 @@ defmodule XqliteEcto3.MixProject do
       docs: docs(),
 
       # type checking
-      dialyzer: dialyzer()
+      dialyzer: dialyzer(),
+
+      # convenience
+      aliases: aliases()
+    ]
+  end
+
+  # `mix precommit` shadows the `Mix.Tasks.Precommit` that the xqlite
+  # dependency also ships — alias resolution runs before task module
+  # lookup, so this wins. Same spirit as xqlite's precommit, minus the
+  # Rust steps (no NIF in this library).
+  defp aliases do
+    [
+      precommit: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "dialyzer",
+        "xqlite_ecto3.test.seq"
+      ]
     ]
   end
 
@@ -90,7 +108,7 @@ defmodule XqliteEcto3.MixProject do
       source_ref: "v#{String.replace_suffix(@version, "-dev", "")}",
       extras: ["README.md", "CHANGELOG.md", "LICENSE.md"],
       groups_for_modules: [
-        "Adapter": [
+        Adapter: [
           XqliteEcto3,
           XqliteEcto3.Connection,
           XqliteEcto3.Driver,
@@ -116,7 +134,8 @@ defmodule XqliteEcto3.MixProject do
     [
       plt_core_path: "priv/plts/",
       plt_file: {:no_warn, "priv/plts/core.plt"},
-      plt_add_apps: [:mix, :ecto, :ecto_sql, :db_connection]
+      plt_add_apps: [:mix, :ecto, :ecto_sql, :db_connection],
+      ignore_warnings: ".dialyzer_ignore.exs"
     ]
   end
 end

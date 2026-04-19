@@ -748,7 +748,7 @@ defmodule XqliteEcto3.Connection do
   defp on_conflict({:raise, _, []}, _header), do: []
 
   defp on_conflict({:nothing, _, targets}, _header) do
-    [" ON CONFLICT ", conflict_target(targets) | "DO NOTHING"]
+    [" ON CONFLICT ", conflict_target(targets), "DO NOTHING"]
   end
 
   defp on_conflict({:replace_all, _, {:constraint, _}}, _header) do
@@ -837,7 +837,7 @@ defmodule XqliteEcto3.Connection do
 
       _, counter ->
         # Cell wise value support ex: (?1, ?2, ?3)
-        {[?? | Integer.to_string(counter)], counter + 1}
+        {[??, Integer.to_string(counter)], counter + 1}
     end)
   end
 
@@ -1161,19 +1161,19 @@ defmodule XqliteEcto3.Connection do
         str
 
       :asc_nulls_last ->
-        [str | " ASC NULLS LAST"]
+        [str, " ASC NULLS LAST"]
 
       :asc_nulls_first ->
-        [str | " ASC NULLS FIRST"]
+        [str, " ASC NULLS FIRST"]
 
       :desc ->
-        [str | " DESC"]
+        [str, " DESC"]
 
       :desc_nulls_last ->
-        [str | " DESC NULLS LAST"]
+        [str, " DESC NULLS LAST"]
 
       :desc_nulls_first ->
-        [str | " DESC NULLS FIRST"]
+        [str, " DESC NULLS FIRST"]
 
       _ ->
         raise Ecto.QueryError,
@@ -1360,7 +1360,7 @@ defmodule XqliteEcto3.Connection do
   end
 
   defp expr({:is_nil, _, [arg]}, sources, query) do
-    [expr(arg, sources, query) | " IS NULL"]
+    [expr(arg, sources, query), " IS NULL"]
   end
 
   defp expr({:not, _, [expression]}, sources, query) do
@@ -1616,7 +1616,7 @@ defmodule XqliteEcto3.Connection do
 
   defp values_expr(types, idx) do
     intersperse_reduce(types, ?,, idx, fn {_field, type}, idx ->
-      {[?$, Integer.to_string(idx), ?:, ?: | column_type(type, nil)], idx + 1}
+      {[?$, Integer.to_string(idx), ?:, ?:, column_type(type, nil)], idx + 1}
     end)
   end
 
@@ -1681,17 +1681,17 @@ defmodule XqliteEcto3.Connection do
   def create_name(sources, pos, as_prefix) do
     case elem(sources, pos) do
       {:fragment, _, _} ->
-        {nil, as_prefix ++ [?f | Integer.to_string(pos)], nil}
+        {nil, as_prefix ++ [?f, Integer.to_string(pos)], nil}
 
       {:values, _, _} ->
-        {nil, as_prefix ++ [?v | Integer.to_string(pos)], nil}
+        {nil, as_prefix ++ [?v, Integer.to_string(pos)], nil}
 
       {table, schema, prefix} ->
-        name = as_prefix ++ [create_alias(table) | Integer.to_string(pos)]
+        name = as_prefix ++ [create_alias(table), Integer.to_string(pos)]
         {quote_table(prefix, table), name, schema}
 
       %Ecto.SubQuery{} ->
-        {nil, as_prefix ++ [?s | Integer.to_string(pos)], nil}
+        {nil, as_prefix ++ [?s, Integer.to_string(pos)], nil}
     end
   end
 

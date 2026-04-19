@@ -4,7 +4,7 @@ defmodule XqliteEcto3.DataType do
   # SQLite column type mapping. SQLite ignores type sizes/precision
   # (except DECIMAL), so most types map to simple keywords.
 
-  @spec column_type(atom(), Keyword.t()) :: String.t()
+  @spec column_type(atom() | {:array, term()} | {:map, term()}, term()) :: String.t()
   def column_type(:id, _opts), do: "INTEGER"
   def column_type(:serial, _opts), do: "INTEGER"
   def column_type(:bigserial, _opts), do: "INTEGER"

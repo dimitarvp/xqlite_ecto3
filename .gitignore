@@ -22,3 +22,5 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 xqlite_ecto3-*.tar
 
+# Dialyzer artifacts.
+/priv/plts
