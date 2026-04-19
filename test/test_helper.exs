@@ -102,12 +102,6 @@ excludes = [
 
   # --- Needs adapter work (excluded until implemented) ---
 
-  # repo.exs:1092 "Repo.insert_all upserts and fills in placeholders with
-  # conditioned on_conflict query" combines placeholders + with_conflict_target
-  # in a way our adapter doesn't yet handle. All other :placeholders tests
-  # pass, so we narrow this to a single-test location exclusion.
-  {:location, {"deps/ecto/integration_test/cases/repo.exs", 1092}},
-
   # (A) The "with primitive values" variant of json_extract_path touches
   # booleans in a SELECT clause (`select: o.metadata["enabled"] == true`).
   # SQLite's json_extract returns 1/0 for JSON booleans, Elixir's
