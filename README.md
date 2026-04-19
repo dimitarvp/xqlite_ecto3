@@ -69,7 +69,7 @@ Drop-in for most schemas and queries. The differences that matter:
 - `:binary_id` storage is configurable globally (`config :xqlite_ecto3, :binary_id_storage, :string | :binary`). Default is `:string` (TEXT, 36-char UUIDs) — matches ecto_sqlite3.
 - `ALTER TABLE ... MODIFY COLUMN` is an opt-in table rebuild behind `support_alter_via_table_rebuild: true`. ecto_sqlite3 has no equivalent.
 
-A dedicated migration guide is in the works.
+See [`guides/migrating_from_ecto_sqlite3.md`](guides/migrating_from_ecto_sqlite3.md) for the full walk-through.
 
 ## Quickstart
 

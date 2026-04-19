@@ -91,6 +91,7 @@ defmodule XqliteEcto3.MixProject do
       },
       files: [
         "lib",
+        "guides",
         ".formatter.exs",
         "mix.exs",
         "README.md",
@@ -106,7 +107,15 @@ defmodule XqliteEcto3.MixProject do
       name: @name,
       source_url: @source_url,
       source_ref: "v#{String.replace_suffix(@version, "-dev", "")}",
-      extras: ["README.md", "CHANGELOG.md", "LICENSE.md"],
+      extras: [
+        "README.md",
+        "guides/migrating_from_ecto_sqlite3.md",
+        "CHANGELOG.md",
+        "LICENSE.md"
+      ],
+      groups_for_extras: [
+        Guides: Path.wildcard("guides/*.md")
+      ],
       groups_for_modules: [
         Adapter: [
           XqliteEcto3,
