@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`XqliteEcto3.UUIDv7.generate/0`** — time-ordered UUID v7 generator
   per RFC 9562 §5.7. Wire into a schema via
   `@primary_key {:id, :binary_id, autogenerate: {XqliteEcto3.UUIDv7, :generate, []}}`.
+- **`XqliteEcto3.parse_url/1`** and **`parse_url!/1`** — parse database
+  URLs (`sqlite:///path?busy_timeout=10000&journal_mode=wal`) into
+  keyword-list opts. Accepts `sqlite://`, `sqlite3://`, and `file://`
+  schemes; rejects URLs with a host component. Query parameters are
+  allowlisted and type-coerced; unknown keys produce a structured
+  `XqliteEcto3.URLError` rather than being silently dropped.
 
 ## [0.1.0] - YYYY-MM-DD
 

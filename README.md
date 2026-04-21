@@ -45,6 +45,16 @@ config :my_app, MyApp.Repo,
 config :my_app, ecto_repos: [MyApp.Repo]
 ```
 
+…or, 12-factor-style, drive it from a URL:
+
+```elixir
+# config/runtime.exs
+opts = XqliteEcto3.parse_url!(System.fetch_env!("DATABASE_URL"))
+config :my_app, MyApp.Repo, [adapter: XqliteEcto3, pool_size: 5] ++ opts
+```
+
+Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases.
+
 Define the repo:
 
 ```elixir
@@ -297,8 +307,7 @@ Prioritized. Anything not listed is deferred.
 3. **Rich foreign-key diagnostics.** Opt-in `rich_fk_diagnostics: true` repo config that wraps each transaction in a savepoint with `PRAGMA defer_foreign_keys = ON`, runs `foreign_key_check` before release, and populates a structured `%XqliteEcto3.Error.ForeignKey{}`. SQLite's FK enforcement is counter-based and no other adapter exposes this.
 4. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
 5. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
-6. **Database URL config.** `url: "sqlite:///path/to/db.db?busy_timeout=10000&journal_mode=wal"` — the pattern 12-factor apps and Phoenix scaffolds expect.
-7. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
+6. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 

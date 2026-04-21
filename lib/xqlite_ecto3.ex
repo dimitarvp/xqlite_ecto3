@@ -134,6 +134,28 @@ defmodule XqliteEcto3 do
   @behaviour Ecto.Adapter.Storage
   @behaviour Ecto.Adapter.Structure
 
+  @doc """
+  Parses a database URL into keyword-list options.
+
+  Delegates to `XqliteEcto3.URL.parse/1`. See that module for the
+  accepted URL shape, the query-parameter allowlist, and the error
+  cases.
+
+  Returns `{:ok, opts}` or `{:error, %XqliteEcto3.URLError{}}`.
+  """
+  @spec parse_url(String.t()) :: {:ok, keyword()} | {:error, XqliteEcto3.URLError.t()}
+  def parse_url(url), do: XqliteEcto3.URL.parse(url)
+
+  @doc """
+  Like `parse_url/1` but raises `XqliteEcto3.URLError` on failure.
+
+  Prefer this in config-time call sites — bad URL in
+  `config/runtime.exs` should fail app boot early with a clear stack
+  trace rather than surface as a later cryptic pool error.
+  """
+  @spec parse_url!(String.t()) :: keyword()
+  def parse_url!(url), do: XqliteEcto3.URL.parse!(url)
+
   @impl Ecto.Adapter.Storage
   def storage_up(opts) do
     database = Keyword.fetch!(opts, :database)

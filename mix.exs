@@ -123,7 +123,9 @@ defmodule XqliteEcto3.MixProject do
           XqliteEcto3.Driver,
           XqliteEcto3.Query,
           XqliteEcto3.DataType,
-          XqliteEcto3.Error
+          XqliteEcto3.Error,
+          XqliteEcto3.URL,
+          XqliteEcto3.URLError
         ],
         "Custom Types": [
           XqliteEcto3.Types.UUID,
