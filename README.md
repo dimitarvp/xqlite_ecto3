@@ -230,14 +230,9 @@ All live under `XqliteEcto3.Types.*`:
 
 ### SQLite-specific extras via xqlite
 
-For session extensions, incremental blob I/O, online backup, serialize/deserialize, extension loading, and structured schema introspection — none of which have Ecto-level equivalents — check a connection out of the pool and call xqlite's NIFs directly:
+Features like the session extension, incremental blob I/O, online backup with progress, `sqlite3_serialize`/`deserialize`, extension loading, and structured schema introspection live at the xqlite layer — none have Ecto-level equivalents. Today the way to reach them is to open a dedicated `XqliteNIF` connection alongside your repo for the feature you need; the adapter's pool connections are owned by DBConnection and not safe to hand raw NIF calls without coordination.
 
-```elixir
-MyApp.Repo.checkout(fn ->
-  conn = MyApp.Repo.__adapter_connection__()  # future helper; see docs
-  XqliteNIF.backup_with_progress(conn, "main", "/tmp/snapshot.db", self(), 10, token)
-end)
-```
+An ergonomic bridge — "checkout-a-connection-and-pass-it-to-an-xqlite-function" — is a planned helper on the roadmap below. Until then, treat xqlite and xqlite_ecto3 as composable libraries: the adapter handles ORM/query/transaction concerns, xqlite handles the SQLite-specific toolbox.
 
 ## FAQ
 
@@ -305,6 +300,7 @@ Prioritized. Anything not listed is deferred.
 5. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
 6. **Database URL config.** `url: "sqlite:///path/to/db.db?busy_timeout=10000&journal_mode=wal"` — the pattern 12-factor apps and Phoenix scaffolds expect.
 7. **UUID v7 generator.** Becoming the default; we should offer it.
+8. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 
