@@ -49,8 +49,14 @@ config :my_app, ecto_repos: [MyApp.Repo]
 
 ```elixir
 # config/runtime.exs
-opts = XqliteEcto3.parse_url!(System.fetch_env!("DATABASE_URL"))
-config :my_app, MyApp.Repo, [adapter: XqliteEcto3, pool_size: 5] ++ opts
+opts =
+  "DATABASE_URL"
+  |> System.fetch_env!()
+  |> XqliteEcto3.parse_url!()
+
+sqlite_opts = Keyword.merge([adapter: XqliteEcto3, pool_size: 5], opts)
+
+config :my_app, MyApp.Repo, sqlite_opts
 ```
 
 Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases.

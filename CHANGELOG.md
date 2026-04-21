@@ -17,7 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword-list opts. Accepts `sqlite://`, `sqlite3://`, and `file://`
   schemes; rejects URLs with a host component. Query parameters are
   allowlisted and type-coerced; unknown keys produce a structured
-  `XqliteEcto3.URLError` rather than being silently dropped.
+  `XqliteEcto3.URLError` rather than being silently dropped. Accepted
+  keys: SQLite pragmas (`journal_mode`, `synchronous`, `temp_store`,
+  `auto_vacuum`, `foreign_keys`, `busy_timeout`, `cache_size`,
+  `wal_autocheckpoint`, `mmap_size`) plus pool / DBConnection knobs
+  (`pool_size`, `timeout`, `connect_timeout`, `queue_target`,
+  `queue_interval`).
 
 ## [0.1.0] - YYYY-MM-DD
 

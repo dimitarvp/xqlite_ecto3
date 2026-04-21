@@ -23,9 +23,11 @@ defmodule XqliteEcto3.URL do
 
   ## Accepted query parameters
 
-  Each maps onto an `Xqlite.open/2` opt of the same atom name.
-  Unknown parameters yield a structured error rather than being
+  Two groups. Each maps onto a repo or adapter opt of the same atom
+  name. Unknown keys yield a structured error rather than being
   silently dropped.
+
+  ### SQLite pragmas (applied on connect)
 
       journal_mode = wal | delete | truncate | memory | off
       synchronous = off | normal | full | extra
@@ -36,6 +38,14 @@ defmodule XqliteEcto3.URL do
       cache_size = <integer, negative = KB>
       wal_autocheckpoint = <non-negative integer pages>
       mmap_size = <non-negative integer bytes>
+
+  ### Pool and DBConnection tuning
+
+      pool_size = <non-negative integer>
+      timeout = <non-negative integer ms> | infinity
+      connect_timeout = <non-negative integer ms> | infinity
+      queue_target = <non-negative integer ms>
+      queue_interval = <non-negative integer ms>
   """
 
   alias XqliteEcto3.URLError
@@ -44,6 +54,7 @@ defmodule XqliteEcto3.URL do
 
   # {key_atom, :type, optional enum_values}
   @param_specs %{
+    # SQLite pragmas
     "journal_mode" => {:journal_mode, :atom_enum, [:wal, :delete, :truncate, :memory, :off]},
     "synchronous" => {:synchronous, :atom_enum, [:off, :normal, :full, :extra]},
     "temp_store" => {:temp_store, :atom_enum, [:default, :file, :memory]},
@@ -52,7 +63,13 @@ defmodule XqliteEcto3.URL do
     "busy_timeout" => {:busy_timeout, :timeout, nil},
     "cache_size" => {:cache_size, :integer, nil},
     "wal_autocheckpoint" => {:wal_autocheckpoint, :non_neg_integer, nil},
-    "mmap_size" => {:mmap_size, :non_neg_integer, nil}
+    "mmap_size" => {:mmap_size, :non_neg_integer, nil},
+    # Pool and DBConnection tuning
+    "pool_size" => {:pool_size, :non_neg_integer, nil},
+    "timeout" => {:timeout, :timeout, nil},
+    "connect_timeout" => {:connect_timeout, :timeout, nil},
+    "queue_target" => {:queue_target, :non_neg_integer, nil},
+    "queue_interval" => {:queue_interval, :non_neg_integer, nil}
   }
 
   @doc """
