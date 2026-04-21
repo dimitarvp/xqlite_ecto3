@@ -298,8 +298,7 @@ Prioritized. Anything not listed is deferred.
 4. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
 5. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
 6. **Database URL config.** `url: "sqlite:///path/to/db.db?busy_timeout=10000&journal_mode=wal"` — the pattern 12-factor apps and Phoenix scaffolds expect.
-7. **UUID v7 generator.** Becoming the default; we should offer it.
-8. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
+7. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 

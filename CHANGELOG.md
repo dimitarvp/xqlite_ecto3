@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`XqliteEcto3.UUIDv7.generate/0`** — time-ordered UUID v7 generator
+  per RFC 9562 §5.7. Wire into a schema via
+  `@primary_key {:id, :binary_id, autogenerate: {XqliteEcto3.UUIDv7, :generate, []}}`.
+
 ## [0.1.0] - YYYY-MM-DD
 
 Initial public release. The adapter wraps [xqlite](https://hex.pm/packages/xqlite)

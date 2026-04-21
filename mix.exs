@@ -132,6 +132,9 @@ defmodule XqliteEcto3.MixProject do
           XqliteEcto3.Types.Duration,
           XqliteEcto3.Types.Array
         ],
+        Generators: [
+          XqliteEcto3.UUIDv7
+        ],
         "Migration Helpers": [
           XqliteEcto3.Migration
         ]
