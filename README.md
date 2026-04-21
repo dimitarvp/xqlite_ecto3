@@ -266,7 +266,6 @@ Permanent SQLite constraints (not adapter choices):
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 
 - `:json_extract_path` boolean coercion — SQLite returns 1/0 for JSON booleans; the `==` comparison in some Ecto query shapes needs a coercion layer
-- `:placeholders` + `:with_conflict_target` combo — one narrow `repo.exs:1092` case
 - `DISTINCT ON (expr)` — SQLite only has full-row DISTINCT; rewrite via window functions is planned
 
 ## Design notes

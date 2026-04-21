@@ -22,7 +22,7 @@ Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
 | `:like_match_blob` | excluded | SQLite compiled with `SQLITE_LIKE_DOESNT_MATCH_BLOBS` rejects LIKE on BLOBs |
 | `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
-| `:microsecond_precision` | needs adapter work | SQLite stores TEXT; full ISO 8601 with microseconds round-trips if adapter preserves it |
+| `:microsecond_precision` | excluded (permanent) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. |
 | `:modify_column` | supported (opt-in) | full SQLite table-rebuild dance behind `support_alter_via_table_rebuild: true` repo config; batches all changes in one alter block into a single rebuild |
 | `:multicolumn_distinct` | supported | SQLite DISTINCT applies to full rows |
 | `:on_delete_default_all` | supported | SQLite supports `ON DELETE SET DEFAULT` |
