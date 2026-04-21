@@ -5,7 +5,7 @@ Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
 
 | Tag | Status | Notes |
 |-----|--------|-------|
-| `:add_column_if_not_exists` | needs adapter work | no SQL syntax; adapter can check `PRAGMA table_info()` first |
+| `:add_column_if_not_exists` | supported | adapter checks `PRAGMA table_info()` per alter block; filters no-ops |
 | `:alter_foreign_key` | excluded | SQLite has no ALTER TABLE MODIFY COLUMN for FK constraints |
 | `:alter_primary_key` | excluded | SQLite cannot add a PRIMARY KEY column via ALTER TABLE |
 | `:array_type` | excluded | SQLite has no native array column type |
@@ -13,24 +13,24 @@ Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
 | `:bitstring_type` | excluded | SQLite has no native bitstring type |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
 | `:concurrent_poolrepo_transactions` | excluded | SQLite single-writer: concurrent transactions from separate processes deadlock with pool_size 1 |
-| `:delete_with_join` | excluded | SQLite DELETE grammar does not support JOIN clauses |
+| `:delete_with_join` | supported | conservative rewrite to `DELETE FROM t WHERE pk IN (SELECT …)`; raises `Ecto.QueryError` on shapes we can't safely transform |
 | `:duration_type` | excluded | SQLite has no native duration/interval type |
 | `:foreign_key_constraint` | excluded | SQLite FK violations report no constraint name |
 | `:insert_cell_wise_defaults` | excluded | SQLite multi-row VALUES requires all rows to have the same columns |
-| `:insert_select` | needs adapter work | SQLite supports `INSERT INTO ... SELECT`; adapter SQL generation gap |
+| `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
 | `:json_extract_path` | needs adapter work | `json_extract` returns 1/0 for booleans; adapter needs coercion layer |
 | `:like_match_blob` | excluded | SQLite compiled with `SQLITE_LIKE_DOESNT_MATCH_BLOBS` rejects LIKE on BLOBs |
 | `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
 | `:microsecond_precision` | needs adapter work | SQLite stores TEXT; full ISO 8601 with microseconds round-trips if adapter preserves it |
-| `:modify_column` | excluded | SQLite has no ALTER TABLE MODIFY COLUMN |
+| `:modify_column` | supported (opt-in) | full SQLite table-rebuild dance behind `support_alter_via_table_rebuild: true` repo config; batches all changes in one alter block into a single rebuild |
 | `:multicolumn_distinct` | supported | SQLite DISTINCT applies to full rows |
 | `:on_delete_default_all` | supported | SQLite supports `ON DELETE SET DEFAULT` |
 | `:on_delete_default_column_list` | excluded | SQLite `ON DELETE SET DEFAULT` applies to all FK columns; no column-list syntax |
 | `:on_delete_nilify_column_list` | excluded | SQLite `ON DELETE SET NULL` applies to all FK columns; no column-list syntax |
-| `:placeholders` | needs adapter work | SQLite supports named/positional params; adapter must generate reuse SQL |
+| `:placeholders` | supported | incidentally covered by the `INSERT SELECT ... WHERE 1` disambiguator; the `repo.exs:1092` (`:placeholders + :with_conflict_target`) location was re-enabled after verification |
 | `:prefix` | excluded | SQLite has no schema/namespace concept |
-| `:remove_column_if_exists` | needs adapter work | no SQL syntax; adapter can check `PRAGMA table_info()` first |
+| `:remove_column_if_exists` | supported | adapter checks `PRAGMA table_info()` per alter block; filters no-ops |
 | `:right_join` | supported | SQLite 3.39+ supports RIGHT JOIN and FULL OUTER JOIN |
 | `:selected_as_with_group_by` | supported | SQLite allows column alias references in GROUP BY |
 | `:selected_as_with_having` | supported | SQLite allows column alias references in HAVING |
