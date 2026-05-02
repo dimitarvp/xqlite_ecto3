@@ -4,6 +4,7 @@ defmodule XqliteEcto3.Driver do
   @behaviour DBConnection
 
   alias XqliteNIF, as: NIF
+  import XqliteEcto3.Telemetry, only: [emit: 3, span_with_stop_metadata: 3]
 
   defstruct [:conn, :transaction_status, :path, :savepoint_prefix, savepoint: 0]
 
@@ -23,22 +24,29 @@ defmodule XqliteEcto3.Driver do
     synchronous = Keyword.get(opts, :synchronous, :normal)
     temp_store = Keyword.get(opts, :temp_store, :memory)
 
-    with {:ok, conn} <- NIF.open(database),
-         {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
-         {:ok, _} <- NIF.set_pragma(conn, "journal_mode", to_string(journal_mode)),
-         {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", true),
-         {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000),
-         {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
-         {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)) do
-      {:ok,
-       %__MODULE__{
-         conn: conn,
-         transaction_status: :idle,
-         path: database,
-         savepoint_prefix: random_savepoint_prefix()
-       }}
-    else
-      {:error, reason} -> {:error, reason}
+    start_md = %{database: database}
+
+    span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
+      result =
+        with {:ok, conn} <- NIF.open(database),
+             {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
+             {:ok, _} <- NIF.set_pragma(conn, "journal_mode", to_string(journal_mode)),
+             {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", true),
+             {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000),
+             {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
+             {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)) do
+          {:ok,
+           %__MODULE__{
+             conn: conn,
+             transaction_status: :idle,
+             path: database,
+             savepoint_prefix: random_savepoint_prefix()
+           }}
+        else
+          {:error, reason} -> {:error, reason}
+        end
+
+      classify(result, start_md)
     end
   end
 
@@ -55,6 +63,13 @@ defmodule XqliteEcto3.Driver do
     # reads post-close values instead of stale mid-transaction cache.
     _ = %{state | transaction_status: :idle, savepoint: 0}
     NIF.close(state.conn)
+
+    emit(
+      [:xqlite_ecto3, :disconnect],
+      %{monotonic_time: XqliteEcto3.Telemetry.monotonic_time()},
+      %{conn: state.conn}
+    )
+
     :ok
   end
 
@@ -65,16 +80,25 @@ defmodule XqliteEcto3.Driver do
   # every checkout boundary by construction.
   @impl DBConnection
   def checkout(state) do
-    case NIF.transaction_status(state.conn) do
-      {:ok, true} ->
-        {:ok, %{state | transaction_status: :transaction, savepoint: 0}}
+    result =
+      case NIF.transaction_status(state.conn) do
+        {:ok, true} ->
+          {:ok, %{state | transaction_status: :transaction, savepoint: 0}}
 
-      {:ok, false} ->
-        {:ok, %{state | transaction_status: :idle, savepoint: 0}}
+        {:ok, false} ->
+          {:ok, %{state | transaction_status: :idle, savepoint: 0}}
 
-      {:error, reason} ->
-        {:disconnect, XqliteEcto3.Error.wrap(reason), state}
-    end
+        {:error, reason} ->
+          {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+      end
+
+    emit(
+      [:xqlite_ecto3, :checkout],
+      %{monotonic_time: XqliteEcto3.Telemetry.monotonic_time()},
+      %{conn: state.conn}
+    )
+
+    result
   end
 
   @impl DBConnection
@@ -103,71 +127,95 @@ defmodule XqliteEcto3.Driver do
 
   @impl DBConnection
   def handle_begin(opts, state) do
-    case Keyword.get(opts, :mode, :transaction) do
-      :savepoint ->
-        case NIF.savepoint(state.conn, savepoint_name(state, state.savepoint)) do
-          :ok ->
-            {:ok, nil, %{state | savepoint: state.savepoint + 1}}
+    mode = Keyword.get(opts, :mode, :transaction)
+    start_md = %{conn: state.conn, mode: mode}
 
-          {:error, reason} ->
-            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+    span_with_stop_metadata [:xqlite_ecto3, :handle_begin], start_md do
+      result =
+        case mode do
+          :savepoint ->
+            case NIF.savepoint(state.conn, savepoint_name(state, state.savepoint)) do
+              :ok ->
+                {:ok, nil, %{state | savepoint: state.savepoint + 1}}
+
+              {:error, reason} ->
+                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
+
+          _mode ->
+            case NIF.begin(state.conn, :immediate) do
+              :ok ->
+                {:ok, nil, %{state | transaction_status: :transaction}}
+
+              {:error, reason} ->
+                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
         end
 
-      _mode ->
-        case NIF.begin(state.conn, :immediate) do
-          :ok ->
-            {:ok, nil, %{state | transaction_status: :transaction}}
-
-          {:error, reason} ->
-            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
-        end
+      classify_dbc(result, start_md)
     end
   end
 
   @impl DBConnection
   def handle_commit(opts, state) do
-    case Keyword.get(opts, :mode, :transaction) do
-      :savepoint ->
-        case NIF.release_savepoint(state.conn, savepoint_name(state, state.savepoint - 1)) do
-          :ok ->
-            {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+    mode = Keyword.get(opts, :mode, :transaction)
+    start_md = %{conn: state.conn, mode: mode}
 
-          {:error, reason} ->
-            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+    span_with_stop_metadata [:xqlite_ecto3, :handle_commit], start_md do
+      result =
+        case mode do
+          :savepoint ->
+            case NIF.release_savepoint(state.conn, savepoint_name(state, state.savepoint - 1)) do
+              :ok ->
+                {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+
+              {:error, reason} ->
+                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
+
+          _mode ->
+            case NIF.commit(state.conn) do
+              :ok ->
+                {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
+
+              {:error, reason} ->
+                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
         end
 
-      _mode ->
-        case NIF.commit(state.conn) do
-          :ok ->
-            {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
-
-          {:error, reason} ->
-            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
-        end
+      classify_dbc(result, start_md)
     end
   end
 
   @impl DBConnection
   def handle_rollback(opts, state) do
-    case Keyword.get(opts, :mode, :transaction) do
-      :savepoint ->
-        name = savepoint_name(state, state.savepoint - 1)
+    mode = Keyword.get(opts, :mode, :transaction)
+    start_md = %{conn: state.conn, mode: mode}
 
-        with :ok <- NIF.rollback_to_savepoint(state.conn, name),
-             :ok <- NIF.release_savepoint(state.conn, name) do
-          {:ok, nil, %{state | savepoint: state.savepoint - 1}}
-        else
-          {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+    span_with_stop_metadata [:xqlite_ecto3, :handle_rollback], start_md do
+      result =
+        case mode do
+          :savepoint ->
+            name = savepoint_name(state, state.savepoint - 1)
+
+            with :ok <- NIF.rollback_to_savepoint(state.conn, name),
+                 :ok <- NIF.release_savepoint(state.conn, name) do
+              {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+            else
+              {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
+
+          _mode ->
+            case NIF.rollback(state.conn) do
+              :ok ->
+                {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
+
+              {:error, reason} ->
+                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            end
         end
 
-      _mode ->
-        case NIF.rollback(state.conn) do
-          :ok ->
-            {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
-
-          {:error, reason} ->
-            {:disconnect, XqliteEcto3.Error.wrap(reason), state}
-        end
+      classify_dbc(result, start_md)
     end
   end
 
@@ -187,19 +235,25 @@ defmodule XqliteEcto3.Driver do
   def handle_execute(query, params, opts, state) do
     timeout = Keyword.get(opts, :timeout, 15_000)
     sql = IO.iodata_to_binary(query.statement)
+    start_md = %{conn: state.conn, query: query, sql: sql}
 
-    case execute_with_cancel(state.conn, sql, params, timeout) do
-      {:ok, %{columns: [], changes: changes} = result} ->
-        {:ok, query, %{result | num_rows: changes, rows: nil}, state}
+    span_with_stop_metadata [:xqlite_ecto3, :handle_execute], start_md do
+      result =
+        case execute_with_cancel(state.conn, sql, params, timeout) do
+          {:ok, %{columns: [], changes: changes} = result} ->
+            {:ok, query, %{result | num_rows: changes, rows: nil}, state}
 
-      {:ok, result} ->
-        {:ok, query, result, state}
+          {:ok, result} ->
+            {:ok, query, result, state}
 
-      {:error, :operation_cancelled} ->
-        {:error, %DBConnection.ConnectionError{message: "query timed out"}, state}
+          {:error, :operation_cancelled} ->
+            {:error, %DBConnection.ConnectionError{message: "query timed out"}, state}
 
-      {:error, reason} ->
-        {:error, XqliteEcto3.Error.wrap(reason), state}
+          {:error, reason} ->
+            {:error, XqliteEcto3.Error.wrap(reason), state}
+        end
+
+      classify_dbc(result, start_md)
     end
   end
 
@@ -211,49 +265,67 @@ defmodule XqliteEcto3.Driver do
   @impl DBConnection
   def handle_declare(query, params, opts, state) do
     sql = IO.iodata_to_binary(query.statement)
+    start_md = %{conn: state.conn, query: query, sql: sql}
 
-    case NIF.stream_open(state.conn, sql, params) do
-      {:ok, handle} ->
-        case NIF.stream_get_columns(handle) do
-          {:ok, columns} ->
-            batch_size = batch_size_from_opts(opts)
+    span_with_stop_metadata [:xqlite_ecto3, :handle_declare], start_md do
+      result =
+        case NIF.stream_open(state.conn, sql, params) do
+          {:ok, handle} ->
+            case NIF.stream_get_columns(handle) do
+              {:ok, columns} ->
+                batch_size = batch_size_from_opts(opts)
 
-            {:ok, query, %{handle: handle, columns: columns, batch_size: batch_size}, state}
+                {:ok, query, %{handle: handle, columns: columns, batch_size: batch_size}, state}
+
+              {:error, reason} ->
+                NIF.stream_close(handle)
+                {:error, XqliteEcto3.Error.wrap(reason), state}
+            end
 
           {:error, reason} ->
-            NIF.stream_close(handle)
             {:error, XqliteEcto3.Error.wrap(reason), state}
         end
 
-      {:error, reason} ->
-        {:error, XqliteEcto3.Error.wrap(reason), state}
+      classify_dbc(result, start_md)
     end
   end
 
   @impl DBConnection
   def handle_fetch(_query, cursor, _opts, state) do
-    case NIF.stream_fetch(cursor.handle, cursor.batch_size) do
-      {:ok, %{rows: rows}} ->
-        result = %{
-          columns: cursor.columns,
-          rows: rows,
-          num_rows: length(rows)
-        }
+    start_md = %{conn: state.conn, cursor: cursor}
 
-        {:cont, result, state}
+    span_with_stop_metadata [:xqlite_ecto3, :handle_fetch], start_md do
+      result =
+        case NIF.stream_fetch(cursor.handle, cursor.batch_size) do
+          {:ok, %{rows: rows}} ->
+            r = %{
+              columns: cursor.columns,
+              rows: rows,
+              num_rows: length(rows)
+            }
 
-      :done ->
-        {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
+            {:cont, r, state}
 
-      {:error, reason} ->
-        {:error, XqliteEcto3.Error.wrap(reason), state}
+          :done ->
+            {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
+
+          {:error, reason} ->
+            {:error, XqliteEcto3.Error.wrap(reason), state}
+        end
+
+      classify_dbc(result, start_md)
     end
   end
 
   @impl DBConnection
   def handle_deallocate(_query, cursor, _opts, state) do
-    NIF.stream_close(cursor.handle)
-    {:ok, nil, state}
+    start_md = %{conn: state.conn, cursor: cursor}
+
+    span_with_stop_metadata [:xqlite_ecto3, :handle_deallocate], start_md do
+      _ = NIF.stream_close(cursor.handle)
+      result = {:ok, nil, state}
+      classify_dbc(result, start_md)
+    end
   end
 
   defp batch_size_from_opts(opts) do
@@ -272,7 +344,7 @@ defmodule XqliteEcto3.Driver do
     canceller = spawn_canceller(token, timeout)
 
     try do
-      NIF.query_with_changes_cancellable(conn, sql, params, token)
+      NIF.query_with_changes_cancellable(conn, sql, params, [token])
     after
       send(canceller, :stop)
     end
@@ -301,5 +373,46 @@ defmodule XqliteEcto3.Driver do
         1_000 -> :ok
       end
     end)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Telemetry classification helpers
+  # ---------------------------------------------------------------------------
+
+  # connect/1 returns {:ok, state} | {:error, reason}.
+  defp classify({:ok, _state} = result, start_md) do
+    {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
+  end
+
+  defp classify({:error, reason} = result, start_md) do
+    {result, Map.merge(start_md, %{result_class: :error, error_reason: reason})}
+  end
+
+  # DBConnection callback returns:
+  #   {:ok, ..., state}
+  #   {:cont, ..., state}
+  #   {:halt, ..., state}
+  #   {:error, error, state}
+  #   {:disconnect, error, state}
+  defp classify_dbc(result, start_md) do
+    case result do
+      {:ok, _, _} ->
+        {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
+
+      {:ok, _, _, _} ->
+        {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
+
+      {:cont, _, _} ->
+        {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
+
+      {:halt, _, _} ->
+        {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
+
+      {:error, error, _state} ->
+        {result, Map.merge(start_md, %{result_class: :error, error_reason: error})}
+
+      {:disconnect, error, _state} ->
+        {result, Map.merge(start_md, %{result_class: :error, error_reason: {:disconnect, error}})}
+    end
   end
 end

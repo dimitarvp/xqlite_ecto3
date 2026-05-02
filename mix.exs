@@ -60,6 +60,7 @@ defmodule XqliteEcto3.MixProject do
       {:db_connection, "~> 2.7"},
       xqlite_dep(),
       {:rustler, "~> 0.37", optional: true, only: [:dev, :test]},
+      {:telemetry, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:ex_doc, "~> 0.20", only: :dev, runtime: false}

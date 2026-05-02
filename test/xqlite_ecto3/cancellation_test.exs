@@ -93,7 +93,7 @@ defmodule XqliteEcto3.CancellationTest do
         send(parent, :cancelled)
       end)
 
-      result = NIF.query_with_changes_cancellable(state.conn, sql, [], token)
+      result = NIF.query_with_changes_cancellable(state.conn, sql, [], [token])
       assert result == {:error, :operation_cancelled}
       assert_received :cancelled
     end
