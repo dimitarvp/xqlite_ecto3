@@ -2,19 +2,7 @@ defmodule XqliteEcto3.CteUnionTest do
   use XqliteEcto3.AdapterCase, async: true
 
   defmodule CU do
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    schema "cte_users" do
-      field(:name, :string)
-      field(:email, :string)
-      field(:age, :integer)
-      field(:active, :boolean, default: true)
-      timestamps()
-    end
-
-    def changeset(user, attrs \\ %{}),
-      do: user |> cast(attrs, [:name, :email, :age, :active]) |> validate_required([:name])
+    use XqliteEcto3.TestSchemas.StandardUser, table: "cte_users"
   end
 
   setup_all do

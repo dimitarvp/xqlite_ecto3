@@ -2,19 +2,7 @@ defmodule XqliteEcto3.AggregatesTest do
   use XqliteEcto3.AdapterCase, async: true
 
   defmodule AG do
-    use Ecto.Schema
-    import Ecto.Changeset
-
-    schema "agg_users" do
-      field(:name, :string)
-      field(:email, :string)
-      field(:age, :integer)
-      field(:active, :boolean, default: true)
-      timestamps()
-    end
-
-    def changeset(user, attrs \\ %{}),
-      do: user |> cast(attrs, [:name, :email, :age, :active]) |> validate_required([:name])
+    use XqliteEcto3.TestSchemas.StandardUser, table: "agg_users"
   end
 
   setup_all do
