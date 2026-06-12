@@ -5,7 +5,7 @@
 [![Hexdocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/xqlite_ecto3)
 [![Downloads](https://img.shields.io/hexpm/dt/xqlite_ecto3.svg)](https://hex.pm/packages/xqlite_ecto3)
 -->
-[![SQLite](https://img.shields.io/badge/SQLite-3.51.3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/releaselog/3_51_3.html)
+[![SQLite](https://img.shields.io/badge/SQLite-3.53.2-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/releaselog/3_53_2.html)
 [![Ecto](https://img.shields.io/badge/Ecto-~%3E%203.12-6e4a7e)](https://hexdocs.pm/ecto_sql)
 [![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.15-4B275F?logo=elixir&logoColor=white)](https://elixir-lang.org)
 [![Build Status](https://github.com/dimitarvp/xqlite_ecto3/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitarvp/xqlite_ecto3/actions)
@@ -25,7 +25,7 @@ XqliteEcto3 is inspired by [ecto_sqlite3](https://github.com/elixir-sqlite/ecto_
 - **Structured constraint errors end-to-end.** All 13 SQLite constraint subtypes map to typed atoms (`:constraint_unique`, `:constraint_foreign_key`, `:constraint_check`, …) with structured details (`table`, `columns`, `index_name`, `constraint_name`) attached. No regex-matching error messages, locale-sensitive or otherwise.
 - **Conservative by default, opt-in where it counts.** Loose schemas stay loose. `CHECK` constraints, `MODIFY COLUMN` via table rebuild, and structured `DELETE … JOIN` rewrite are all off until you ask for them. Migrations that can be safely performed with plain SQL are. Anything that needs the 12-step SQLite rebuild dance is behind `support_alter_via_table_rebuild: true` in your repo config.
 - **Custom types live at the adapter layer.** `XqliteEcto3.Types.UUID`, `Instant`, `Duration`, `TimestampTZ`, `Array`. Each is an `Ecto.Type` or `Ecto.ParameterizedType` module — no magic around how SQLite stores them.
-- **Bundled SQLite 3.51.3.** Inherited from xqlite. No system install, no version drift between dev/CI/prod.
+- **Bundled SQLite 3.53.2.** Inherited from xqlite. No system install, no version drift between dev/CI/prod.
 - **Shared Ecto suite integration.** The shared `ecto` + `ecto_sql` integration suites run green; every exclusion is documented as either a permanent SQLite limitation or a tracked adapter gap.
 
 ## Installation
@@ -284,7 +284,7 @@ An ergonomic bridge — "checkout-a-connection-and-pass-it-to-an-xqlite-function
 I use it in my own projects. The test coverage is extensive — the shared Ecto integration suites plus the adapter's own suites. That said, it's pre-v0.1.0; the public API may shift. Report anything surprising on GitHub or ElixirForum.
 
 **What SQLite version ships?**
-Whatever xqlite ships (currently 3.51.3). `Xqlite.sqlite_version/0` if you need to check at runtime.
+Whatever xqlite ships (currently 3.53.2). `Xqlite.sqlite_version/0` if you need to check at runtime.
 
 **Does it support Phoenix?**
 Yes, as any Ecto adapter does. There is no `--database xqlite_ecto3` shortcut in `mix phx.new` yet — add the dep manually and configure the repo per the install steps above.
