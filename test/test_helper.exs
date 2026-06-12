@@ -134,14 +134,7 @@ excludes = [
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
   # :assigns_id_type but actually uses ALTER COLUMN (SQLite limitation).
   # The 3 other :assigns_id_type tests pass, so narrow the exclusion.
-  {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}},
-
-  # VALUES works but DELETE+JOIN subtest fails
-  if Version.match?(System.version(), "~> 1.16") do
-    {:location, {"ecto/integration_test/cases/repo.exs", 2281}}
-  else
-    :values_list
-  end
+  {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}}
 ]
 
 ExUnit.configure(exclude: excludes)

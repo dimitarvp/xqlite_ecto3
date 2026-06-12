@@ -30,6 +30,34 @@ defmodule XqliteEcto3.DeleteWithJoinTest do
       assert String.ends_with?(sql, ")")
     end
 
+    # Exact pin, deliberately. Two load-bearing oddities live in this
+    # emission: (1) SQLite has no `AS alias(col, ...)` column renaming,
+    # so the values source wraps as `SELECT column1 AS ... FROM
+    # (VALUES ...)` using SQLite's auto-named VALUES columns; (2) the
+    # `$1::INTEGER` placeholders are NOT casts — SQLite's TCL-heritage
+    # `$` parameter grammar allows `::` inside the parameter NAME, so
+    # each is a named parameter bound by first-appearance index and
+    # the type suffix is inert. If either ever changes shape, this
+    # test must fail loudly.
+    test "values-list join source is carried into the subquery" do
+      values = [%{visits: 1}, %{visits: 3}]
+      types = %{visits: :integer}
+
+      q =
+        from(c in Comment,
+          join: v in values(values, types),
+          on: v.visits == c.post_id
+        )
+
+      sql = to_sql(q)
+
+      assert sql ==
+               ~s|DELETE FROM "comments" WHERE "id" IN | <>
+                 ~s|(SELECT c0."id" FROM "comments" AS c0 | <>
+                 ~s|INNER JOIN (SELECT column1 AS visits FROM (VALUES ($1::INTEGER),($2::INTEGER))) AS v1 | <>
+                 ~s|ON v1."visits" = c0."post_id")|
+    end
+
     test "multi-join DELETE threads every join into the subquery" do
       q =
         from(c in Comment,
