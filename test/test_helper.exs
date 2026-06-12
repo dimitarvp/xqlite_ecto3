@@ -93,6 +93,16 @@ excludes = [
   # cannot provide by design.
   {:location, {"deps/ecto_sql/integration_test/sql/transaction.exs", 161}},
 
+  # alter.exs:44 "reset cache on returning query after alter column
+  # type": after `modify :value, :numeric` the test asserts a
+  # schemaless SELECT returns %Decimal{}. SQLite has no decimal
+  # storage class — NUMERIC affinity stores 1 as INTEGER, and a
+  # schemaless read faithfully returns the storage value. Making this
+  # pass would require affinity-based type divination on schemaless
+  # reads, which we refuse by design (types live at the Ecto schema
+  # layer). The sibling parameterized-query cache test passes.
+  {:location, {"deps/ecto_sql/integration_test/sql/alter.exs", 44}},
+
   # SQLite has no DISTINCT ON (expr) — only row-level DISTINCT
   :subquery_in_distinct,
 
