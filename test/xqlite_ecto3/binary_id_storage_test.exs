@@ -1,6 +1,10 @@
 defmodule XqliteEcto3.BinaryIdStorageTest do
-  # async: false — these tests mutate Application env, save/restore in setup.
-  use ExUnit.Case, async: false
+  # These tests mutate global Application env (snapshot/restore per
+  # test). That is safe under async: true because ExUnit runs tests
+  # WITHIN a module serially, and mix xqlite_ecto3.test.seq runs one
+  # file per OS process — no concurrent module can observe the
+  # mutation. (Bare `mix test` is forbidden project-wide anyway.)
+  use ExUnit.Case, async: true
 
   alias Ecto.Integration.TestRepo
   alias XqliteEcto3.DataType
@@ -11,7 +15,7 @@ defmodule XqliteEcto3.BinaryIdStorageTest do
               0x00, 0x00>>
 
   setup do
-    # Tests within this file run serially (async: false), so we can mutate
+    # Tests within this file run serially (ExUnit is per-module serial), so we mutate
     # the global env inside each test without cross-test contamination. We
     # snapshot + restore so the rest of the suite stays unaffected.
     prior = Application.get_env(:xqlite_ecto3, :binary_id_storage)
