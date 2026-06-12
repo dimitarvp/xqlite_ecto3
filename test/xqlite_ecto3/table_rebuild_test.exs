@@ -100,7 +100,7 @@ defmodule XqliteEcto3.TableRebuildTest do
         end
 
       assert err.type == :constraint_violation
-      assert err.constraint_type == :constraint_unique
+      assert %XqliteEcto3.Error.Constraint{subtype: :constraint_unique} = err.details
     end
 
     test "AUTOINCREMENT sequence is preserved" do

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **`XqliteEcto3.Error` payload restructure.** The flat
+  `constraint_type` / `constraint_details` fields are replaced by a
+  single `details` field carrying a typed per-class struct — a Rust
+  enum with data in the variants, expressed as structs:
+  - `type: :constraint_violation` → `details:
+    %XqliteEcto3.Error.Constraint{subtype, table, columns, index_name,
+    constraint_name, source_type, target_type, message}`
+  - `type: :sqlite_failure` → `details:
+    %XqliteEcto3.Error.SqliteFailure{code, extended_code, message}` —
+    the primary and extended result codes were previously flattened
+    into the message string and lost; now preserved structurally.
+  - `type: :sql_input_error` → `details:
+    %XqliteEcto3.Error.Input{code, message, sql, offset}` — only the
+    message survived before; the offending SQL and byte offset were
+    lost; now preserved structurally.
+  - Tag-only errors keep `details: nil`.
+  Migration: `e.constraint_type` → `e.details.subtype`;
+  `e.constraint_details.table` → `e.details.table`. The exception
+  type itself is unchanged — `rescue e in XqliteEcto3.Error` still
+  catches everything.
+
 ### Added
 
 - **`XqliteEcto3.UUIDv7.generate/0`** — time-ordered UUID v7 generator

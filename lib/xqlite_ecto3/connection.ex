@@ -101,32 +101,45 @@ defmodule XqliteEcto3.Connection do
 
   @impl true
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_unique, constraint_details: d},
+        %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_unique} = d
+        },
         _opts
       ) do
     [unique: unique_index_name(d)]
   end
 
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_primary_key, constraint_details: d},
+        %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_primary_key} = d
+        },
         _opts
       ) do
     [unique: unique_index_name(d)]
   end
 
-  def to_constraints(%XqliteEcto3.Error{constraint_type: :constraint_foreign_key}, _opts) do
+  def to_constraints(
+        %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
+        },
+        _opts
+      ) do
     [foreign_key: nil]
   end
 
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_check, constraint_details: d},
+        %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_check} = d
+        },
         _opts
       ) do
-    [check: Map.get(d || %{}, :constraint_name)]
+    [check: d.constraint_name]
   end
 
   def to_constraints(
-        %XqliteEcto3.Error{constraint_type: :constraint_not_null, constraint_details: d},
+        %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_not_null} = d
+        },
         _opts
       ) do
     [not_null: not_null_column(d)]
@@ -134,11 +147,11 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(_, _), do: []
 
-  defp unique_index_name(nil), do: nil
+  defp unique_index_name(%XqliteEcto3.Error.Constraint{index_name: name})
+       when is_binary(name),
+       do: name
 
-  defp unique_index_name(%{index_name: name}) when is_binary(name), do: name
-
-  defp unique_index_name(%{table: table, columns: [_ | _] = columns})
+  defp unique_index_name(%XqliteEcto3.Error.Constraint{table: table, columns: [_ | _] = columns})
        when is_binary(table) do
     derive_index_name(table, columns)
   end
@@ -151,14 +164,15 @@ defmodule XqliteEcto3.Connection do
     Enum.join([table | columns] ++ ["index"], "_")
   end
 
-  defp not_null_column(nil), do: nil
-
-  defp not_null_column(%{table: table, columns: [col | _]})
+  defp not_null_column(%XqliteEcto3.Error.Constraint{table: table, columns: [col | _]})
        when is_binary(table) and is_binary(col) do
     "#{table}.#{col}"
   end
 
-  defp not_null_column(%{columns: [col | _]}) when is_binary(col), do: col
+  defp not_null_column(%XqliteEcto3.Error.Constraint{columns: [col | _]})
+       when is_binary(col),
+       do: col
+
   defp not_null_column(_), do: nil
 
   defp merge_defaults(opts) do

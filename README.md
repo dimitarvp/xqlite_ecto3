@@ -178,12 +178,18 @@ try do
   MyApp.Repo.insert_all(MyApp.User, [%{name: "bob", email: "alice@example.com"}])
 rescue
   e in XqliteEcto3.Error ->
-    e.type              # :constraint_violation
-    e.constraint_type   # :constraint_unique
-    e.constraint_details.table    # "users"
-    e.constraint_details.columns  # ["email"]
+    e.type                  # :constraint_violation
+    e.details.subtype       # :constraint_unique
+    e.details.table         # "users"
+    e.details.columns       # ["email"]
 end
 ```
+
+One exception type, a typed payload per error class in `details` —
+`Error.Constraint`, `Error.SqliteFailure` (primary + extended result
+codes preserved), `Error.Input` (offending SQL + byte offset), or
+`nil` for tag-only errors. Think Rust enum variants carrying data,
+expressed as structs.
 
 ### Streaming
 

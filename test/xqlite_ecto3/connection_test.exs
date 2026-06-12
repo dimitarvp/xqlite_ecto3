@@ -80,8 +80,12 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps unique constraint from structured details" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_unique,
-      constraint_details: %{table: "users", columns: ["email"]}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_unique,
+        table: "users",
+        columns: ["email"]
+      }
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_email_index"]
@@ -89,8 +93,12 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps composite unique constraint" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_unique,
-      constraint_details: %{table: "users", columns: ["tenant_id", "email"]}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_unique,
+        table: "users",
+        columns: ["tenant_id", "email"]
+      }
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_tenant_id_email_index"]
@@ -98,8 +106,8 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps foreign key constraint" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_foreign_key,
-      constraint_details: %{}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
     }
 
     assert SQL.to_constraints(error, []) == [foreign_key: nil]
@@ -107,8 +115,11 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps check constraint" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_check,
-      constraint_details: %{constraint_name: "positive_balance"}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_check,
+        constraint_name: "positive_balance"
+      }
     }
 
     assert SQL.to_constraints(error, []) == [check: "positive_balance"]
@@ -116,8 +127,12 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps not null constraint" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_not_null,
-      constraint_details: %{table: "users", columns: ["name"]}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_not_null,
+        table: "users",
+        columns: ["name"]
+      }
     }
 
     assert SQL.to_constraints(error, []) == [not_null: "users.name"]
@@ -125,8 +140,12 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps primary key as unique" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_primary_key,
-      constraint_details: %{table: "users", columns: ["id"]}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_primary_key,
+        table: "users",
+        columns: ["id"]
+      }
     }
 
     assert SQL.to_constraints(error, []) == [unique: "users_id_index"]
@@ -134,8 +153,11 @@ defmodule XqliteEcto3.ConnectionTest do
 
   test "to_constraints maps named index unique constraint" do
     error = %XqliteEcto3.Error{
-      constraint_type: :constraint_unique,
-      constraint_details: %{index_name: "idx_users_email"}
+      type: :constraint_violation,
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_unique,
+        index_name: "idx_users_email"
+      }
     }
 
     assert SQL.to_constraints(error, []) == [unique: "idx_users_email"]
@@ -150,20 +172,24 @@ defmodule XqliteEcto3.ConnectionTest do
   # Error.wrap
   # ---------------------------------------------------------------------------
 
-  test "Error.wrap preserves constraint_type, type and details" do
+  test "Error.wrap builds the Constraint payload" do
     details = %{message: "UNIQUE failed", table: "users", columns: ["email"]}
     error = XqliteEcto3.Error.wrap({:constraint_violation, :constraint_unique, details})
     assert error.type == :constraint_violation
-    assert error.constraint_type == :constraint_unique
     assert error.message == "UNIQUE failed"
-    assert error.constraint_details == details
+
+    assert %XqliteEcto3.Error.Constraint{
+             subtype: :constraint_unique,
+             table: "users",
+             columns: ["email"]
+           } = error.details
   end
 
   test "Error.wrap preserves type for generic tuple errors" do
     error = XqliteEcto3.Error.wrap({:no_such_table, "no such table: foo"})
     assert error.type == :no_such_table
     assert error.message == "no such table: foo"
-    assert error.constraint_type == nil
+    assert error.details == nil
   end
 
   test "Error.wrap preserves type for atom errors" do
