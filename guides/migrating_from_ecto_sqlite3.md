@@ -25,7 +25,7 @@ In `mix.exs`:
  defp deps do
    [
 -    {:ecto_sqlite3, "~> 0.x"}
-+    {:xqlite_ecto3, "~> 0.1.0"}
++    {:xqlite_ecto3, github: "dimitarvp/xqlite_ecto3"}
    ]
  end
 ```
@@ -245,7 +245,7 @@ XqliteEcto3, but worth knowing:
 | `DELETE` with `JOIN` | raises | conservative rewrite |
 | `EXPLAIN ANALYZE` | N/A | `Xqlite.explain_analyze/3` |
 | Custom types | `:integer` for booleans, etc. | ditto + optional `XqliteEcto3.Types.*` |
-| Shared Ecto suite coverage | comparable | ~588 tests; documented exclusions |
+| Shared Ecto suite coverage | comparable | green; documented exclusions |
 | `mix ecto.*` tasks | work | work |
 | `Ecto.Adapters.SQL.Sandbox` | works | works |
 | Streaming (`Repo.stream/2`) | works | works |

@@ -1,9 +1,17 @@
 # XqliteEcto3
 
+<!-- Uncomment at first Hex publish:
+[![Hex version](https://img.shields.io/hexpm/v/xqlite_ecto3.svg?style=flat)](https://hex.pm/packages/xqlite_ecto3)
+[![Hexdocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/xqlite_ecto3)
+[![Downloads](https://img.shields.io/hexpm/dt/xqlite_ecto3.svg)](https://hex.pm/packages/xqlite_ecto3)
+-->
+[![SQLite](https://img.shields.io/badge/SQLite-3.51.3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/releaselog/3_51_3.html)
+[![Ecto](https://img.shields.io/badge/Ecto-~%3E%203.12-6e4a7e)](https://hexdocs.pm/ecto_sql)
+[![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.15-4B275F?logo=elixir&logoColor=white)](https://elixir-lang.org)
 [![Build Status](https://github.com/dimitarvp/xqlite_ecto3/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitarvp/xqlite_ecto3/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An Ecto 3.x adapter for SQLite, built on top of [xqlite](https://hex.pm/packages/xqlite). Per-operation cancel tokens wired to Ecto's `:timeout`, structured constraint errors without regex, and opt-in SQLite-flavored migration ergonomics that other adapters do not provide.
+An Ecto 3.x adapter for SQLite, built on top of [xqlite](https://hex.pm/packages/xqlite). Per-operation cancel tokens wired to Ecto's `:timeout`, structured constraint errors without regex, opt-in compile-time `:telemetry` instrumentation at the DBConnection layer, and opt-in SQLite-flavored migration ergonomics that other adapters do not provide.
 
 > This library is pre-v0.1.0. The public API is stable enough to use but may shift before 1.0.
 
@@ -18,16 +26,17 @@ XqliteEcto3 is inspired by [ecto_sqlite3](https://github.com/elixir-sqlite/ecto_
 - **Conservative by default, opt-in where it counts.** Loose schemas stay loose. `CHECK` constraints, `MODIFY COLUMN` via table rebuild, and structured `DELETE … JOIN` rewrite are all off until you ask for them. Migrations that can be safely performed with plain SQL are. Anything that needs the 12-step SQLite rebuild dance is behind `support_alter_via_table_rebuild: true` in your repo config.
 - **Custom types live at the adapter layer.** `XqliteEcto3.Types.UUID`, `Instant`, `Duration`, `TimestampTZ`, `Array`. Each is an `Ecto.Type` or `Ecto.ParameterizedType` module — no magic around how SQLite stores them.
 - **Bundled SQLite 3.51.3.** Inherited from xqlite. No system install, no version drift between dev/CI/prod.
-- **Shared Ecto suite integration.** ~588 shared tests from `ecto` and `ecto_sql` pass; every exclusion is documented as either a permanent SQLite limitation or a tracked adapter gap.
+- **Shared Ecto suite integration.** The shared `ecto` + `ecto_sql` integration suites run green; every exclusion is documented as either a permanent SQLite limitation or a tracked adapter gap.
 
 ## Installation
 
-Add `xqlite_ecto3` to your `mix.exs`:
+Not on Hex yet — first release is coming. Until then, add the git dep
+to your `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:xqlite_ecto3, "~> 0.1.0"}
+    {:xqlite_ecto3, github: "dimitarvp/xqlite_ecto3"}
   ]
 end
 ```
@@ -186,6 +195,25 @@ MyApp.Repo.transaction(fn ->
 end)
 ```
 
+### Telemetry (opt-in, compile-time)
+
+```elixir
+# config/config.exs
+config :xqlite, :telemetry_enabled, true
+config :xqlite_ecto3, :telemetry_enabled, true
+```
+
+The adapter emits `[:xqlite_ecto3, ...]` events at the `DBConnection`
+callback layer (connect / disconnect / checkout, begin / commit /
+rollback, execute, and the streaming declare / fetch / deallocate) —
+spans with integer-nanosecond timings. Together with Ecto's own
+`[:my_app, :repo, :query]` and xqlite's `[:xqlite, ...]` events you
+get a three-layer view: pool → adapter → driver. With the flags off
+(the default) no telemetry call exists in the compiled bytecode.
+OpenTelemetry plugs in downstream via `opentelemetry_telemetry` — no
+adapter-side OTel dependency. See
+[`guides/wiring_telemetry.md`](guides/wiring_telemetry.md).
+
 ### Opt-in migration helpers
 
 Enum-backed CHECK constraints:
@@ -253,7 +281,7 @@ An ergonomic bridge — "checkout-a-connection-and-pass-it-to-an-xqlite-function
 ## FAQ
 
 **Is it production-ready?**
-I use it in my own projects. The test coverage is extensive (shared Ecto suite + ~100 adapter-specific tests). That said, it's pre-v0.1.0; the public API may shift. Report anything surprising on GitHub or ElixirForum.
+I use it in my own projects. The test coverage is extensive — the shared Ecto integration suites plus the adapter's own suites. That said, it's pre-v0.1.0; the public API may shift. Report anything surprising on GitHub or ElixirForum.
 
 **What SQLite version ships?**
 Whatever xqlite ships (currently 3.51.3). `Xqlite.sqlite_version/0` if you need to check at runtime.
@@ -308,12 +336,11 @@ Most adapters that handle DELETE+JOIN quietly guess at composite PKs, schemaless
 
 Prioritized. Anything not listed is deferred.
 
-1. **Observability surface.** xqlite is getting `sqlite3_busy_handler`, `sqlite3_wal_hook`, `sqlite3_commit_hook`, `sqlite3_rollback_hook`, `sqlite3_db_status` wrappers, plus lock-state introspection where SQLite exposes it. This adapter will expose those through its own surface + emit `:telemetry` events for every one.
-2. **`:telemetry` integration.** Both xqlite and xqlite_ecto3 will emit structured `[:xqlite | :xqlite_ecto3, ...]` events. `:telemetry_metrics` and OpenTelemetry (via `opentelemetry_telemetry`) plug in with no adapter-side OTel dependency.
-3. **Rich foreign-key diagnostics.** Opt-in `rich_fk_diagnostics: true` repo config that wraps each transaction in a savepoint with `PRAGMA defer_foreign_keys = ON`, runs `foreign_key_check` before release, and populates a structured `%XqliteEcto3.Error.ForeignKey{}`. SQLite's FK enforcement is counter-based and no other adapter exposes this.
-4. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
-5. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
-6. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
+1. **Repo-level observability surface.** xqlite 0.7.0 ships multi-subscriber hooks (update / WAL / commit / rollback / progress / busy) and connection-state introspection; this adapter will expose them through its own surface — subscribe to hooks on pool connections, surface `txn_state` / `connection_stats` per checkout — so users can build their own concurrency strategies without leaving the Repo.
+2. **Rich foreign-key diagnostics.** Opt-in `rich_fk_diagnostics: true` repo config that wraps each transaction in a savepoint with `PRAGMA defer_foreign_keys = ON`, runs `foreign_key_check` before release, and populates a structured `%XqliteEcto3.Error.ForeignKey{}`. SQLite's FK enforcement is counter-based and no other adapter exposes this.
+3. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
+4. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
+5. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 
@@ -322,7 +349,7 @@ Deferred until demand materializes:
 
 ## Contributing
 
-Contributions welcome. Please run `mix precommit` locally before submitting — it chains format check, compile `--warnings-as-errors`, Dialyzer, and the full sequential test suite. For dev loops against an unreleased xqlite checkout, export `XQLITE_PATH=../xqlite` (or wherever your xqlite working copy lives).
+Contributions welcome. Please run `mix precommit` locally before submitting — it chains format check, compile `--warnings-as-errors`, Dialyzer, and the full sequential test suite. For dev loops against an unreleased xqlite checkout, export `XQLITE_PATH=../xqlite` (or wherever your xqlite working copy lives). One caveat that mode hides: CI resolves xqlite from Hex, so if your change relies on unreleased xqlite API, verify once with `XQLITE_PATH` unset before pushing — green against your local checkout does not imply green against the released package.
 
 ## License
 
