@@ -1,8 +1,5 @@
 defmodule XqliteEcto3.TypesTest do
-  use ExUnit.Case, async: true
-
-  alias Ecto.Integration.TestRepo, as: Repo
-  import XqliteEcto3.TableHelper
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule TR do
     use Ecto.Schema
@@ -31,7 +28,6 @@ defmodule XqliteEcto3.TypesTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("typed_records")
   end
 

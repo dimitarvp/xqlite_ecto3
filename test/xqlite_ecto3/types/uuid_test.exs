@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.Types.UUIDTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
   alias XqliteEcto3.Types.UUID, as: UUIDType
 
@@ -172,7 +172,6 @@ defmodule XqliteEcto3.Types.UUIDTest do
   describe "round-trip through SQLite with :string storage" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
 
       TestRepo.query!("""
       CREATE TEMP TABLE uuid_string_test (
@@ -190,8 +189,6 @@ defmodule XqliteEcto3.Types.UUIDTest do
     end
 
     test "insert + select via raw TestRepo.query! preserves the string form" do
-      alias Ecto.Integration.TestRepo
-
       uuid = Ecto.UUID.generate()
 
       {:ok, dumped} = UUIDType.dump(uuid, nil, %{storage: :string})
@@ -205,7 +202,6 @@ defmodule XqliteEcto3.Types.UUIDTest do
   describe "round-trip through SQLite with :binary storage" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
 
       TestRepo.query!("""
       CREATE TEMP TABLE uuid_binary_test (
@@ -218,8 +214,6 @@ defmodule XqliteEcto3.Types.UUIDTest do
     end
 
     test "insert raw 16 bytes + select preserves the bytes" do
-      alias Ecto.Integration.TestRepo
-
       uuid = Ecto.UUID.generate()
 
       {:ok, dumped} = UUIDType.dump(uuid, nil, %{storage: :binary})

@@ -1,9 +1,5 @@
 defmodule XqliteEcto3.UpsertTest do
-  use ExUnit.Case, async: true
-
-  alias Ecto.Integration.TestRepo, as: Repo
-  import Ecto.Query
-  import XqliteEcto3.TableHelper
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule UU do
     use Ecto.Schema
@@ -30,7 +26,6 @@ defmodule XqliteEcto3.UpsertTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("upsert_users")
   end
 

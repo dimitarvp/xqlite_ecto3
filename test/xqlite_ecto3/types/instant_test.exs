@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.Types.InstantTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
   alias XqliteEcto3.Types.Instant
 
@@ -125,14 +125,11 @@ defmodule XqliteEcto3.Types.InstantTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
       TestRepo.query!("CREATE TEMP TABLE inst_test(id INTEGER PRIMARY KEY, ts INTEGER)")
       :ok
     end
 
     test "insert and select int ns through TestRepo.query!" do
-      alias Ecto.Integration.TestRepo
-
       {:ok, dumped} = Instant.dump(@ns)
       TestRepo.query!("INSERT INTO inst_test(ts) VALUES (?1)", [dumped])
       %{rows: [[stored]]} = TestRepo.query!("SELECT ts FROM inst_test")

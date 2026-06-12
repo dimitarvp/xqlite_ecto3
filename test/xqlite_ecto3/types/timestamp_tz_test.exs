@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.Types.TimestampTZTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
   alias XqliteEcto3.Types.TimestampTZ, as: TS
 
@@ -168,14 +168,11 @@ defmodule XqliteEcto3.Types.TimestampTZTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
       TestRepo.query!("CREATE TEMP TABLE tsz_test(id INTEGER PRIMARY KEY, t TEXT)")
       :ok
     end
 
     test "DateTime with offset survives TEXT-column round-trip" do
-      alias Ecto.Integration.TestRepo
-
       dt = %DateTime{
         year: 2024,
         month: 1,

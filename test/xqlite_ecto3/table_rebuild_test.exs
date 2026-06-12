@@ -1,12 +1,7 @@
 defmodule XqliteEcto3.TableRebuildTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
-  alias Ecto.Integration.TestRepo
   alias Ecto.Migration.Table
-
-  setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
-  end
 
   defp adapter_meta, do: Ecto.Adapter.lookup_meta(TestRepo)
 

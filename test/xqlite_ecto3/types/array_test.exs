@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.Types.ArrayTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
   alias XqliteEcto3.Types.Array
 
@@ -172,14 +172,11 @@ defmodule XqliteEcto3.Types.ArrayTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
       TestRepo.query!("CREATE TEMP TABLE arr_test(id INTEGER PRIMARY KEY, items TEXT)")
       :ok
     end
 
     test "insert + select preserves JSON array" do
-      alias Ecto.Integration.TestRepo
-
       input = ["apple", "banana", "cherry"]
       params = %{element: :string}
 

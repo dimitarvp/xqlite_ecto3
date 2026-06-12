@@ -11,12 +11,7 @@ defmodule XqliteEcto3.JsonExtractPathTest do
   adapter's `:boolean` loader.
   """
 
-  use ExUnit.Case, async: true
-
-  import Ecto.Query
-  import XqliteEcto3.TableHelper
-
-  alias Ecto.Integration.TestRepo, as: Repo
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule Doc do
     use Ecto.Schema
@@ -36,7 +31,6 @@ defmodule XqliteEcto3.JsonExtractPathTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("jep_docs")
 
     {:ok, doc} =

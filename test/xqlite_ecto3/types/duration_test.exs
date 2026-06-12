@@ -1,5 +1,5 @@
 defmodule XqliteEcto3.Types.DurationTest do
-  use ExUnit.Case, async: true
+  use XqliteEcto3.AdapterCase, async: true
 
   alias XqliteEcto3.Types.Duration, as: D
 
@@ -158,14 +158,11 @@ defmodule XqliteEcto3.Types.DurationTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
-      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
       TestRepo.query!("CREATE TEMP TABLE dur_test(id INTEGER PRIMARY KEY, d INTEGER)")
       :ok
     end
 
     test "insert and select int ns through TestRepo.query!" do
-      alias Ecto.Integration.TestRepo
-
       {:ok, ns} = D.cast({5, :minute})
       {:ok, dumped} = D.dump(ns)
       TestRepo.query!("INSERT INTO dur_test(d) VALUES (?1)", [dumped])

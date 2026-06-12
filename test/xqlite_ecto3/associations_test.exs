@@ -1,9 +1,5 @@
 defmodule XqliteEcto3.AssociationsTest do
-  use ExUnit.Case, async: true
-
-  alias Ecto.Integration.TestRepo, as: Repo
-  import Ecto.Query
-  import XqliteEcto3.TableHelper
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule AU do
     use Ecto.Schema
@@ -46,7 +42,6 @@ defmodule XqliteEcto3.AssociationsTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_tables!(["assoc_posts", "assoc_users"])
   end
 

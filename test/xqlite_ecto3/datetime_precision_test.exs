@@ -1,8 +1,5 @@
 defmodule XqliteEcto3.DatetimePrecisionTest do
-  use ExUnit.Case, async: true
-
-  alias Ecto.Integration.TestRepo, as: Repo
-  import XqliteEcto3.TableHelper
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule DT do
     use Ecto.Schema
@@ -24,7 +21,6 @@ defmodule XqliteEcto3.DatetimePrecisionTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("dt_records")
   end
 

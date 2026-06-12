@@ -1,8 +1,5 @@
 defmodule XqliteEcto3.ConnectionLifecycleTest do
-  use ExUnit.Case, async: true
-
-  alias Ecto.Integration.TestRepo, as: Repo
-  import XqliteEcto3.TableHelper
+  use XqliteEcto3.AdapterCase, async: true
 
   defmodule CL do
     use Ecto.Schema
@@ -25,7 +22,6 @@ defmodule XqliteEcto3.ConnectionLifecycleTest do
   end
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Ecto.Integration.TestRepo)
     clear_table!("cl_users")
   end
 
