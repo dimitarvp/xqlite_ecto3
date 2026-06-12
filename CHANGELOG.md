@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dynamic JSON path segments.** `json_extract_path` (and the
+  `o.meta[o.label][o.idx]` bracket syntax) now accepts runtime path
+  segments — column references and expressions, not just literals.
+  Built by SQL path concatenation with a runtime `typeof` dispatch:
+  integers index arrays, anything else is a dot-safe quoted object
+  key; a NULL segment yields NULL instead of an error. Un-excludes
+  the shared suite's `:json_extract_path_with_field` tag, including
+  its `parent_as`/subquery variants. Caveat: runtime keys containing
+  a double quote are unsupported (path-grammar limitation, same as
+  MySQL's CONCAT-built paths).
+- **Documented boolean-extraction story.** Untyped
+  `select: o.meta["enabled"]` returns SQLite's storage-faithful
+  `1`/`0` — there is no boolean storage class and no JSON wire
+  typing, and Ecto provides no load hook for untyped select
+  expressions, so no SQLite adapter can return `true` there
+  (PostgreSQL/MySQL pass via protocol-level typing). The sanctioned
+  fix, `select: type(o.meta["enabled"], :boolean)`, routes through
+  the adapter's `:boolean` loader and is covered by adapter-owned
+  tests.
+
 - **Rich FK diagnostics (opt-in).** `rich_fk_diagnostics: true` repo
   config. SQLite reports FK violations with no table, column, or
   constraint name; with the flag on, the adapter replays the failed

@@ -109,21 +109,18 @@ excludes = [
   # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 
-  # --- Needs adapter work (excluded until implemented) ---
-
-  # (A) The "with primitive values" variant of json_extract_path touches
-  # booleans in a SELECT clause (`select: o.metadata["enabled"] == true`).
-  # SQLite's json_extract returns 1/0 for JSON booleans, Elixir's
-  # `1 == true` is false, so that specific assertion fails. The fix needs
-  # a coercion layer we haven't designed yet (task #63).
+  # type.exs:362 "json_extract_path with primitive values": two SELECT
+  # assertions expect Elixir booleans (`select: o.metadata["enabled"]`
+  # == true). SQLite has no boolean storage class and no JSON wire
+  # typing — json_extract faithfully returns INTEGER 1/0, and Ecto
+  # gives untyped select expressions no load hook, so no SQLite
+  # adapter can pass this without protocol-level typing (which is how
+  # PostgreSQL/MySQL pass). Permanent. The sanctioned user-facing fix
+  # is explicit typing — `select: type(o.metadata["enabled"],
+  # :boolean)` routes through the adapter's :boolean loader; covered
+  # by adapter-owned tests in json_extract_path_test.exs. All WHERE
+  # comparisons and non-boolean SELECTs in this test work.
   {:location, {"deps/ecto/integration_test/cases/type.exs", 362}},
-
-  # (B) The "with fields in path" variant uses dynamic path expressions
-  # (`o.metadata[o.label][1]["name"]`) where the path element is another
-  # field reference, not a literal. Our expr builder for json_extract_path
-  # only handles literal string/integer path components today. Separate
-  # adapter gap — tracked alongside #63.
-  :json_extract_path_with_field,
 
   # (permanent SQLite limit) strftime %f gives only millisecond precision.
   # interval.exs datetime_add tests that add microsecond counts round to

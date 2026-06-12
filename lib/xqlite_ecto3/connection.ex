@@ -1507,16 +1507,26 @@ defmodule XqliteEcto3.Connection do
   end
 
   defp expr({:json_extract_path, _, [expr, path]}, sources, query) do
-    path =
-      Enum.map(path, fn
-        binary when is_binary(binary) ->
-          [?., escape_json_key(binary)]
+    if Enum.all?(path, fn seg -> is_binary(seg) or is_integer(seg) end) do
+      path =
+        Enum.map(path, fn
+          binary when is_binary(binary) ->
+            [?., escape_json_key(binary)]
 
-        integer when is_integer(integer) ->
-          "[#{integer}]"
-      end)
+          integer when is_integer(integer) ->
+            "[#{integer}]"
+        end)
 
-    ["json_extract(", expr(expr, sources, query), ", '$", path, "')"]
+      ["json_extract(", expr(expr, sources, query), ", '$", path, "')"]
+    else
+      [
+        "json_extract(",
+        expr(expr, sources, query),
+        ", ",
+        dynamic_json_path(path, sources, query),
+        ")"
+      ]
+    end
   end
 
   defp expr({:exists, _, [subquery]}, sources, query) do
@@ -2058,5 +2068,43 @@ defmodule XqliteEcto3.Connection do
     value
     |> escape_string()
     |> :binary.replace("\"", "\\\"", [:global])
+  end
+
+  # JSON path with runtime segments (e.g. `o.metadata[o.label]`): built
+  # by SQL string concatenation, verified against SQLite's JSON path
+  # grammar. Literal segments stay compile-time-escaped string chunks;
+  # expression segments dispatch on typeof at runtime — integers index
+  # arrays (`[n]`), anything else becomes a quoted object key
+  # (`."key"`, dot-safe). A NULL segment nulls the whole path, so
+  # json_extract returns NULL — graceful. Runtime keys containing a
+  # double quote are unsupported (they alter path parsing within the
+  # extracted document; same caveat as MySQL's CONCAT-built paths).
+  # The segment expression appears twice (typeof + value); for column
+  # references that is free, and SQLite evaluates deterministically
+  # within a statement.
+  defp dynamic_json_path(path, sources, query) do
+    segments =
+      Enum.map(path, fn
+        binary when is_binary(binary) ->
+          ["'.", escape_json_key(binary), "'"]
+
+        integer when is_integer(integer) ->
+          "'[#{integer}]'"
+
+        ast ->
+          seg = expr(ast, sources, query)
+
+          [
+            "CASE WHEN typeof(",
+            seg,
+            ") = 'integer' THEN '[' || ",
+            seg,
+            " || ']' ELSE '.\"' || ",
+            seg,
+            " || '\"' END"
+          ]
+      end)
+
+    Enum.intersperse(["'$'" | segments], " || ")
   end
 end
