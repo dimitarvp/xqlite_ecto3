@@ -25,11 +25,58 @@ defmodule XqliteEcto3.Error do
 
   defexception [:message, :statement, :type, :details]
 
+  defmodule FkViolation do
+    @moduledoc """
+    One row of `PRAGMA foreign_key_check`, resolved against
+    `PRAGMA foreign_key_list` — produced by the opt-in rich FK
+    diagnostics (`rich_fk_diagnostics: true` repo config).
+
+    `constraint_name` is synthesized from the child table and columns
+    using Ecto's default convention (`"<table>_<column>_fkey"`) so
+    `Ecto.Changeset.foreign_key_constraint/3` matches out of the box.
+    SQLite does not store FK constraint names, so explicitly named
+    constraints still need `foreign_key_constraint(:field, name: ...)`
+    with the synthesized name.
+
+    `child_rowid` is `nil` for `WITHOUT ROWID` child tables.
+    `parent_columns` may contain `nil` when the FK references the
+    parent's primary key implicitly (`REFERENCES parent` without a
+    column list).
+    """
+
+    defstruct [
+      :child_table,
+      :child_rowid,
+      :parent_table,
+      :fk_id,
+      :constraint_name,
+      child_columns: [],
+      parent_columns: []
+    ]
+
+    @type t :: %__MODULE__{
+            child_table: String.t(),
+            child_rowid: integer() | nil,
+            parent_table: String.t(),
+            fk_id: integer(),
+            constraint_name: String.t(),
+            child_columns: [String.t()],
+            parent_columns: [String.t() | nil]
+          }
+  end
+
   defmodule Constraint do
     @moduledoc """
     Payload for `type: :constraint_violation` — one of SQLite's 13
     constraint subtypes plus the structural details xqlite parsed at
     the NIF boundary.
+
+    For `subtype: :constraint_foreign_key` with the opt-in
+    `rich_fk_diagnostics: true` repo config, `fk_violations` carries
+    the exact violating rows and `fk_diagnostics` reports whether the
+    diagnosis ran: `:not_run` (flag off or non-FK error), `:ok`
+    (violations populated), or `{:unavailable, reason}` (attempted but
+    failed — the original error is surfaced regardless).
     """
 
     defstruct [
@@ -40,7 +87,9 @@ defmodule XqliteEcto3.Error do
       :constraint_name,
       :source_type,
       :target_type,
-      columns: []
+      columns: [],
+      fk_violations: [],
+      fk_diagnostics: :not_run
     ]
 
     @type t :: %__MODULE__{
@@ -51,7 +100,9 @@ defmodule XqliteEcto3.Error do
             constraint_name: String.t() | nil,
             source_type: atom() | nil,
             target_type: atom() | nil,
-            columns: [String.t()]
+            columns: [String.t()],
+            fk_violations: [XqliteEcto3.Error.FkViolation.t()],
+            fk_diagnostics: :not_run | :ok | {:unavailable, term()}
           }
   end
 

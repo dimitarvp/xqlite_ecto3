@@ -133,13 +133,14 @@ defmodule XqliteEcto3.ConstraintsTest do
   # ---------------------------------------------------------------------------
   # Foreign key constraint
   #
-  # SQLite does not report which FK was violated — it only says
-  # "FOREIGN KEY constraint failed" with no table/column info.
-  # This means foreign_key_constraint/3 on changesets cannot match
-  # by name. This is a known SQLite limitation shared with ecto_sqlite3.
+  # SQLite itself only says "FOREIGN KEY constraint failed" with no
+  # table/column info. The TestRepo runs with rich_fk_diagnostics: true,
+  # so the adapter replays the failure under deferred enforcement and
+  # synthesizes the Ecto-convention constraint name —
+  # foreign_key_constraint/3 matches like it does on PostgreSQL.
   # ---------------------------------------------------------------------------
 
-  test "FK violation raises ConstraintError without matching changeset constraint" do
+  test "FK violation raises ConstraintError when the changeset declares no constraint" do
     error =
       assert_raise Ecto.ConstraintError, fn ->
         %CP{}
@@ -148,6 +149,21 @@ defmodule XqliteEcto3.ConstraintsTest do
       end
 
     assert error.type == :foreign_key
+    assert error.constraint == "constr_posts_user_id_fkey"
+  end
+
+  test "FK violation converts to a changeset error via foreign_key_constraint/2" do
+    result =
+      %CP{}
+      |> CP.changeset(%{title: "Orphan", user_id: 999_999})
+      |> foreign_key_constraint(:user_id)
+      |> Repo.insert()
+
+    assert {:error, changeset} = result
+    assert {msg, opts} = changeset.errors[:user_id]
+    assert msg == "does not exist"
+    assert opts[:constraint] == :foreign
+    assert opts[:constraint_name] == "constr_posts_user_id_fkey"
   end
 
   test "FK allows valid reference" do

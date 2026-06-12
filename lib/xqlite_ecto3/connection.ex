@@ -120,6 +120,20 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(
         %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{
+            subtype: :constraint_foreign_key,
+            fk_violations: [_ | _] = violations
+          }
+        },
+        _opts
+      ) do
+    violations
+    |> Enum.map(fn v -> {:foreign_key, v.constraint_name} end)
+    |> Enum.uniq()
+  end
+
+  def to_constraints(
+        %XqliteEcto3.Error{
           details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
         },
         _opts

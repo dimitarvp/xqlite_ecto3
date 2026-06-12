@@ -6,7 +6,14 @@ defmodule XqliteEcto3.Driver do
   alias XqliteNIF, as: NIF
   import XqliteEcto3.Telemetry, only: [emit: 3, span_with_stop_metadata: 3]
 
-  defstruct [:conn, :transaction_status, :path, :savepoint_prefix, savepoint: 0]
+  defstruct [
+    :conn,
+    :transaction_status,
+    :path,
+    :savepoint_prefix,
+    savepoint: 0,
+    rich_fk_diagnostics: false
+  ]
 
   @default_stream_batch_size 500
 
@@ -23,6 +30,7 @@ defmodule XqliteEcto3.Driver do
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
     synchronous = Keyword.get(opts, :synchronous, :normal)
     temp_store = Keyword.get(opts, :temp_store, :memory)
+    rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
 
     start_md = %{database: database}
 
@@ -40,7 +48,8 @@ defmodule XqliteEcto3.Driver do
              conn: conn,
              transaction_status: :idle,
              path: database,
-             savepoint_prefix: random_savepoint_prefix()
+             savepoint_prefix: random_savepoint_prefix(),
+             rich_fk_diagnostics: rich_fk_diagnostics
            }}
         else
           {:error, reason} -> {:error, reason}
@@ -170,7 +179,7 @@ defmodule XqliteEcto3.Driver do
                 {:ok, nil, %{state | savepoint: state.savepoint - 1}}
 
               {:error, reason} ->
-                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+                {:disconnect, wrap_commit_error(reason, state), state}
             end
 
           _mode ->
@@ -179,13 +188,22 @@ defmodule XqliteEcto3.Driver do
                 {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
               {:error, reason} ->
-                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+                {:disconnect, wrap_commit_error(reason, state), state}
             end
         end
 
       classify_dbc(result, start_md)
     end
   end
+
+  # A COMMIT (or outermost-savepoint RELEASE) that fails on a deferred
+  # FK violation leaves the transaction open with the violating rows
+  # still present — diagnose by reading them directly, no replay.
+  defp wrap_commit_error(reason, %__MODULE__{rich_fk_diagnostics: true} = state) do
+    XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, state.conn)
+  end
+
+  defp wrap_commit_error(reason, _state), do: XqliteEcto3.Error.wrap(reason)
 
   @impl DBConnection
   def handle_rollback(opts, state) do
@@ -250,12 +268,18 @@ defmodule XqliteEcto3.Driver do
             {:error, %DBConnection.ConnectionError{message: "query timed out"}, state}
 
           {:error, reason} ->
-            {:error, XqliteEcto3.Error.wrap(reason), state}
+            {:error, wrap_execute_error(reason, sql, params, state), state}
         end
 
       classify_dbc(result, start_md)
     end
   end
+
+  defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
+    XqliteEcto3.FkDiagnostics.wrap_with_replay(reason, state.conn, sql, params)
+  end
+
+  defp wrap_execute_error(reason, _sql, _params, _state), do: XqliteEcto3.Error.wrap(reason)
 
   @impl DBConnection
   def handle_close(_query, _opts, state) do

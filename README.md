@@ -23,7 +23,7 @@ XqliteEcto3 is inspired by [ecto_sqlite3](https://github.com/elixir-sqlite/ecto_
 
 - **Cancel tokens threaded through `:timeout`.** Ecto's `:timeout` option produces a real cancellation signal on the SQLite progress handler, not a fire-and-forget `sqlite3_interrupt` that lets slow operations run to completion. A runaway query actually dies when you give up on it.
 - **Structured constraint errors end-to-end.** All 13 SQLite constraint subtypes map to typed atoms (`:constraint_unique`, `:constraint_foreign_key`, `:constraint_check`, …) with structured details (`table`, `columns`, `index_name`, `constraint_name`) attached. No regex-matching error messages, locale-sensitive or otherwise.
-- **Conservative by default, opt-in where it counts.** Loose schemas stay loose. `CHECK` constraints, `MODIFY COLUMN` via table rebuild, and structured `DELETE … JOIN` rewrite are all off until you ask for them. Migrations that can be safely performed with plain SQL are. Anything that needs the 12-step SQLite rebuild dance is behind `support_alter_via_table_rebuild: true` in your repo config.
+- **Conservative by default, opt-in where it counts.** Loose schemas stay loose. `CHECK` constraints, `MODIFY COLUMN` via table rebuild, rich FK diagnostics, and structured `DELETE … JOIN` rewrite are all off until you ask for them. Migrations that can be safely performed with plain SQL are. Anything that needs the 12-step SQLite rebuild dance is behind `support_alter_via_table_rebuild: true` in your repo config.
 - **Custom types live at the adapter layer.** `XqliteEcto3.Types.UUID`, `Instant`, `Duration`, `TimestampTZ`, `Array`. Each is an `Ecto.Type` or `Ecto.ParameterizedType` module — no magic around how SQLite stores them.
 - **Bundled SQLite 3.53.2.** Inherited from xqlite. No system install, no version drift between dev/CI/prod.
 - **Shared Ecto suite integration.** The shared `ecto` + `ecto_sql` integration suites run green; every exclusion is documented as either a permanent SQLite limitation or a tracked adapter gap.
@@ -191,6 +191,40 @@ codes preserved), `Error.Input` (offending SQL + byte offset), or
 `nil` for tag-only errors. Think Rust enum variants carrying data,
 expressed as structs.
 
+### Rich FK diagnostics (opt-in)
+
+SQLite reports every foreign-key violation as a bare
+`FOREIGN KEY constraint failed` — no table, no column, no constraint
+name — so `foreign_key_constraint/3` changeset matching is impossible
+on a stock SQLite adapter. With
+
+```elixir
+config :my_app, MyApp.Repo, rich_fk_diagnostics: true
+```
+
+the adapter replays the failed statement under deferred FK
+enforcement inside a throwaway savepoint, reads
+`PRAGMA foreign_key_check` + `foreign_key_list`, and attaches the
+exact violations to the error:
+
+```elixir
+e.details.fk_violations
+# => [%XqliteEcto3.Error.FkViolation{
+#      child_table: "posts", child_rowid: 7,
+#      parent_table: "users", child_columns: ["user_id"],
+#      parent_columns: ["id"], constraint_name: "posts_user_id_fkey"}]
+```
+
+The synthesized name follows Ecto's default convention, so
+`foreign_key_constraint(:user_id)` converts the violation into a
+changeset error exactly like PostgreSQL does. Zero cost on the happy
+path — the replay runs only after a violation, and any diagnostic
+failure degrades to the original error
+(`fk_diagnostics: {:unavailable, reason}`), never masking it.
+Caveat: explicitly named FK constraints still need
+`foreign_key_constraint(:field, name: ...)` with the synthesized
+name — SQLite does not store FK constraint names.
+
 ### Streaming
 
 ```elixir
@@ -309,7 +343,7 @@ Permanent SQLite constraints (not adapter choices):
 - No schemas/namespaces (`@schema_prefix` is excluded; `ATTACH DATABASE` workaround not wired up)
 - No `FOR UPDATE` row-level locks
 - No user/role/GRANT system — file permissions are the only access gate
-- Foreign-key violation errors do not carry the FK name (`SQLITE_CONSTRAINT_FOREIGNKEY` has no name field)
+- Foreign-key violation errors do not carry the FK name (`SQLITE_CONSTRAINT_FOREIGNKEY` has no name field) — the opt-in `rich_fk_diagnostics: true` recovers table/columns/rowid and a convention-synthesized name (see Features)
 - `ALTER TABLE` cannot modify primary keys or foreign keys in-place (rebuild required)
 - SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds
 
@@ -343,10 +377,9 @@ Most adapters that handle DELETE+JOIN quietly guess at composite PKs, schemaless
 Prioritized. Anything not listed is deferred.
 
 1. **Repo-level observability surface.** xqlite 0.7.0 ships multi-subscriber hooks (update / WAL / commit / rollback / progress / busy) and connection-state introspection; this adapter will expose them through its own surface — subscribe to hooks on pool connections, surface `txn_state` / `connection_stats` per checkout — so users can build their own concurrency strategies without leaving the Repo.
-2. **Rich foreign-key diagnostics.** Opt-in `rich_fk_diagnostics: true` repo config that wraps each transaction in a savepoint with `PRAGMA defer_foreign_keys = ON`, runs `foreign_key_check` before release, and populates a structured `%XqliteEcto3.Error.ForeignKey{}`. SQLite's FK enforcement is counter-based and no other adapter exposes this.
-3. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
-4. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
-5. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
+2. **`json_extract_path` boolean coercion.** Closes the `type.exs:362` exclusion.
+3. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
+4. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 

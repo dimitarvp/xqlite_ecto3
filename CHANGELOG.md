@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Rich FK diagnostics (opt-in).** `rich_fk_diagnostics: true` repo
+  config. SQLite reports FK violations with no table, column, or
+  constraint name; with the flag on, the adapter replays the failed
+  statement under `defer_foreign_keys` inside a throwaway savepoint,
+  reads `PRAGMA foreign_key_check` + `foreign_key_list`, and attaches
+  sorted, deterministic `%XqliteEcto3.Error.FkViolation{}` entries
+  (child table/rowid, parent table, exact columns, and a
+  convention-synthesized constraint name) to the error. As a result
+  `Ecto.Changeset.foreign_key_constraint/3` matches like on
+  PostgreSQL, and the shared Ecto suite's `:foreign_key_constraint`
+  exclusion is gone. Commit-time deferred violations are diagnosed
+  in place (no replay). Zero happy-path cost; diagnostic failures
+  degrade to the original error with
+  `fk_diagnostics: {:unavailable, reason}`. Emits a
+  `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
+
 ### Breaking
 
 - **`XqliteEcto3.Error` payload restructure.** The flat

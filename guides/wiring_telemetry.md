@@ -49,6 +49,7 @@ true
 | `[:xqlite_ecto3, :handle_declare, :*]` | a streaming cursor opens | `:sql`, `:query` |
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
+| `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count`, `:diagnostics_status` |
 
 Every span event (`*, :start | :stop | :exception`) carries
 `monotonic_time` (ns) on `:start` and `monotonic_time` + `duration`

@@ -22,7 +22,8 @@ Application.put_env(:xqlite_ecto3, TestRepo,
   database: test_db,
   pool: Ecto.Adapters.SQL.Sandbox,
   show_sensitive_data_on_connection_error: true,
-  support_alter_via_table_rebuild: true
+  support_alter_via_table_rebuild: true,
+  rich_fk_diagnostics: true
 )
 
 Application.put_env(:xqlite_ecto3, PoolRepo,
@@ -30,7 +31,8 @@ Application.put_env(:xqlite_ecto3, PoolRepo,
   database: pool_db,
   pool_size: 1,
   show_sensitive_data_on_connection_error: true,
-  support_alter_via_table_rebuild: true
+  support_alter_via_table_rebuild: true,
+  rich_fk_diagnostics: true
 )
 
 # Some shared tests read config from the :ecto_sql app
@@ -77,9 +79,6 @@ excludes = [
   # SQLite ON DELETE SET NULL/DEFAULT applies to all FK columns; no column-list syntax
   :on_delete_nilify_column_list,
   :on_delete_default_column_list,
-
-  # SQLite FK violations report no constraint name
-  :foreign_key_constraint,
 
   # SQLite has no native bitstring type
   :bitstring_type,
