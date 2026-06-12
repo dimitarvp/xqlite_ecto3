@@ -74,7 +74,7 @@ defmodule XqliteEcto3.MixProject do
   # XQLITE_BUILD=true for forced local compilation.
   defp xqlite_dep do
     case System.get_env("XQLITE_PATH") do
-      nil -> {:xqlite, "~> 0.6"}
+      nil -> {:xqlite, "~> 0.7"}
       path -> {:xqlite, path: path, override: true}
     end
   end
@@ -111,6 +111,7 @@ defmodule XqliteEcto3.MixProject do
       extras: [
         "README.md",
         "guides/migrating_from_ecto_sqlite3.md",
+        "guides/wiring_telemetry.md",
         "CHANGELOG.md",
         "LICENSE.md"
       ],
