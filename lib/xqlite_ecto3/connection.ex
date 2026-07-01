@@ -370,8 +370,13 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
+  # ecto_sql 3.14 widened the callback to insert/8 (trailing opts) but its
+  # single-row `Repo.insert` path still invokes insert/7 — the default arg
+  # makes one definition serve both arities and both ecto_sql lines.
   @impl true
-  def insert(prefix, table, [], [[]], on_conflict, returning, []) do
+  def insert(prefix, table, header, rows, on_conflict, returning, placeholders, opts \\ [])
+
+  def insert(prefix, table, [], [[]], on_conflict, returning, [], _opts) do
     [
       "INSERT INTO ",
       quote_table(prefix, table),
@@ -381,7 +386,7 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def insert(prefix, table, header, rows, on_conflict, returning, placeholders) do
+  def insert(prefix, table, header, rows, on_conflict, returning, placeholders, _opts) do
     counter_offset = length(placeholders) + 1
 
     values =
@@ -539,7 +544,9 @@ defmodule XqliteEcto3.Connection do
 
     [
       [
-        "CREATE TABLE ",
+        "CREATE ",
+        modifiers_expr(table),
+        "TABLE ",
         quote_table(table.prefix, table.name),
         ?\s,
         ?(,
@@ -558,7 +565,9 @@ defmodule XqliteEcto3.Connection do
 
     [
       [
-        "CREATE TABLE IF NOT EXISTS ",
+        "CREATE ",
+        modifiers_expr(table),
+        "TABLE IF NOT EXISTS ",
         quote_table(table.prefix, table.name),
         ?\s,
         ?(,
@@ -1419,12 +1428,11 @@ defmodule XqliteEcto3.Connection do
   end
 
   defp expr({:fragment, _, parts}, sources, query) do
-    parts
-    |> Enum.map(fn
-      {:raw, part} -> part
-      {:expr, expression} -> expr(expression, sources, query)
-    end)
-    |> parens_for_select
+    fragment_expr(parts, sources, query)
+  end
+
+  defp expr({{:fragment, _, parts}, schema}, sources, query) when is_atom(schema) do
+    fragment_expr(parts, sources, query)
   end
 
   defp expr({:values, _, [types, idx, num_rows]}, _, _query) do
@@ -1721,6 +1729,9 @@ defmodule XqliteEcto3.Connection do
       {:fragment, _, _} ->
         {nil, as_prefix ++ [?f, Integer.to_string(pos)], nil}
 
+      {{:fragment, _, _}, schema, _} ->
+        {nil, as_prefix ++ [?f, Integer.to_string(pos)], schema}
+
       {:values, _, _} ->
         {nil, as_prefix ++ [?v, Integer.to_string(pos)], nil}
 
@@ -1947,6 +1958,10 @@ defmodule XqliteEcto3.Connection do
 
   defp returning([]), do: []
 
+  defp returning({:unsafe_fragment, fragment}) do
+    [" RETURNING ", fragment]
+  end
+
   defp returning(returning) do
     [
       " RETURNING " | quote_names(returning)
@@ -1956,6 +1971,22 @@ defmodule XqliteEcto3.Connection do
   ##
   ## Helpers
   ##
+
+  # `Ecto.Migration.Table.modifiers` arrived in ecto_sql 3.14 — Map.get
+  # keeps this compiling against 3.12/3.13 structs that lack the key.
+  defp modifiers_expr(%Table{} = table) do
+    case Map.get(table, :modifiers) do
+      nil ->
+        []
+
+      modifiers when is_binary(modifiers) ->
+        [modifiers, ?\s]
+
+      other ->
+        raise ArgumentError,
+              "SQLite adapter expects :modifiers to be a string or nil, got #{inspect(other)}"
+    end
+  end
 
   defp composite_pk_definition(%Table{} = table, columns) do
     pks =
@@ -2005,6 +2036,15 @@ defmodule XqliteEcto3.Connection do
       reference_on_delete(ref.on_delete),
       reference_on_update(ref.on_update)
     ]
+  end
+
+  defp fragment_expr(parts, sources, query) do
+    parts
+    |> Enum.map(fn
+      {:raw, part} -> part
+      {:expr, expression} -> expr(expression, sources, query)
+    end)
+    |> parens_for_select
   end
 
   defp get_source(query, sources, ix, source) do

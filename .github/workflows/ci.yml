@@ -15,6 +15,10 @@ on:
     branches:
       - "main"
   workflow_dispatch:
+  schedule:
+    # weekly canary: surfaces upstream dep drift (e.g. a new ecto_sql
+    # release breaking fresh resolves) between pushes
+    - cron: "17 4 * * 1"
 
 jobs:
   format_and_lint:
@@ -137,6 +141,38 @@ jobs:
 
       - name: Compile project
         run: mix compile
+
+      - name: Run tests
+        run: mix xqlite_ecto3.test.seq
+
+  test_latest_ecto_sql:
+    name: Tests (latest ecto_sql)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: format_and_lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.DEFAULT_ELIXIR }}
+          otp-version: ${{ env.DEFAULT_OTP }}
+
+      # no dep/build cache and a full unlock on purpose: this lane
+      # simulates a fresh `mix deps.get` with no lockfile, which is
+      # exactly what a new user's resolve looks like (ecto_sql 3.14
+      # slipped past a partial unlock once — its decimal ~> 3.0
+      # requirement kept it invisible while decimal stayed locked)
+      - name: Install dependencies as a fresh resolve
+        run: |
+          mix deps.unlock --all
+          mix deps.get
+
+      - name: Compile project (warnings as errors)
+        run: mix compile --warnings-as-errors
 
       - name: Run tests
         run: mix xqlite_ecto3.test.seq

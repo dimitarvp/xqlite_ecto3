@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`RETURNING` accepts `{:unsafe_fragment, iodata}`** in insert /
+  update / delete returning clauses — ecto_sql 3.14's new escape
+  hatch, mirroring the PostgreSQL adapter's behavior.
+- **Table modifiers pass through in `CREATE TABLE`.** ecto_sql 3.14's
+  `create table(..., modifiers: "...")` lands between `CREATE` and
+  `TABLE` (SQLite's grammar accepts `TEMPORARY` there). Strings and
+  nil only; anything else raises `ArgumentError`.
 - **Dynamic JSON path segments.** `json_extract_path` (and the
   `o.meta[o.label][o.idx]` bracket syntax) now accepts runtime path
   segments — column references and expressions, not just literals.
@@ -44,6 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   degrade to the original error with
   `fk_diagnostics: {:unavailable, reason}`. Emits a
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
+
+### Fixed
+
+- **ecto_sql 3.14 compatibility.** ecto_sql 3.14.0 widened the
+  `Connection.insert` callback to `insert/8` (trailing options
+  keyword); fresh installs resolving 3.14 crashed `Repo.insert_all`
+  with `UndefinedFunctionError` (single-row `Repo.insert` still calls
+  `insert/7`, which 3.14 itself retains). One defaulted head now
+  serves both arities; the requirement stays `~> 3.12`. Ecto 3.14's
+  schema-mapped fragment sources (`FROM` / `JOIN` on a fragment
+  carrying a schema) also render now — previously the fragment tuple
+  was quoted as a table name and SQL generation crashed. CI gained a
+  fresh-resolve lane plus a weekly scheduled run so upstream drift
+  surfaces between pushes.
 
 ### Breaking
 

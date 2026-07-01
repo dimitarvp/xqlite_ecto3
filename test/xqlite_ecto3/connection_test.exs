@@ -1,6 +1,7 @@
 defmodule XqliteEcto3.ConnectionTest do
   use ExUnit.Case, async: true
 
+  alias Ecto.Migration.Table
   alias XqliteEcto3.Connection, as: SQL
 
   defp to_sql(iodata), do: IO.iodata_to_binary(iodata)
@@ -24,6 +25,33 @@ defmodule XqliteEcto3.ConnectionTest do
     assert to_sql(result) == ~s|INSERT INTO "users" DEFAULT VALUES|
   end
 
+  test "insert accepts the ecto_sql 3.14 trailing opts argument" do
+    result =
+      SQL.insert(nil, "users", [:name, :age], [[:name, :age]], {:raise, [], []}, [], [], [])
+
+    assert to_sql(result) == ~s|INSERT INTO "users" ("name","age") VALUES (?1,?2)|
+  end
+
+  test "insert default values accepts the trailing opts argument" do
+    result = SQL.insert(nil, "users", [], [[]], {:raise, [], []}, [], [], [])
+    assert to_sql(result) == ~s|INSERT INTO "users" DEFAULT VALUES|
+  end
+
+  test "insert returning accepts an unsafe fragment" do
+    result =
+      SQL.insert(
+        nil,
+        "users",
+        [:name],
+        [[:name]],
+        {:raise, [], []},
+        {:unsafe_fragment, ~s|"id" AS key|},
+        []
+      )
+
+    assert to_sql(result) == ~s|INSERT INTO "users" ("name") VALUES (?1) RETURNING "id" AS key|
+  end
+
   # ---------------------------------------------------------------------------
   # update
   # ---------------------------------------------------------------------------
@@ -38,6 +66,13 @@ defmodule XqliteEcto3.ConnectionTest do
 
     assert to_sql(result) ==
              ~s|UPDATE "users" SET "name" = ? WHERE "id" = ? RETURNING "id","name"|
+  end
+
+  test "update returning accepts an unsafe fragment" do
+    result = SQL.update(nil, "users", [:name], [{:id, 1}], {:unsafe_fragment, ~s|"id"|})
+
+    assert to_sql(result) ==
+             ~s|UPDATE "users" SET "name" = ? WHERE "id" = ? RETURNING "id"|
   end
 
   test "update with nil filter" do
@@ -62,6 +97,38 @@ defmodule XqliteEcto3.ConnectionTest do
   test "delete with nil filter" do
     result = SQL.delete(nil, "users", [{:deleted_at, nil}], [])
     assert to_sql(result) == ~s|DELETE FROM "users" WHERE "deleted_at" IS NULL|
+  end
+
+  # ---------------------------------------------------------------------------
+  # execute_ddl: table modifiers (ecto_sql 3.14)
+  # ---------------------------------------------------------------------------
+
+  # Map.put instead of a struct literal: %Table{} only carries :modifiers on
+  # ecto_sql >= 3.14, and this builds the same runtime shape under older
+  # deps, so every CI lane covers the passthrough.
+  defp table_with_modifiers(modifiers) do
+    Map.put(%Table{name: "posts"}, :modifiers, modifiers)
+  end
+
+  test "create table passes string modifiers through" do
+    ddl = {:create, table_with_modifiers("TEMPORARY"), [{:add, :id, :integer, []}]}
+
+    assert [sql] = SQL.execute_ddl(ddl)
+    assert to_sql(sql) == ~s|CREATE TEMPORARY TABLE "posts" ("id" INTEGER)|
+  end
+
+  test "create_if_not_exists table passes string modifiers through" do
+    ddl =
+      {:create_if_not_exists, table_with_modifiers("TEMPORARY"), [{:add, :id, :integer, []}]}
+
+    assert [sql] = SQL.execute_ddl(ddl)
+    assert to_sql(sql) == ~s|CREATE TEMPORARY TABLE IF NOT EXISTS "posts" ("id" INTEGER)|
+  end
+
+  test "non-binary table modifiers raise" do
+    ddl = {:create, table_with_modifiers(:temporary), [{:add, :id, :integer, []}]}
+
+    assert_raise ArgumentError, fn -> SQL.execute_ddl(ddl) end
   end
 
   # ---------------------------------------------------------------------------
