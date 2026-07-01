@@ -30,13 +30,13 @@ defmodule XqliteEcto3.MixProject do
     ]
   end
 
-  # `mix precommit` shadows the `Mix.Tasks.Precommit` that the xqlite
-  # dependency also ships — alias resolution runs before task module
-  # lookup, so this wins. Same spirit as xqlite's precommit, minus the
-  # Rust steps (no NIF in this library).
+  # `mix verify` shadows the `Mix.Tasks.Verify` that the xqlite dependency
+  # ships (named `precommit` up to xqlite 0.7.0) — alias resolution runs
+  # before task module lookup, so this wins. Same spirit as xqlite's
+  # verify, minus the Rust steps (no NIF in this library).
   defp aliases do
     [
-      precommit: [
+      verify: [
         "format --check-formatted",
         "compile --warnings-as-errors",
         "dialyzer",

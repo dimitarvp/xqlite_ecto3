@@ -387,7 +387,7 @@ Deferred until demand materializes:
 
 ## Contributing
 
-Contributions welcome. Please run `mix precommit` locally before submitting — it chains format check, compile `--warnings-as-errors`, Dialyzer, and the full sequential test suite. For dev loops against an unreleased xqlite checkout, export `XQLITE_PATH=../xqlite` (or wherever your xqlite working copy lives). One caveat that mode hides: CI resolves xqlite from Hex, so if your change relies on unreleased xqlite API, verify once with `XQLITE_PATH` unset before pushing — green against your local checkout does not imply green against the released package.
+Contributions welcome. Please run `mix verify` locally before submitting — it chains format check, compile `--warnings-as-errors`, Dialyzer, and the full sequential test suite. For dev loops against an unreleased xqlite checkout, export `XQLITE_PATH=../xqlite` (or wherever your xqlite working copy lives). One caveat that mode hides: CI resolves xqlite from Hex, so if your change relies on unreleased xqlite API, verify once with `XQLITE_PATH` unset before pushing — green against your local checkout does not imply green against the released package.
 
 ## License
 
