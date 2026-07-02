@@ -103,9 +103,6 @@ excludes = [
   # layer). The sibling parameterized-query cache test passes.
   {:location, {"deps/ecto_sql/integration_test/sql/alter.exs", 44}},
 
-  # SQLite has no DISTINCT ON (expr) — only row-level DISTINCT
-  :subquery_in_distinct,
-
   # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 

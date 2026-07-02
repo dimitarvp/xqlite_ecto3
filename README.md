@@ -350,7 +350,6 @@ Permanent SQLite constraints (not adapter choices):
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 
 - Untyped boolean JSON extraction — `select: o.meta["enabled"]` returns SQLite's storage-faithful `1`/`0`, not `true`/`false` (no boolean storage class, no JSON wire typing; PostgreSQL/MySQL pass via protocol-level typing). Sanctioned fix: `select: type(o.meta["enabled"], :boolean)`. WHERE comparisons and dynamic path segments (`o.meta[o.label][o.idx]`) work fully.
-- `DISTINCT ON (expr)` — SQLite only has full-row DISTINCT; rewrite via window functions is planned
 
 ## Design notes
 
@@ -377,8 +376,7 @@ Most adapters that handle DELETE+JOIN quietly guess at composite PKs, schemaless
 Prioritized. Anything not listed is deferred.
 
 1. **Repo-level observability surface.** xqlite 0.7.0 ships multi-subscriber hooks (update / WAL / commit / rollback / progress / busy) and connection-state introspection; this adapter will expose them through its own surface — subscribe to hooks on pool connections, surface `txn_state` / `connection_stats` per checkout — so users can build their own concurrency strategies without leaving the Repo.
-2. **`DISTINCT ON (expr)` rewrite** via `ROW_NUMBER() OVER (PARTITION BY ...)`.
-3. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
+2. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 

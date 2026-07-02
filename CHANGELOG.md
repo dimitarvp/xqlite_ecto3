@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`DISTINCT ON` (expression DISTINCT) now works.** Ecto's
+  `distinct: expr(s)` rewrites to a `ROW_NUMBER()` window subquery
+  with PostgreSQL-parity semantics: one row per distinct-expression
+  group (winner picked by `order_by`), results ordered by the
+  distinct expressions then `order_by`. Whole-source schemaless
+  selects and mixing with union/intersect/except raise
+  `Ecto.QueryError`. The shared suite's `:subquery_in_distinct` tag
+  is un-excluded.
+
+### Changed
+
+- **Query placeholders render as numbered `?N`.** Previously bare
+  `?`; numbering pins each placeholder to its parameter-list
+  position, so clause-reordering rewrites (DISTINCT ON) cannot skew
+  bindings. Generated SQL text changes; binding behavior does not.
+  The `insert` path already used `?N`; the `update`/`delete` DML
+  builders keep bare `?` (their clause order is fixed).
+
 - **`RETURNING` accepts `{:unsafe_fragment, iodata}`** in insert /
   update / delete returning clauses — ecto_sql 3.14's new escape
   hatch, mirroring the PostgreSQL adapter's behavior.

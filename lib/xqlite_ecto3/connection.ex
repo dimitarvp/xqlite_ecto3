@@ -205,6 +205,16 @@ defmodule XqliteEcto3.Connection do
   end
 
   def all(query, as_prefix \\ []) do
+    case query.distinct do
+      %ByExpr{expr: exprs} when is_list(exprs) and exprs != [] ->
+        distinct_on_all(query, as_prefix)
+
+      _ ->
+        plain_all(query, as_prefix)
+    end
+  end
+
+  defp plain_all(query, as_prefix) do
     sources = create_names(query, as_prefix)
 
     cte = cte(query, sources)
@@ -235,6 +245,154 @@ defmodule XqliteEcto3.Connection do
       offset
     ]
   end
+
+  # SQLite has no DISTINCT ON. Emulate PostgreSQL's semantics: rank each
+  # distinct-expression group's rows with ROW_NUMBER() inside a subquery and
+  # keep rank 1. Hidden aliased columns (__xq_d*/__xq_o*) carry the distinct
+  # and order-by expressions across the subquery boundary; the outer query
+  # re-projects only the real select columns (__xq_c*), so the row shape the
+  # loader sees is unchanged. Outer ordering is distinct expressions first,
+  # then order_by — PostgreSQL's effective DISTINCT ON ordering. Numbered ?N
+  # placeholders make parameter binding immune to the clause reordering.
+  defp distinct_on_all(%{distinct: %ByExpr{expr: distinct_exprs}} = query, as_prefix) do
+    if query.combinations != [] do
+      raise Ecto.QueryError,
+        query: query,
+        message:
+          "xqlite_ecto3's DISTINCT ON rewrite cannot be combined with " <>
+            "union/intersect/except in the same query"
+    end
+
+    sources = create_names(query, as_prefix)
+    outer = as_prefix ++ ~c"xq0"
+    inner_query = %{query | distinct: nil}
+    order_exprs = order_by_exprs(inner_query)
+
+    inner = [
+      cte(inner_query, sources),
+      distinct_on_inner_select(inner_query, distinct_exprs, order_exprs, sources),
+      from(inner_query, sources),
+      join(inner_query, sources),
+      where(inner_query, sources),
+      group_by(inner_query, sources),
+      having(inner_query, sources),
+      window(inner_query, sources)
+    ]
+
+    [
+      "SELECT ",
+      distinct_on_outer_fields(inner_query, outer),
+      " FROM (",
+      inner,
+      ") AS ",
+      outer,
+      " WHERE ",
+      outer,
+      ?.,
+      xq_alias("rn"),
+      " = 1",
+      distinct_on_outer_order(distinct_exprs, order_exprs, outer, query),
+      limit(inner_query, sources),
+      offset(inner_query, sources)
+    ]
+  end
+
+  defp order_by_exprs(%{order_bys: order_bys}) do
+    Enum.flat_map(order_bys, fn %{expr: expr} -> expr end)
+  end
+
+  defp distinct_on_inner_select(query, distinct_exprs, order_exprs, sources) do
+    %{select: %{fields: fields}} = query
+
+    [
+      "SELECT ",
+      distinct_on_inner_fields(fields, sources, query),
+      distinct_on_hidden(distinct_exprs, "d", sources, query),
+      distinct_on_hidden(order_exprs, "o", sources, query),
+      ", ROW_NUMBER() OVER (PARTITION BY ",
+      Enum.map_intersperse(distinct_exprs, ", ", fn {_dir, dexpr} ->
+        top_level_expr(dexpr, sources, query)
+      end),
+      distinct_on_window_order(order_exprs, sources, query),
+      ") AS ",
+      xq_alias("rn")
+    ]
+  end
+
+  defp distinct_on_inner_fields([], _sources, _query), do: ["1 AS ", xq_alias("c", 0)]
+
+  defp distinct_on_inner_fields(fields, sources, query) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map_intersperse(", ", fn
+      {{:&, _, [_]}, _i} ->
+        raise Ecto.QueryError,
+          query: query,
+          message:
+            "xqlite_ecto3's DISTINCT ON rewrite cannot alias a whole-source " <>
+              "schemaless select; select explicit fields"
+
+      {{key, value}, i} when is_atom(key) ->
+        [expr(value, sources, query), " AS ", xq_alias("c", i)]
+
+      {value, i} ->
+        [expr(value, sources, query), " AS ", xq_alias("c", i)]
+    end)
+  end
+
+  defp distinct_on_hidden([], _prefix, _sources, _query), do: []
+
+  defp distinct_on_hidden(exprs, prefix, sources, query) do
+    hidden =
+      exprs
+      |> Enum.with_index()
+      |> Enum.map_intersperse(", ", fn {{_dir, hexpr}, i} ->
+        [top_level_expr(hexpr, sources, query), " AS ", xq_alias(prefix, i)]
+      end)
+
+    [", ", hidden]
+  end
+
+  defp distinct_on_window_order([], _sources, _query), do: []
+
+  defp distinct_on_window_order(order_exprs, sources, query) do
+    [
+      " ORDER BY "
+      | Enum.map_intersperse(order_exprs, ", ", &order_by_expr(&1, sources, query))
+    ]
+  end
+
+  defp distinct_on_outer_fields(%{select: %{fields: []}}, outer) do
+    [outer, ?., xq_alias("c", 0)]
+  end
+
+  defp distinct_on_outer_fields(%{select: %{fields: fields}}, outer) do
+    fields
+    |> Enum.with_index()
+    |> Enum.map_intersperse(", ", fn
+      {{key, _value}, i} when is_atom(key) ->
+        [outer, ?., xq_alias("c", i), " AS ", quote_name(key)]
+
+      {_value, i} ->
+        [outer, ?., xq_alias("c", i)]
+    end)
+  end
+
+  defp distinct_on_outer_order(distinct_exprs, order_exprs, outer, query) do
+    entries =
+      Enum.with_index(distinct_exprs, fn {dir, _}, i -> {dir, "d", i} end) ++
+        Enum.with_index(order_exprs, fn {dir, _}, i -> {dir, "o", i} end)
+
+    [
+      " ORDER BY "
+      | Enum.map_intersperse(entries, ", ", fn {dir, prefix, i} ->
+          [outer, ?., xq_alias(prefix, i) | order_dir_suffix(dir, query)]
+        end)
+    ]
+  end
+
+  defp xq_alias(prefix), do: [?", "__xq_", prefix, ?"]
+  defp xq_alias(prefix, i), do: [?", "__xq_", prefix, Integer.to_string(i), ?"]
 
   @impl true
   def update_all(query, prefix \\ nil) do
@@ -915,12 +1073,6 @@ defmodule XqliteEcto3.Connection do
   defp distinct(%ByExpr{expr: true}, _sources, _query), do: "DISTINCT "
   defp distinct(%ByExpr{expr: false}, _sources, _query), do: []
 
-  defp distinct(%ByExpr{expr: exprs}, _sources, query) when is_list(exprs) do
-    raise Ecto.QueryError,
-      query: query,
-      message: "DISTINCT with multiple columns is not supported by SQLite"
-  end
-
   defp select(%{select: %{fields: fields}, distinct: distinct} = query, sources) do
     [
       "SELECT ",
@@ -1191,32 +1343,20 @@ defmodule XqliteEcto3.Connection do
   end
 
   defp order_by_expr({dir, expression}, sources, query) do
-    str = top_level_expr(expression, sources, query)
+    [top_level_expr(expression, sources, query) | order_dir_suffix(dir, query)]
+  end
 
-    case dir do
-      :asc ->
-        str
+  defp order_dir_suffix(:asc, _query), do: []
+  defp order_dir_suffix(:asc_nulls_last, _query), do: [" ASC NULLS LAST"]
+  defp order_dir_suffix(:asc_nulls_first, _query), do: [" ASC NULLS FIRST"]
+  defp order_dir_suffix(:desc, _query), do: [" DESC"]
+  defp order_dir_suffix(:desc_nulls_last, _query), do: [" DESC NULLS LAST"]
+  defp order_dir_suffix(:desc_nulls_first, _query), do: [" DESC NULLS FIRST"]
 
-      :asc_nulls_last ->
-        [str, " ASC NULLS LAST"]
-
-      :asc_nulls_first ->
-        [str, " ASC NULLS FIRST"]
-
-      :desc ->
-        [str, " DESC"]
-
-      :desc_nulls_last ->
-        [str, " DESC NULLS LAST"]
-
-      :desc_nulls_first ->
-        [str, " DESC NULLS FIRST"]
-
-      _ ->
-        raise Ecto.QueryError,
-          query: query,
-          message: "#{dir} is not supported in ORDER BY in SQLite"
-    end
+  defp order_dir_suffix(dir, query) do
+    raise Ecto.QueryError,
+      query: query,
+      message: "#{dir} is not supported in ORDER BY in SQLite"
   end
 
   def limit(%{limit: nil}, _sources), do: []
@@ -1319,8 +1459,11 @@ defmodule XqliteEcto3.Connection do
   ## Expression generation
   ##
 
-  defp expr({:^, [], [_ix]}, _sources, _query) do
-    ~c"?"
+  # SQLite's ?N form pins each placeholder to its absolute position in the
+  # planner's parameter list, making SQL clause order irrelevant to binding —
+  # a prerequisite for rewrites that reorder clauses (DISTINCT ON).
+  defp expr({:^, [], [ix]}, _sources, _query) do
+    [??, Integer.to_string(ix + 1)]
   end
 
   # workaround for the fact that SQLite as of 3.35.4 does not support specifying table
@@ -1376,8 +1519,8 @@ defmodule XqliteEcto3.Connection do
     "0"
   end
 
-  defp expr({:in, _, [left, {:^, _, [_, len]}]}, sources, query) do
-    args = Enum.intersperse(List.duplicate(??, len), ?,)
+  defp expr({:in, _, [left, {:^, _, [ix, len]}]}, sources, query) do
+    args = Enum.map_intersperse(ix..(ix + len - 1), ?,, &[??, Integer.to_string(&1 + 1)])
     [expr(left, sources, query), " IN (", args, ?)]
   end
 
@@ -1443,8 +1586,8 @@ defmodule XqliteEcto3.Connection do
     quote_name(literal)
   end
 
-  defp expr({:splice, _, [{:^, _, [_, length]}]}, _sources, _query) do
-    Enum.intersperse(List.duplicate(??, length), ?,)
+  defp expr({:splice, _, [{:^, _, [ix, length]}]}, _sources, _query) do
+    Enum.map_intersperse(ix..(ix + length - 1), ?,, &[??, Integer.to_string(&1 + 1)])
   end
 
   defp expr({:selected_as, _, [name]}, _sources, _query) do
