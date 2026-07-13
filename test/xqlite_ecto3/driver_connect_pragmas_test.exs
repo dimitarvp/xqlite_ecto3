@@ -70,14 +70,17 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
 
   describe "URL round-trip" do
     test "every pragma the URL parser accepts takes effect at connect" do
-      path = tmp_db!("url")
-
+      # The URL string stays platform-neutral: Windows absolute paths
+      # (C:\...) are not expressible in the sqlite:// grammar, so the
+      # real tmp path is swapped into the parsed opts instead
+      # (CLAUDE.md gotcha 15).
       url =
-        "sqlite://#{path}?auto_vacuum=incremental&wal_autocheckpoint=0" <>
+        "sqlite:///ignored.db?auto_vacuum=incremental&wal_autocheckpoint=0" <>
           "&mmap_size=2097152&cache_size=-2000&foreign_keys=false" <>
           "&journal_mode=truncate&synchronous=full&temp_store=file&busy_timeout=1234"
 
-      assert {:ok, opts} = URL.parse(url)
+      assert {:ok, parsed} = URL.parse(url)
+      opts = Keyword.put(parsed, :database, tmp_db!("url"))
       state = connect!(opts)
 
       assert pragma!(state.conn, "auto_vacuum") == 2
