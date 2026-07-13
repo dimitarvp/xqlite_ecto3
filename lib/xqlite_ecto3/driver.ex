@@ -270,7 +270,14 @@ defmodule XqliteEcto3.Driver do
     {:ok, %{query | ref: make_ref()}, state}
   end
 
+  # Meta-operation, not a statement: hands `XqliteEcto3.with_xqlite/3` the
+  # raw NIF connection. Deliberately outside the handle_execute telemetry
+  # span — nothing runs against the database here.
   @impl DBConnection
+  def handle_execute(%XqliteEcto3.RawConn{} = query, _params, _opts, state) do
+    {:ok, query, state.conn, state}
+  end
+
   def handle_execute(query, params, opts, state) do
     timeout = Keyword.get(opts, :timeout, 15_000)
     sql = IO.iodata_to_binary(query.statement)

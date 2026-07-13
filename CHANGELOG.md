@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`XqliteEcto3.with_xqlite/3` — the xqlite bridge.** Checks a
+  connection out of the repo's pool and hands your callback the raw
+  `XqliteNIF` handle, so SQLite-specific xqlite features (session
+  extension, blob I/O, online backup, serialize/deserialize,
+  extension loading, schema introspection) run against the same
+  database and pool — no out-of-band second connection. The handle
+  is valid only inside the callback; sandbox tests see their own
+  uncommitted writes through it.
+
 - **`DISTINCT ON` (expression DISTINCT) now works.** Ecto's
   `distinct: expr(s)` rewrites to a `ROW_NUMBER()` window subquery
   with PostgreSQL-parity semantics: one row per distinct-expression

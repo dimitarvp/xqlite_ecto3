@@ -156,6 +156,68 @@ defmodule XqliteEcto3 do
   @spec parse_url!(String.t()) :: keyword()
   def parse_url!(url), do: XqliteEcto3.URL.parse!(url)
 
+  @doc """
+  Checks a connection out of `repo`'s pool and calls `fun` with the raw
+  `XqliteNIF` connection reference.
+
+  This is the bridge to SQLite-specific xqlite features that have no
+  Ecto-level equivalent — session extension, incremental blob I/O,
+  online backup, `serialize`/`deserialize`, extension loading, typed
+  schema introspection — letting them run against the same database
+  and pool as your repo, with no out-of-band second connection:
+
+      XqliteEcto3.with_xqlite(MyApp.Repo, fn conn ->
+        Xqlite.backup(conn, "/backups/app.db")
+      end)
+
+      {:ok, columns} =
+        XqliteEcto3.with_xqlite(MyApp.Repo, fn conn ->
+          XqliteNIF.schema_columns(conn, "users")
+        end)
+
+  Returns whatever `fun` returns.
+
+  ## Handle validity
+
+  The reference is only yours between checkout and return — do not
+  store it, send it to another process, or use it after `fun` returns.
+  A smuggled reference keeps working (the connection serializes access
+  internally, so there is no memory-safety hazard) but it races other
+  pool users at the application level: statements interleave with
+  whatever the pool is running.
+
+  ## Options
+
+  Forwarded to `DBConnection.run/3` — most usefully `:timeout` for the
+  checkout duration (DBConnection's default is 15 seconds).
+
+  Inside `Ecto.Adapters.SQL.Sandbox` tests the handle is the sandboxed
+  connection: your test's uncommitted writes are visible to it.
+  """
+  @spec with_xqlite(module() | GenServer.server(), (Xqlite.conn() -> result), keyword()) ::
+          result
+        when result: var
+  def with_xqlite(repo, fun, opts \\ []) when is_function(fun, 1) do
+    name =
+      if is_atom(repo) and function_exported?(repo, :get_dynamic_repo, 0) do
+        repo.get_dynamic_repo()
+      else
+        repo
+      end
+
+    %{pid: pool, opts: default_opts} = Ecto.Adapter.lookup_meta(name)
+    run_opts = Keyword.merge(default_opts, opts)
+
+    DBConnection.run(
+      pool,
+      fn conn ->
+        handle = DBConnection.execute!(conn, %XqliteEcto3.RawConn{}, [], run_opts)
+        fun.(handle)
+      end,
+      run_opts
+    )
+  end
+
   @impl Ecto.Adapter.Storage
   def storage_up(opts) do
     database = Keyword.fetch!(opts, :database)

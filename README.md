@@ -314,9 +314,15 @@ All live under `XqliteEcto3.Types.*`:
 
 ### SQLite-specific extras via xqlite
 
-Features like the session extension, incremental blob I/O, online backup with progress, `sqlite3_serialize`/`deserialize`, extension loading, and structured schema introspection live at the xqlite layer — none have Ecto-level equivalents. Today the way to reach them is to open a dedicated `XqliteNIF` connection alongside your repo for the feature you need; the adapter's pool connections are owned by DBConnection and not safe to hand raw NIF calls without coordination.
+Features like the session extension, incremental blob I/O, online backup with progress, `sqlite3_serialize`/`deserialize`, extension loading, and structured schema introspection live at the xqlite layer — none have Ecto-level equivalents. `XqliteEcto3.with_xqlite/3` bridges the two worlds: it checks a connection out of your repo's pool and hands your callback the raw `XqliteNIF` handle, so the whole xqlite toolbox runs against the same database with no out-of-band second connection:
 
-An ergonomic bridge — "checkout-a-connection-and-pass-it-to-an-xqlite-function" — is a planned helper on the roadmap below. Until then, treat xqlite and xqlite_ecto3 as composable libraries: the adapter handles ORM/query/transaction concerns, xqlite handles the SQLite-specific toolbox.
+```elixir
+XqliteEcto3.with_xqlite(MyApp.Repo, fn conn ->
+  Xqlite.backup(conn, "/backups/app.db")
+end)
+```
+
+The handle is valid only inside the callback — see the function docs for the exact contract.
 
 ## FAQ
 
@@ -376,7 +382,6 @@ Most adapters that handle DELETE+JOIN quietly guess at composite PKs, schemaless
 Prioritized. Anything not listed is deferred.
 
 1. **Repo-level observability surface.** xqlite 0.7.0 ships multi-subscriber hooks (update / WAL / commit / rollback / progress / busy) and connection-state introspection; this adapter will expose them through its own surface — subscribe to hooks on pool connections, surface `txn_state` / `connection_stats` per checkout — so users can build their own concurrency strategies without leaving the Repo.
-2. **xqlite-bridge helper.** Ergonomic `Repo.with_xqlite/2` (or similar) that checks out a pool connection and hands the raw `XqliteNIF` handle to your callback — so SQLite-specific features (session extension, blob I/O, backup, serialize) compose cleanly with the adapter's pool, no out-of-band connection needed.
 
 Deferred until demand materializes:
 
