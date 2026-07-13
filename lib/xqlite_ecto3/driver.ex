@@ -30,6 +30,11 @@ defmodule XqliteEcto3.Driver do
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
     synchronous = Keyword.get(opts, :synchronous, :normal)
     temp_store = Keyword.get(opts, :temp_store, :memory)
+    foreign_keys = Keyword.get(opts, :foreign_keys, true)
+    cache_size = Keyword.get(opts, :cache_size, -64_000)
+    auto_vacuum = Keyword.get(opts, :auto_vacuum)
+    wal_autocheckpoint = Keyword.get(opts, :wal_autocheckpoint)
+    mmap_size = Keyword.get(opts, :mmap_size)
     rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
 
     start_md = %{database: database}
@@ -37,12 +42,18 @@ defmodule XqliteEcto3.Driver do
     span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
       result =
         with {:ok, conn} <- NIF.open(database),
+             # auto_vacuum only sticks while the database file has no pages;
+             # journal_mode=wal below writes the header, so this must go first
+             # (existing databases additionally need VACUUM — SQLite semantics).
+             {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", auto_vacuum),
              {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
              {:ok, _} <- NIF.set_pragma(conn, "journal_mode", to_string(journal_mode)),
-             {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", true),
-             {:ok, _} <- NIF.set_pragma(conn, "cache_size", -64_000),
+             {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", foreign_keys),
+             {:ok, _} <- NIF.set_pragma(conn, "cache_size", cache_size),
              {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
-             {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)) do
+             {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)),
+             {:ok, _} <- set_optional_pragma(conn, "wal_autocheckpoint", wal_autocheckpoint),
+             {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size) do
           {:ok,
            %__MODULE__{
              conn: conn,
@@ -58,6 +69,16 @@ defmodule XqliteEcto3.Driver do
       classify(result, start_md)
     end
   end
+
+  # Config-optional pragmas: absent means "leave SQLite's default alone",
+  # not "apply our own default" — so nil skips the write entirely.
+  defp set_optional_pragma(_conn, _name, nil), do: {:ok, :skipped}
+
+  defp set_optional_pragma(conn, name, value) when is_atom(value) and not is_boolean(value) do
+    NIF.set_pragma(conn, name, to_string(value))
+  end
+
+  defp set_optional_pragma(conn, name, value), do: NIF.set_pragma(conn, name, value)
 
   defp random_savepoint_prefix do
     @savepoint_prefix_byte_count

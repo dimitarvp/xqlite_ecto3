@@ -72,6 +72,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Connect-time pragmas accepted by the URL parser are now honored.**
+  `auto_vacuum`, `wal_autocheckpoint`, and `mmap_size` — parsed and
+  type-coerced since the URL feature shipped — were silently dropped
+  by the driver; they now apply at connect (absent still means
+  "SQLite's own default", not an adapter default). `auto_vacuum` is
+  applied before any page is written so it takes effect on newly
+  created databases; changing an existing database's mode still
+  requires `VACUUM` (SQLite semantics). Two more params
+  from the same allowlist stopped being overridden by hardcoded
+  values: explicit `cache_size` and `foreign_keys` config now wins;
+  the defaults are unchanged (`-64_000` pages, foreign keys ON).
+
 - **ecto_sql 3.14 compatibility.** ecto_sql 3.14.0 widened the
   `Connection.insert` callback to `insert/8` (trailing options
   keyword); fresh installs resolving 3.14 crashed `Repo.insert_all`
