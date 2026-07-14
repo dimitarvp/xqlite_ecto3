@@ -13,8 +13,13 @@ defmodule XqliteEcto3.Driver do
     :savepoint_prefix,
     savepoint: 0,
     default_transaction_mode: :immediate,
-    rich_fk_diagnostics: false
+    rich_fk_diagnostics: false,
+    stmt_cache: %{},
+    stmt_cache_keys: [],
+    stmt_cache_size: 50
   ]
+
+  @stmt_batch_size 500
 
   @default_stream_batch_size 500
 
@@ -39,6 +44,7 @@ defmodule XqliteEcto3.Driver do
     mmap_size = Keyword.get(opts, :mmap_size)
     custom_pragmas = Keyword.get(opts, :custom_pragmas, [])
     default_transaction_mode = Keyword.get(opts, :default_transaction_mode, :immediate)
+    statement_cache_size = Keyword.get(opts, :statement_cache_size, 50)
     rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
 
     start_md = %{database: database}
@@ -46,6 +52,7 @@ defmodule XqliteEcto3.Driver do
     span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
       result =
         with {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
+             {:ok, stmt_cache_size} <- validate_statement_cache_size(statement_cache_size),
              {:ok, conn} <- open_database(database, mode),
              # auto_vacuum only sticks while the database file has no pages;
              # journal_mode=wal below writes the header, so this must go first
@@ -69,7 +76,8 @@ defmodule XqliteEcto3.Driver do
              path: database,
              savepoint_prefix: random_savepoint_prefix(),
              default_transaction_mode: txn_mode,
-             rich_fk_diagnostics: rich_fk_diagnostics
+             rich_fk_diagnostics: rich_fk_diagnostics,
+             stmt_cache_size: stmt_cache_size
            }}
         else
           {:error, reason} -> {:error, reason}
@@ -77,6 +85,14 @@ defmodule XqliteEcto3.Driver do
 
       classify(result, start_md)
     end
+  end
+
+  defp validate_statement_cache_size(size) when is_integer(size) and size >= 0 do
+    {:ok, size}
+  end
+
+  defp validate_statement_cache_size(other) do
+    {:error, {:invalid_statement_cache_size, other}}
   end
 
   defp validate_transaction_mode(mode) when mode in [:deferred, :immediate, :exclusive] do
@@ -135,6 +151,11 @@ defmodule XqliteEcto3.Driver do
     # this call but anything that captured it earlier (telemetry, traces)
     # reads post-close values instead of stale mid-transaction cache.
     _ = %{state | transaction_status: :idle, savepoint: 0}
+
+    # Finalize every cached statement before closing: sqlite3_close with
+    # outstanding statements leaks the handle until process exit.
+    Enum.each(state.stmt_cache, fn {_sql, stmt} -> NIF.stmt_finalize(stmt) end)
+
     NIF.close(state.conn)
 
     emit(
@@ -347,8 +368,10 @@ defmodule XqliteEcto3.Driver do
     start_md = %{conn: state.conn, query: query, sql: sql}
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_execute], start_md do
+      {exec_result, state} = run_statement(state, sql, params, timeout)
+
       result =
-        case execute_with_cancel(state.conn, sql, params, timeout) do
+        case exec_result do
           {:ok, %{columns: [], changes: changes} = result} ->
             {:ok, query, %{result | num_rows: changes, rows: nil}, state}
 
@@ -364,6 +387,137 @@ defmodule XqliteEcto3.Driver do
 
       classify_dbc(result, start_md)
     end
+  end
+
+  # Statement cache: prepared statements live per connection, keyed by SQL
+  # text, LRU-evicted beyond :statement_cache_size (0 disables). SQL that
+  # stmt_prepare rejects by design (multiple statements, whitespace-only)
+  # falls back to the uncached one-shot path.
+  defp run_statement(%{stmt_cache_size: 0} = state, sql, params, timeout) do
+    {execute_with_cancel(state.conn, sql, params, timeout), state}
+  end
+
+  defp run_statement(state, sql, params, timeout) do
+    case checkout_stmt(state, sql) do
+      {:ok, stmt, state} ->
+        {run_cached_stmt(state.conn, stmt, params, timeout), state}
+
+      {:fallback, state} ->
+        {execute_with_cancel(state.conn, sql, params, timeout), state}
+
+      {:error, reason, state} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  defp checkout_stmt(state, sql) do
+    case Map.fetch(state.stmt_cache, sql) do
+      {:ok, stmt} -> {:ok, stmt, touch_stmt(state, sql)}
+      :error -> prepare_and_cache(state, sql)
+    end
+  end
+
+  defp prepare_and_cache(state, sql) do
+    case NIF.stmt_prepare(state.conn, sql) do
+      {:ok, stmt} -> {:ok, stmt, insert_stmt(state, sql, stmt)}
+      {:error, :multiple_statements} -> {:fallback, state}
+      {:error, {:cannot_execute, _}} -> {:fallback, state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp touch_stmt(state, sql) do
+    %{state | stmt_cache_keys: [sql | List.delete(state.stmt_cache_keys, sql)]}
+  end
+
+  defp insert_stmt(state, sql, stmt) do
+    state = %{
+      state
+      | stmt_cache: Map.put(state.stmt_cache, sql, stmt),
+        stmt_cache_keys: [sql | state.stmt_cache_keys]
+    }
+
+    evict_over_capacity(state)
+  end
+
+  defp evict_over_capacity(state) do
+    if map_size(state.stmt_cache) > state.stmt_cache_size do
+      {evicted_key, kept_keys} = List.pop_at(state.stmt_cache_keys, -1)
+      {stmt, cache} = Map.pop(state.stmt_cache, evicted_key)
+      _ = NIF.stmt_finalize(stmt)
+      %{state | stmt_cache: cache, stmt_cache_keys: kept_keys}
+    else
+      state
+    end
+  end
+
+  defp run_cached_stmt(conn, stmt, params, timeout) do
+    case NIF.stmt_bind(stmt, params) do
+      :ok ->
+        step_to_completion(conn, stmt, timeout)
+
+      {:error, _} = err ->
+        pristine_stmt(stmt)
+        err
+    end
+  end
+
+  defp step_to_completion(conn, stmt, :infinity) do
+    collect_rows(conn, stmt, [], [])
+  end
+
+  defp step_to_completion(conn, stmt, timeout) when is_integer(timeout) do
+    {:ok, token} = NIF.create_cancel_token()
+    canceller = spawn_canceller(token, timeout)
+
+    try do
+      collect_rows(conn, stmt, [token], [])
+    after
+      send(canceller, :stop)
+    end
+  end
+
+  defp collect_rows(conn, stmt, tokens, acc) do
+    case NIF.stmt_multi_step_cancellable(stmt, @stmt_batch_size, tokens) do
+      {:ok, %{rows: rows, done: false}} ->
+        collect_rows(conn, stmt, tokens, [rows | acc])
+
+      {:ok, %{rows: rows, done: true}} ->
+        finish_cached_stmt(conn, stmt, Enum.reverse([rows | acc]))
+
+      {:error, _} = err ->
+        pristine_stmt(stmt)
+        err
+    end
+  end
+
+  defp finish_cached_stmt(conn, stmt, row_batches) do
+    rows = Enum.concat(row_batches)
+    {:ok, columns} = NIF.stmt_column_names(stmt)
+    # Mirrors query_with_changes semantics: only statements without result
+    # columns (DML) report changes. Reading sqlite3_changes here is safe
+    # because DBConnection holds this connection exclusively for the whole
+    # handle_execute call — nothing can interleave another write.
+    changes = if columns == [], do: conn_changes(conn), else: 0
+    pristine_stmt(stmt)
+
+    {:ok, %{columns: columns, rows: rows, num_rows: length(rows), changes: changes}}
+  end
+
+  defp conn_changes(conn) do
+    case NIF.changes(conn) do
+      {:ok, n} -> n
+      {:error, _} -> 0
+    end
+  end
+
+  # Back to a reusable state: reset the program, drop the bindings. Runs on
+  # both completion and error paths so a cached statement never carries
+  # stale execution state into its next use.
+  defp pristine_stmt(stmt) do
+    _ = NIF.stmt_reset(stmt)
+    _ = NIF.stmt_clear_bindings(stmt)
+    :ok
   end
 
   defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-connection prepared-statement cache.** Every pooled connection
+  keeps an LRU cache of prepared statements keyed by SQL text
+  (`statement_cache_size`, default 50; `0` disables). Repeated
+  statements skip SQLite's parse/plan step entirely — the first
+  SQLite adapter in the ecosystem to cache prepared statements.
+  Query timeouts keep working through cancellable statement stepping;
+  multi-statement SQL falls back to the uncached path; schema changes
+  are absorbed by SQLite's v2 auto-reprepare; evicted and
+  disconnect-time statements are finalized eagerly so connections
+  close cleanly.
+
 - **`XqliteEcto3.explain_analyze/3`.** Runs an Ecto queryable under
   SQLite's real execution counters and returns xqlite's structured
   report — query plan, per-scan loop/visited-row counters
