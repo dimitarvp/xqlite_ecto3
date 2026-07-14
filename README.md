@@ -326,6 +326,8 @@ end)
 
 The handle is valid only inside the callback — see the function docs for the exact contract.
 
+Built on the same bridge: `XqliteEcto3.explain_analyze(Repo, queryable)` runs a queryable under SQLite's real execution counters and returns the structured per-scan report (loops, rows visited, statement counters, wall time) — pass `wrap_in_transaction: true` to roll write operations back afterwards.
+
 ## FAQ
 
 **Is it production-ready?**

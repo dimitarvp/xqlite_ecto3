@@ -218,6 +218,74 @@ defmodule XqliteEcto3 do
     )
   end
 
+  @doc """
+  Runs `queryable` under SQLite's real execution counters and returns
+  xqlite's structured `Xqlite.ExplainAnalyze` report: the query plan,
+  per-scan loop and visited-row counters (`sqlite3_stmt_scanstatus_v2`),
+  statement-level counters, and wall-clock time.
+
+  ⚠️ **This executes the statement** — that is what makes the numbers
+  real. For `:update_all` / `:delete_all` the side effects are applied
+  unless you pass `wrap_in_transaction: true`, which runs the statement
+  inside a savepoint that is always rolled back (a savepoint rather than
+  `BEGIN`, so it also composes with sandbox tests and caller
+  transactions).
+
+  Parameters go through the exact same encoding the adapter uses for
+  production queries.
+
+  ## Options
+
+    * `:operation` — `:all` (default), `:update_all`, or `:delete_all`.
+    * `:wrap_in_transaction` — roll the execution back afterwards
+      (default `false`, matching `Ecto.Adapters.SQL`'s option of the
+      same name for `Repo.explain/3`).
+    * remaining options are forwarded to the pool checkout, most
+      usefully `:timeout` (see `with_xqlite/3`).
+
+  ## Examples
+
+      {:ok, report} =
+        XqliteEcto3.explain_analyze(MyApp.Repo, from(u in User, where: u.age > ^18))
+
+      report.rows_produced
+      report.scans
+      report.wall_time_ns
+  """
+  @spec explain_analyze(module() | GenServer.server(), Ecto.Queryable.t(), keyword()) ::
+          {:ok, Xqlite.ExplainAnalyze.t()} | Xqlite.error()
+  def explain_analyze(repo, queryable, opts \\ []) do
+    {operation, opts} = Keyword.pop(opts, :operation, :all)
+    {wrap, opts} = Keyword.pop(opts, :wrap_in_transaction, false)
+
+    {sql, params} = Ecto.Adapters.SQL.to_sql(operation, repo, queryable)
+    encoded_params = DBConnection.Query.encode(%XqliteEcto3.Query{}, params, [])
+
+    with_xqlite(repo, fn conn -> run_explain_analyze(conn, sql, encoded_params, wrap) end, opts)
+  end
+
+  defp run_explain_analyze(conn, sql, params, false) do
+    Xqlite.explain_analyze(conn, sql, params)
+  end
+
+  defp run_explain_analyze(conn, sql, params, true) do
+    savepoint = "xqlite_explain_analyze"
+
+    with :ok <- Xqlite.savepoint(conn, savepoint) do
+      result = Xqlite.explain_analyze(conn, sql, params)
+      rollback_explain_savepoint(conn, savepoint, result)
+    end
+  end
+
+  # A failed rollback MUST NOT masquerade as a successful analysis — the
+  # rollback/release error wins over the report if either step fails.
+  defp rollback_explain_savepoint(conn, savepoint, result) do
+    with :ok <- Xqlite.rollback_to_savepoint(conn, savepoint),
+         :ok <- Xqlite.release_savepoint(conn, savepoint) do
+      result
+    end
+  end
+
   @impl Ecto.Adapter.Storage
   def storage_up(opts) do
     database = Keyword.fetch!(opts, :database)

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`XqliteEcto3.explain_analyze/3`.** Runs an Ecto queryable under
+  SQLite's real execution counters and returns xqlite's structured
+  report — query plan, per-scan loop/visited-row counters
+  (`sqlite3_stmt_scanstatus_v2`), statement counters, wall time.
+  Executes the statement (that's what makes the numbers real);
+  `wrap_in_transaction: true` rolls the execution back via a
+  savepoint, so it composes with sandbox tests and caller
+  transactions. Parameters go through the production encoding path.
+  Built on `with_xqlite/3`; something `EXPLAIN QUERY PLAN` alone
+  cannot give you.
+
 - **Three connection knobs.** `custom_pragmas: [{name, value}]` —
   arbitrary PRAGMAs applied after the adapter defaults so explicit
   config wins (config-only by design; not URL-exposed).
