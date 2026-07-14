@@ -70,6 +70,8 @@ config :my_app, MyApp.Repo, sqlite_opts
 
 Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases.
 
+Beyond the URL-expressible parameters, repo config also accepts: `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit config always wins (deliberately config-only, not URL-exposed); `mode: :readonly` — a read-only pool (write-requiring default pragmas are skipped; writes fail with structured `{:read_only_database, _}` errors; a second read-only repo pointed at the same database file is the composable read-scaling pattern); and `default_transaction_mode: :deferred | :immediate | :exclusive` — default `:immediate`, deliberately: write transactions take their lock up front instead of hitting deadlock-prone mid-transaction lock upgrades (this diverges from ecto_sqlite3's `:deferred` default on purpose). Pass `mode:` to `Repo.transaction/2` for a per-transaction override.
+
 Define the repo:
 
 ```elixir

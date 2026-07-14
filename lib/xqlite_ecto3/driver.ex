@@ -12,6 +12,7 @@ defmodule XqliteEcto3.Driver do
     :path,
     :savepoint_prefix,
     savepoint: 0,
+    default_transaction_mode: :immediate,
     rich_fk_diagnostics: false
   ]
 
@@ -26,6 +27,7 @@ defmodule XqliteEcto3.Driver do
   @impl DBConnection
   def connect(opts) do
     database = Keyword.fetch!(opts, :database)
+    mode = Keyword.get(opts, :mode, :readwrite)
     busy_timeout = Keyword.get(opts, :busy_timeout, 5_000)
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
     synchronous = Keyword.get(opts, :synchronous, :normal)
@@ -35,31 +37,38 @@ defmodule XqliteEcto3.Driver do
     auto_vacuum = Keyword.get(opts, :auto_vacuum)
     wal_autocheckpoint = Keyword.get(opts, :wal_autocheckpoint)
     mmap_size = Keyword.get(opts, :mmap_size)
+    custom_pragmas = Keyword.get(opts, :custom_pragmas, [])
+    default_transaction_mode = Keyword.get(opts, :default_transaction_mode, :immediate)
     rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
 
     start_md = %{database: database}
 
     span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
       result =
-        with {:ok, conn} <- NIF.open(database),
+        with {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
+             {:ok, conn} <- open_database(database, mode),
              # auto_vacuum only sticks while the database file has no pages;
              # journal_mode=wal below writes the header, so this must go first
              # (existing databases additionally need VACUUM — SQLite semantics).
-             {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", auto_vacuum),
+             {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", writable(auto_vacuum, mode)),
              {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
-             {:ok, _} <- NIF.set_pragma(conn, "journal_mode", to_string(journal_mode)),
+             {:ok, _} <- set_writable_pragma(conn, "journal_mode", to_string(journal_mode), mode),
              {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", foreign_keys),
              {:ok, _} <- NIF.set_pragma(conn, "cache_size", cache_size),
              {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
              {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)),
-             {:ok, _} <- set_optional_pragma(conn, "wal_autocheckpoint", wal_autocheckpoint),
-             {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size) do
+             {:ok, _} <-
+               set_optional_pragma(conn, "wal_autocheckpoint", writable(wal_autocheckpoint, mode)),
+             {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size),
+             # user pragmas go last so explicit config wins over every default
+             {:ok, _} <- apply_custom_pragmas(conn, custom_pragmas) do
           {:ok,
            %__MODULE__{
              conn: conn,
              transaction_status: :idle,
              path: database,
              savepoint_prefix: random_savepoint_prefix(),
+             default_transaction_mode: txn_mode,
              rich_fk_diagnostics: rich_fk_diagnostics
            }}
         else
@@ -69,6 +78,40 @@ defmodule XqliteEcto3.Driver do
       classify(result, start_md)
     end
   end
+
+  defp validate_transaction_mode(mode) when mode in [:deferred, :immediate, :exclusive] do
+    {:ok, mode}
+  end
+
+  defp validate_transaction_mode(other) do
+    {:error, {:invalid_default_transaction_mode, other}}
+  end
+
+  defp open_database(database, :readwrite), do: NIF.open(database)
+  defp open_database(database, :readonly), do: NIF.open_readonly(database)
+  defp open_database(_database, other), do: {:error, {:invalid_connection_mode, other}}
+
+  # Write-requiring pragmas are skipped on read-only connections: setting
+  # journal_mode / auto_vacuum / wal_autocheckpoint needs write access, and
+  # checkpointing cannot run on a read-only handle anyway.
+  defp writable(value, :readwrite), do: value
+  defp writable(_value, :readonly), do: nil
+
+  defp set_writable_pragma(_conn, _name, _value, :readonly), do: {:ok, :skipped}
+  defp set_writable_pragma(conn, name, value, :readwrite), do: NIF.set_pragma(conn, name, value)
+
+  defp apply_custom_pragmas(_conn, []), do: {:ok, :done}
+
+  defp apply_custom_pragmas(conn, [{name, value} | rest])
+       when is_atom(name) or is_binary(name) do
+    case NIF.set_pragma(conn, to_string(name), value) do
+      {:ok, _} -> apply_custom_pragmas(conn, rest)
+      {:error, _} = err -> err
+    end
+  end
+
+  defp apply_custom_pragmas(_conn, [entry | _rest]), do: {:error, {:invalid_custom_pragma, entry}}
+  defp apply_custom_pragmas(_conn, other), do: {:error, {:invalid_custom_pragmas, other}}
 
   # Config-optional pragmas: absent means "leave SQLite's default alone",
   # not "apply our own default" — so nil skips the write entirely.
@@ -173,18 +216,38 @@ defmodule XqliteEcto3.Driver do
             end
 
           _mode ->
-            case NIF.begin(state.conn, :immediate) do
-              :ok ->
-                {:ok, nil, %{state | transaction_status: :transaction}}
+            case begin_mode(mode, state) do
+              {:ok, resolved} ->
+                case NIF.begin(state.conn, resolved) do
+                  :ok ->
+                    {:ok, nil, %{state | transaction_status: :transaction}}
 
-              {:error, reason} ->
-                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+                  {:error, reason} ->
+                    {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+                end
+
+              :invalid ->
+                {:disconnect,
+                 %DBConnection.ConnectionError{
+                   message: "invalid transaction mode: #{inspect(mode)}"
+                 }, state}
             end
         end
 
       classify_dbc(result, start_md)
     end
   end
+
+  # `:transaction` is DBConnection's own default marker (no explicit mode
+  # given) — it resolves to the connection's configured default. Explicit
+  # SQLite modes pass through; `:savepoint` never reaches here.
+  defp begin_mode(:transaction, state), do: {:ok, state.default_transaction_mode}
+
+  defp begin_mode(mode, _state) when mode in [:deferred, :immediate, :exclusive] do
+    {:ok, mode}
+  end
+
+  defp begin_mode(_other, _state), do: :invalid
 
   @impl DBConnection
   def handle_commit(opts, state) do

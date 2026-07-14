@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Three connection knobs.** `custom_pragmas: [{name, value}]` —
+  arbitrary PRAGMAs applied after the adapter defaults so explicit
+  config wins (config-only by design; not URL-exposed).
+  `mode: :readonly` — read-only pools: opens via `open_readonly`,
+  skips write-requiring default pragmas (journal_mode, auto_vacuum,
+  wal_autocheckpoint), and writes fail with the structured
+  `{:read_only_database, _}` error. `default_transaction_mode:
+  :deferred | :immediate | :exclusive` plus a per-transaction
+  `mode:` override on `Repo.transaction/2` — the default remains
+  `:immediate` (locks up front, no deadlock-prone mid-transaction
+  upgrades; a deliberate divergence from ecto_sqlite3's `:deferred`).
+  The concurrency model itself is unchanged and permanent.
+
 - **`XqliteEcto3.with_xqlite/3` — the xqlite bridge.** Checks a
   connection out of the repo's pool and hands your callback the raw
   `XqliteNIF` handle, so SQLite-specific xqlite features (session
