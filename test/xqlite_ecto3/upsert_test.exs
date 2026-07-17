@@ -96,4 +96,28 @@ defmodule XqliteEcto3.UpsertTest do
 
     assert Repo.all(from(u in UU, select: u.name, order_by: u.name)) == ["Eve", "Fay"]
   end
+
+  test "insert_all from a query source with on_conflict upserts" do
+    {:ok, _} = Repo.insert(UU.changeset(%UU{}, %{name: "Gus", email: "g@b.com", age: 30}))
+
+    source =
+      from(u in UU,
+        where: u.email == "g@b.com",
+        select: %{
+          name: u.name,
+          email: u.email,
+          age: u.age + 1,
+          inserted_at: u.inserted_at,
+          updated_at: u.updated_at
+        }
+      )
+
+    assert {1, nil} =
+             Repo.insert_all(UU, source,
+               on_conflict: {:replace, [:age]},
+               conflict_target: [:email]
+             )
+
+    assert Repo.get_by(UU, email: "g@b.com").age == 31
+  end
 end

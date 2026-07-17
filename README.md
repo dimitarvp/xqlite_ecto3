@@ -360,6 +360,9 @@ Permanent SQLite constraints (not adapter choices):
 - `ON DELETE SET NULL` / `SET DEFAULT` always apply to every column of the foreign key — there is no PostgreSQL-15-style per-column list (`ON DELETE SET NULL (col)`). Workarounds: split the relationship into separate single-column foreign keys, or create an `AFTER DELETE` trigger on the parent (via `execute/2` in a migration) that nulls exactly the columns you need
 - `ALTER TABLE` cannot modify primary keys or foreign keys in-place (rebuild required)
 - SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds
+- No materialized views. `CREATE VIEW` is always virtual. You should materialize by hand into a real table, manually e.g. `CREATE TABLE ... AS SELECT`.
+- No table partitioning. Heavy SQLite users emulate this by multiple database files (tenants, time windows) with separate repos or via `ATTACH`.
+- No built-in network access or replication — SQLite is embedded by design; the ecosystem uses Litestream (streaming backup), LiteFS (read replicas), and libSQL/Turso (server-mode SQLite), all of which sit below or beside the adapter and need nothing from it
 
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 
@@ -385,6 +388,8 @@ SQLite serializes writers per database file; a pool cannot change that — it on
 - **Retry with backoff.** For bursty writes, let `busy_timeout` absorb short waits (repo config or URL parameter), and treat `{:database_busy_or_locked, _}` errors as retryable — the shape is structured and stable, no message parsing needed.
 - **Queue writes in the caller.** Under sustained pressure, funnel writes through a single process (GenServer, queue) per database and let the pool serve reads. WAL readers are parallel, so reads scale in the pool; a second read-only repo on the same file (`mode: :readonly`) makes the read/write split explicit.
 - **Measure instead of guessing.** `Xqlite.set_busy_handler/3` forwards a `{:xqlite_busy, retries, elapsed_ms}` message per contention event; `XqliteNIF.txn_state/2` answers "does this connection hold a write transaction right now"; `Xqlite.wal_checkpoint/3` and the WAL hook expose checkpoint pressure. All of it bridges into `:telemetry` if you want dashboards.
+
+Shutdown needs no ceremony: when the pool drains, cached statements are finalized eagerly on each disconnect, and the last connection to close checkpoints the WAL and removes the sidecar files (test-pinned behavior).
 
 If sustained write volume outgrows all of this, that is SQLite's honest ceiling — reach for a client/server database.
 

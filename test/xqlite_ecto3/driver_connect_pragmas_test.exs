@@ -145,4 +145,13 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
                Driver.connect(database: tmp_db!("badmode"), mode: :turbo)
     end
   end
+
+  describe "connect failure surface" do
+    test "a missing parent directory yields the structured open error carrying the path" do
+      bad_path = "/nonexistent_xq_dir_#{:erlang.unique_integer([:positive])}/db.sqlite"
+
+      assert {:error, {:cannot_open_database, ^bad_path, _code, _reason}} =
+               Driver.connect(database: bad_path)
+    end
+  end
 end
