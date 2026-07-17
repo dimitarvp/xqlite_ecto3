@@ -1,0 +1,11 @@
+
+Traversal.FileModule: Directory Traversal in `File.mkdir_p!`,lib/xqlite_ecto3.ex:342,15EC794
+SQL.Query: SQL injection,lib/xqlite_ecto3.ex:570,2E4D04D
+Traversal.FileModule: Directory Traversal in `File.read`,lib/xqlite_ecto3.ex:356,30BD8CD
+Traversal.FileModule: Directory Traversal in `File.write!`,lib/xqlite_ecto3.ex:343,46B028F
+SQL.Query: SQL injection,lib/xqlite_ecto3/connection.ex:648,5C4285B
+Traversal.FileModule: Directory Traversal in `File.rm`,lib/xqlite_ecto3.ex:313,5E3CBC4
+Traversal.FileModule: Directory Traversal in `File.rm`,lib/xqlite_ecto3.ex:310,6062B20
+SQL.Query: SQL injection,lib/xqlite_ecto3.ex:566,74CF4FA
+Traversal.FileModule: Directory Traversal in `File.mkdir_p!`,lib/xqlite_ecto3.ex:298,7E2A57E
+Traversal.FileModule: Directory Traversal in `File.rm`,lib/xqlite_ecto3.ex:312,7F91753
