@@ -9,6 +9,8 @@ defmodule XqliteEcto3.Connection do
 
   @behaviour Ecto.Adapters.SQL.Connection
 
+  import XqliteEcto3.DataType
+
   alias Ecto.Adapters.SQL
   alias Ecto.Migration.Constraint
   alias Ecto.Migration.Index
@@ -19,8 +21,6 @@ defmodule XqliteEcto3.Connection do
   alias Ecto.Query.JoinExpr
   alias Ecto.Query.QueryExpr
   alias Ecto.Query.WithExpr
-
-  import XqliteEcto3.DataType
 
   @parent_as __MODULE__
 
@@ -161,9 +161,8 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(_, _), do: []
 
-  defp unique_index_name(%XqliteEcto3.Error.Constraint{index_name: name})
-       when is_binary(name),
-       do: name
+  defp unique_index_name(%XqliteEcto3.Error.Constraint{index_name: name}) when is_binary(name),
+    do: name
 
   defp unique_index_name(%XqliteEcto3.Error.Constraint{table: table, columns: [_ | _] = columns})
        when is_binary(table) do
@@ -183,9 +182,8 @@ defmodule XqliteEcto3.Connection do
     "#{table}.#{col}"
   end
 
-  defp not_null_column(%XqliteEcto3.Error.Constraint{columns: [col | _]})
-       when is_binary(col),
-       do: col
+  defp not_null_column(%XqliteEcto3.Error.Constraint{columns: [col | _]}) when is_binary(col),
+    do: col
 
   defp not_null_column(_), do: nil
 
@@ -786,7 +784,7 @@ defmodule XqliteEcto3.Connection do
   end
 
   @impl true
-  def execute_ddl({_, %Index{include: x}}) when length(x) != 0 do
+  def execute_ddl({_, %Index{include: x}}) when is_list(x) and x != [] do
     raise ArgumentError, "`include` is not supported with SQLite"
   end
 
@@ -856,11 +854,6 @@ defmodule XqliteEcto3.Connection do
   end
 
   @impl true
-  def execute_ddl({:drop_if_exists, %Index{concurrently: true}}) do
-    raise ArgumentError, "`concurrently` is not supported with SQLite"
-  end
-
-  @impl true
   def execute_ddl({:drop_if_exists, %Index{} = index}) do
     [
       [
@@ -916,7 +909,7 @@ defmodule XqliteEcto3.Connection do
   def execute_ddl({:rename, %Index{} = index, new_index}) do
     [
       execute_ddl({:drop, index}),
-      execute_ddl({:create, %Index{index | name: new_index}})
+      execute_ddl({:create, %{index | name: new_index}})
     ]
   end
 
@@ -972,8 +965,7 @@ defmodule XqliteEcto3.Connection do
 
   defp conflict_target([]), do: ""
 
-  defp conflict_target({:unsafe_fragment, fragment}),
-    do: [fragment, ?\s]
+  defp conflict_target({:unsafe_fragment, fragment}), do: [fragment, ?\s]
 
   defp conflict_target(targets) do
     [?(, Enum.map_intersperse(targets, ?,, &quote_name/1), ?), ?\s]
@@ -1120,8 +1112,7 @@ defmodule XqliteEcto3.Connection do
   end
 
   def cte(
-        %{with_ctes: %WithExpr{recursive: recursive, queries: [_ | _] = queries}} =
-          query,
+        %{with_ctes: %WithExpr{recursive: recursive, queries: [_ | _] = queries}} = query,
         sources
       ) do
     recursive_opt = if recursive, do: "RECURSIVE ", else: ""
@@ -1261,8 +1252,7 @@ defmodule XqliteEcto3.Connection do
 
   defp join_on(:cross, true, _sources, _query), do: []
 
-  defp join_on(_qual, expression, sources, query),
-    do: [" ON " | expr(expression, sources, query)]
+  defp join_on(_qual, expression, sources, query), do: [" ON " | expr(expression, sources, query)]
 
   defp join_qual(:inner, _), do: " INNER JOIN "
   defp join_qual(:left, _), do: " LEFT OUTER JOIN "
@@ -1377,13 +1367,11 @@ defmodule XqliteEcto3.Connection do
 
   defp combination({:union, query}, as_prefix), do: [" UNION ", all(query, as_prefix)]
 
-  defp combination({:union_all, query}, as_prefix),
-    do: [" UNION ALL ", all(query, as_prefix)]
+  defp combination({:union_all, query}, as_prefix), do: [" UNION ALL ", all(query, as_prefix)]
 
   defp combination({:except, query}, as_prefix), do: [" EXCEPT ", all(query, as_prefix)]
 
-  defp combination({:intersect, query}, as_prefix),
-    do: [" INTERSECT ", all(query, as_prefix)]
+  defp combination({:intersect, query}, as_prefix), do: [" INTERSECT ", all(query, as_prefix)]
 
   defp combination({:except_all, query}, _) do
     raise Ecto.QueryError,
@@ -1468,11 +1456,9 @@ defmodule XqliteEcto3.Connection do
 
   # workaround for the fact that SQLite as of 3.35.4 does not support specifying table
   # in the returning clause. when a later release adds the ability, this code can be deleted
-  defp expr(
-         {{:., _, [{:parent_as, _, [{:&, _, [_idx]}]}, field]}, _, []},
-         _sources,
-         %{returning: true}
-       )
+  defp expr({{:., _, [{:parent_as, _, [{:&, _, [_idx]}]}, field]}, _, []}, _sources, %{
+         returning: true
+       })
        when is_atom(field) do
     quote_name(field)
   end
@@ -1491,8 +1477,7 @@ defmodule XqliteEcto3.Connection do
     [name, ?. | quote_name(field)]
   end
 
-  defp expr({{:., _, [{:&, _, [idx]}, field]}, _, []}, sources, _query)
-       when is_atom(field) do
+  defp expr({{:., _, [{:&, _, [idx]}, field]}, _, []}, sources, _query) when is_atom(field) do
     {_, name, _} = elem(sources, idx)
     [name, ?. | quote_name(field)]
   end
@@ -1563,8 +1548,7 @@ defmodule XqliteEcto3.Connection do
     [?(, all(query, subquery_as_prefix(sources)), ?)]
   end
 
-  defp expr({:fragment, _, [kw]}, _sources, query)
-       when is_list(kw) or tuple_size(kw) == 3 do
+  defp expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
     raise Ecto.QueryError,
       query: query,
       message: "SQLite adapter does not support keyword or interpolated fragments"
@@ -1831,8 +1815,7 @@ defmodule XqliteEcto3.Connection do
     "#{expr(count, sources, nil)} || ' #{interval}'"
   end
 
-  defp op_to_binary({op, _, [_, _]} = expression, sources, query)
-       when op in @binary_ops do
+  defp op_to_binary({op, _, [_, _]} = expression, sources, query) when op in @binary_ops do
     paren_expr(expression, sources, query)
   end
 
@@ -1887,9 +1870,7 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  def create_alias(<<first, _rest::binary>>)
-      when first in ?a..?z
-      when first in ?A..?Z do
+  def create_alias(<<first, _rest::binary>>) when first in ?a..?z when first in ?A..?Z do
     first
   end
 
@@ -1998,13 +1979,11 @@ defmodule XqliteEcto3.Connection do
 
   defp check_expr(nil), do: []
 
-  defp check_expr(%{name: name, expr: expr}),
-    do: [" CONSTRAINT ", name, " CHECK (", expr, ")"]
+  defp check_expr(%{name: name, expr: expr}), do: [" CONSTRAINT ", name, " CHECK (", expr, ")"]
 
   defp collate_expr(nil), do: []
 
-  defp collate_expr(type) when is_atom(type),
-    do: type |> Atom.to_string() |> collate_expr()
+  defp collate_expr(type) when is_atom(type), do: type |> Atom.to_string() |> collate_expr()
 
   defp collate_expr(type), do: [" COLLATE ", String.upcase(type)]
 
@@ -2040,8 +2019,7 @@ defmodule XqliteEcto3.Connection do
   defp index_expr(literal) when is_binary(literal), do: literal
   defp index_expr(literal), do: quote_name(literal)
 
-  defp pk_expr(true, type) when type in [:serial, :bigserial],
-    do: " PRIMARY KEY AUTOINCREMENT"
+  defp pk_expr(true, type) when type in [:serial, :bigserial], do: " PRIMARY KEY AUTOINCREMENT"
 
   defp pk_expr(true, _), do: " PRIMARY KEY"
   defp pk_expr(_, _), do: []
@@ -2115,10 +2093,15 @@ defmodule XqliteEcto3.Connection do
   ## Helpers
   ##
 
-  # `Ecto.Migration.Table.modifiers` arrived in ecto_sql 3.14 — Map.get
-  # keeps this compiling against 3.12/3.13 structs that lack the key.
+  # `Ecto.Migration.Table.modifiers` arrived in ecto_sql 3.14. The read
+  # must stay a RUNTIME map access: on pre-3.14 locks the struct lacks
+  # the key (→ nil), but callers/tests inject it to exercise the 3.14
+  # pass-through on older locks. Elixir 1.20's type checker proves any
+  # direct read of a known-absent struct key always-nil (it traces
+  # through Map.from_struct too) — apply/3 keeps the access deliberately
+  # opaque to it.
   defp modifiers_expr(%Table{} = table) do
-    case Map.get(table, :modifiers) do
+    case apply(Map, :get, [table, :modifiers]) do
       nil ->
         []
 
@@ -2187,7 +2170,7 @@ defmodule XqliteEcto3.Connection do
       {:raw, part} -> part
       {:expr, expression} -> expr(expression, sources, query)
     end)
-    |> parens_for_select
+    |> parens_for_select()
   end
 
   defp get_source(query, sources, ix, source) do
@@ -2224,8 +2207,7 @@ defmodule XqliteEcto3.Connection do
 
   defp intersperse_reduce(list, separator, user_acc, reducer, acc \\ [])
 
-  defp intersperse_reduce([], _separator, user_acc, _reducer, acc),
-    do: {acc, user_acc}
+  defp intersperse_reduce([], _separator, user_acc, _reducer, acc), do: {acc, user_acc}
 
   defp intersperse_reduce([item], _separator, user_acc, reducer, acc) do
     {item, user_acc} = reducer.(item, user_acc)
