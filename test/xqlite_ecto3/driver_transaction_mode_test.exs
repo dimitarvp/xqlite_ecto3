@@ -1,14 +1,10 @@
 defmodule XqliteEcto3.DriverTransactionModeTest do
   use ExUnit.Case, async: true
 
+  import XqliteEcto3.DriverHelper, only: [connect!: 1]
+
   alias XqliteEcto3.Driver
   alias XqliteNIF, as: NIF
-
-  defp connect!(opts) do
-    assert {:ok, state} = Driver.connect(Keyword.put_new(opts, :database, ":memory:"))
-    on_exit(fn -> NIF.close(state.conn) end)
-    state
-  end
 
   # sqlite3_txn_state: BEGIN DEFERRED acquires no lock until the first
   # statement (:none), while IMMEDIATE/EXCLUSIVE take the write lock at

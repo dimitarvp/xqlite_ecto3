@@ -1,6 +1,8 @@
 defmodule XqliteEcto3.DriverConnectPragmasTest do
   use ExUnit.Case, async: true
 
+  import XqliteEcto3.DriverHelper, only: [connect!: 1]
+
   alias XqliteEcto3.Driver
   alias XqliteEcto3.URL
   alias XqliteNIF, as: NIF
@@ -14,12 +16,6 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end)
 
     path
-  end
-
-  defp connect!(opts) do
-    assert {:ok, state} = Driver.connect(opts)
-    on_exit(fn -> NIF.close(state.conn) end)
-    state
   end
 
   defp pragma!(conn, name) do
