@@ -526,9 +526,8 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  # ecto_sql 3.14 widened the callback to insert/8 (trailing opts) but its
-  # single-row `Repo.insert` path still invokes insert/7 — the default arg
-  # makes one definition serve both arities and both ecto_sql lines.
+  # ecto_sql 3.14 calls insert/8 (trailing opts) for insert_all but still
+  # insert/7 for single-row Repo.insert — the default arg serves both.
   @impl true
   def insert(prefix, table, header, rows, on_conflict, returning, placeholders, opts \\ [])
 
@@ -2093,25 +2092,14 @@ defmodule XqliteEcto3.Connection do
   ## Helpers
   ##
 
-  # `Ecto.Migration.Table.modifiers` arrived in ecto_sql 3.14. The read
-  # must stay a RUNTIME map access: on pre-3.14 locks the struct lacks
-  # the key (→ nil), but callers/tests inject it to exercise the 3.14
-  # pass-through on older locks. Elixir 1.20's type checker proves any
-  # direct read of a known-absent struct key always-nil (it traces
-  # through Map.from_struct too) — apply/3 keeps the access deliberately
-  # opaque to it.
-  defp modifiers_expr(%Table{} = table) do
-    case apply(Map, :get, [table, :modifiers]) do
-      nil ->
-        []
+  defp modifiers_expr(%Table{modifiers: nil}), do: []
 
-      modifiers when is_binary(modifiers) ->
-        [modifiers, ?\s]
+  defp modifiers_expr(%Table{modifiers: modifiers}) when is_binary(modifiers),
+    do: [modifiers, ?\s]
 
-      other ->
-        raise ArgumentError,
-              "SQLite adapter expects :modifiers to be a string or nil, got #{inspect(other)}"
-    end
+  defp modifiers_expr(%Table{modifiers: other}) do
+    raise ArgumentError,
+          "SQLite adapter expects :modifiers to be a string or nil, got #{inspect(other)}"
   end
 
   defp composite_pk_definition(%Table{} = table, columns) do

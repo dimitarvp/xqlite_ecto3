@@ -74,7 +74,7 @@ defmodule XqliteEcto3.MixProject do
 
   defp deps do
     [
-      {:ecto_sql, "~> 3.12"},
+      {:ecto_sql, "~> 3.14"},
       {:db_connection, "~> 2.7"},
       xqlite_dep(),
       {:rustler, "~> 0.37", optional: true, only: [:dev, :test]},

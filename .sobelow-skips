@@ -9,3 +9,4 @@ Traversal.FileModule: Directory Traversal in `File.rm`,lib/xqlite_ecto3.ex:310,6
 SQL.Query: SQL injection,lib/xqlite_ecto3.ex:566,74CF4FA
 Traversal.FileModule: Directory Traversal in `File.mkdir_p!`,lib/xqlite_ecto3.ex:298,7E2A57E
 Traversal.FileModule: Directory Traversal in `File.rm`,lib/xqlite_ecto3.ex:312,7F91753
+SQL.Query: SQL injection,lib/xqlite_ecto3/connection.ex:647,4286C5A

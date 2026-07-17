@@ -215,10 +215,10 @@ jobs:
           otp-version: ${{ env.DEFAULT_OTP }}
 
       # no dep/build cache and a full unlock on purpose: this lane
-      # simulates a fresh `mix deps.get` with no lockfile, which is
-      # exactly what a new user's resolve looks like (ecto_sql 3.14
-      # slipped past a partial unlock once — its decimal ~> 3.0
-      # requirement kept it invisible while decimal stayed locked)
+      # simulates a fresh `mix deps.get` with no lockfile — exactly a
+      # new user's resolve. With the lock already on the latest stack
+      # its job is early warning for FUTURE ecto_sql/ecto releases
+      # (drift surfaces here and in the weekly cron between pushes).
       - name: Install dependencies as a fresh resolve
         run: |
           mix deps.unlock --all

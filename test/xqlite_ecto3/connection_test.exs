@@ -103,11 +103,8 @@ defmodule XqliteEcto3.ConnectionTest do
   # execute_ddl: table modifiers (ecto_sql 3.14)
   # ---------------------------------------------------------------------------
 
-  # Map.put instead of a struct literal: %Table{} only carries :modifiers on
-  # ecto_sql >= 3.14, and this builds the same runtime shape under older
-  # deps, so every CI lane covers the passthrough.
   defp table_with_modifiers(modifiers) do
-    Map.put(%Table{name: "posts"}, :modifiers, modifiers)
+    %Table{name: "posts", modifiers: modifiers}
   end
 
   test "create table passes string modifiers through" do

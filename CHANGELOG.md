@@ -133,12 +133,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword); fresh installs resolving 3.14 crashed `Repo.insert_all`
   with `UndefinedFunctionError` (single-row `Repo.insert` still calls
   `insert/7`, which 3.14 itself retains). One defaulted head now
-  serves both arities; the requirement stays `~> 3.12`. Ecto 3.14's
+  serves both arities. Ecto 3.14's
   schema-mapped fragment sources (`FROM` / `JOIN` on a fragment
   carrying a schema) also render now — previously the fragment tuple
   was quoted as a table name and SQL generation crashed. CI gained a
   fresh-resolve lane plus a weekly scheduled run so upstream drift
   surfaces between pushes.
+
+### Changed
+
+- **Requires ecto_sql `~> 3.14`** (was `~> 3.12`). One supported
+  stack, tested exactly as claimed. This drops the pre-3.14 compat
+  surface (`Ecto.Migration.Table.modifiers` is read directly now)
+  and pulls decimal to 3.x — the first line patched for
+  GHSA-rhv4-8758-jx7v. Adopters whose other dependencies still pin
+  `decimal ~> 2.0` must update those first.
 
 ### Breaking
 
