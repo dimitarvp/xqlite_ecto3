@@ -71,6 +71,51 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
     end
   end
 
+  describe "cache telemetry" do
+    test "miss, hit, and eviction events fire with counts" do
+      handler_id = "cache-telemetry-#{System.unique_integer([:positive])}"
+      me = self()
+
+      :ok =
+        :telemetry.attach_many(
+          handler_id,
+          [
+            [:xqlite_ecto3, :statement_cache, :hit],
+            [:xqlite_ecto3, :statement_cache, :miss],
+            [:xqlite_ecto3, :statement_cache, :evicted]
+          ],
+          fn event, measurements, metadata, _ ->
+            send(me, {:cache_tel, event, measurements, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      state = seeded!(statement_cache_size: 1)
+
+      {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [1])
+
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], m1,
+                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+
+      assert m1.cached_count == 0
+      assert is_integer(m1.monotonic_time)
+
+      {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [2])
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :hit], m2, _}
+      assert m2.cached_count == 1
+
+      {_r, _state} = execute!(state, "SELECT x FROM t ORDER BY x", [])
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], _m3, _}
+
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :evicted], m4,
+                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+
+      assert m4.cached_count == 2
+    end
+  end
+
   describe "LRU eviction" do
     test "exceeding capacity evicts the least recently used statement" do
       state = seeded!(statement_cache_size: 2)

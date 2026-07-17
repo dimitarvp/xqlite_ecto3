@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Statement-cache telemetry.**
+  `[:xqlite_ecto3, :statement_cache, :hit | :miss | :evicted]`
+  events (compile-flagged like the rest of the adapter's telemetry):
+  `cached_count` measurement plus the statement's SQL in metadata —
+  enough to size `statement_cache_size` from production traffic.
+
 - **`url:` repo config works out of the box.** Ecto's generic URL
   parsing rejects `sqlite://` URLs (no host, multi-segment path), so
   the adapter now injects a default `init/2` into repos that don't

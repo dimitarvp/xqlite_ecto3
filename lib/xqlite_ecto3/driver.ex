@@ -410,8 +410,29 @@ defmodule XqliteEcto3.Driver do
 
   defp checkout_stmt(state, sql) do
     case Map.fetch(state.stmt_cache, sql) do
-      {:ok, stmt} -> {:ok, stmt, touch_stmt(state, sql)}
-      :error -> prepare_and_cache(state, sql)
+      {:ok, stmt} ->
+        emit(
+          [:xqlite_ecto3, :statement_cache, :hit],
+          %{
+            monotonic_time: System.monotonic_time(:nanosecond),
+            cached_count: map_size(state.stmt_cache)
+          },
+          %{sql: sql}
+        )
+
+        {:ok, stmt, touch_stmt(state, sql)}
+
+      :error ->
+        emit(
+          [:xqlite_ecto3, :statement_cache, :miss],
+          %{
+            monotonic_time: System.monotonic_time(:nanosecond),
+            cached_count: map_size(state.stmt_cache)
+          },
+          %{sql: sql}
+        )
+
+        prepare_and_cache(state, sql)
     end
   end
 
@@ -443,6 +464,16 @@ defmodule XqliteEcto3.Driver do
       {evicted_key, kept_keys} = List.pop_at(state.stmt_cache_keys, -1)
       {stmt, cache} = Map.pop(state.stmt_cache, evicted_key)
       _ = NIF.stmt_finalize(stmt)
+
+      emit(
+        [:xqlite_ecto3, :statement_cache, :evicted],
+        %{
+          monotonic_time: System.monotonic_time(:nanosecond),
+          cached_count: map_size(state.stmt_cache)
+        },
+        %{sql: evicted_key}
+      )
+
       %{state | stmt_cache: cache, stmt_cache_keys: kept_keys}
     else
       state
