@@ -51,10 +51,7 @@ defmodule XqliteEcto3.MixProject do
       verify: [
         "format --check-formatted",
         "compile --warnings-as-errors",
-        # GHSA-rhv4-8758-jx7v: decimal < 3.0 DoS; decimal 3.x is blocked
-        # by jason 1.4's `~> 1.0 or ~> 2.0` (and the 3.13 ecto_sql lock).
-        # Remove the ignore when the ceiling lifts.
-        "deps.audit --ignore-advisory-ids GHSA-rhv4-8758-jx7v",
+        "deps.audit",
         # .sobelow-skips holds fingerprints for role-inherent findings:
         # storage_up/down + dump/load File ops on CONFIG-provided database
         # paths, and EXPLAIN/table-rebuild SQL built from Ecto-compiled or
