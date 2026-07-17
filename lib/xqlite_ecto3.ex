@@ -97,6 +97,20 @@ defmodule XqliteEcto3 do
   Elixir shape (`:integer`, `:string`, `:naive_datetime`, etc.). The
   adapter's loaders chain handles the coercion once the type is declared.
 
+  The same annotation is the **schemaless** story: without a schema
+  there is no field type to trigger the JSON loader, so
+  `from(t in "items", select: t.meta)` returns the stored TEXT.
+  Annotate and it decodes — on whole columns, on JSON paths, and inside
+  select maps:
+
+      from t in "items", select: type(t.meta, :map)
+      from t in "items", select: type(t.meta["nested"], :map)
+      from t in "items", select: %{id: t.id, meta: type(t.meta, :map)}
+
+  There is deliberately no always-decoding custom type for this:
+  untyped select expressions have no Ecto load hook to attach one to,
+  so `type/2` is the mechanism.
+
   The shared Ecto test suite's `:json_extract_path` tests that don't use
   `type/2` remain excluded — this matches `ecto_sqlite3`'s stance. The
   two of four variants that don't hit this case (arrays/objects, embeds)
