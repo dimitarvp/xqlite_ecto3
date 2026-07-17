@@ -134,6 +134,38 @@ defmodule XqliteEcto3 do
   use Ecto.Adapters.SQL,
     driver: :xqlite_ecto3
 
+  # Ecto's generic `:url` handling raises on sqlite:// URLs (it demands a
+  # host and a single-segment path), and it runs AFTER the repo's init/2.
+  # Injecting a default init/2 into repos that don't define their own pops
+  # `:url` and merges our parser's output before Ecto ever sees it — so
+  # `config :app, Repo, url: "sqlite:///..."` just works. Repos with a
+  # custom init/2 are left untouched (see the README for the two lines
+  # they need).
+  @impl true
+  defmacro __before_compile__(env) do
+    sql = Ecto.Adapters.SQL.__before_compile__(@driver, env)
+
+    url_init =
+      if !Module.defines?(env.module, {:init, 2}) do
+        quote do
+          @impl Ecto.Repo
+          def init(_type, config) do
+            {url, config} = Keyword.pop(config, :url)
+
+            case url do
+              empty when empty in [nil, ""] -> {:ok, config}
+              url -> {:ok, Keyword.merge(config, XqliteEcto3.parse_url!(url))}
+            end
+          end
+        end
+      end
+
+    quote do
+      unquote(sql)
+      unquote(url_init)
+    end
+  end
+
   @doc """
   Parses a database URL into keyword-list options.
 
@@ -287,6 +319,9 @@ defmodule XqliteEcto3 do
   end
 
   @impl Ecto.Adapter.Storage
+  # File ops on the operator's own configured database path are this
+  # callback's contract (mix ecto.create) — not request-data traversal.
+  # sobelow_skip ["Traversal.FileModule"]
   def storage_up(opts) do
     database = Keyword.fetch!(opts, :database)
 
@@ -304,6 +339,9 @@ defmodule XqliteEcto3 do
   end
 
   @impl Ecto.Adapter.Storage
+  # Removes the configured database + sidecars (mix ecto.drop) — the
+  # path is operator config, not request data.
+  # sobelow_skip ["Traversal.FileModule"]
   def storage_down(opts) do
     database = Keyword.fetch!(opts, :database)
 
@@ -333,6 +371,9 @@ defmodule XqliteEcto3 do
   end
 
   @impl Ecto.Adapter.Structure
+  # Writes the schema dump to the operator-configured dump path
+  # (mix ecto.dump) — not request-data traversal.
+  # sobelow_skip ["Traversal.FileModule"]
   def structure_dump(default, config) do
     database = Keyword.fetch!(config, :database)
     path = config[:dump_path] || Path.join(default, "structure.sql")
@@ -349,6 +390,9 @@ defmodule XqliteEcto3 do
   end
 
   @impl Ecto.Adapter.Structure
+  # Reads the operator-configured dump path (mix ecto.load) — not
+  # request-data traversal.
+  # sobelow_skip ["Traversal.FileModule"]
   def structure_load(default, config) do
     database = Keyword.fetch!(config, :database)
     path = config[:dump_path] || Path.join(default, "structure.sql")
@@ -528,6 +572,9 @@ defmodule XqliteEcto3 do
     end
   end
 
+  # Replays DDL text read back from sqlite_schema.sql plus a PRAGMA with
+  # a quote_name-quoted identifier — schema-sourced, not user input.
+  # sobelow_skip ["SQL.Query"]
   defp rebuild_table(meta, table, changes, opts) do
     if !rebuild_enabled?(meta) do
       raise ArgumentError,

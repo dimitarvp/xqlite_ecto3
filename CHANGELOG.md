@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`url:` repo config works out of the box.** Ecto's generic URL
+  parsing rejects `sqlite://` URLs (no host, multi-segment path), so
+  the adapter now injects a default `init/2` into repos that don't
+  define their own, translating `:url` through
+  `XqliteEcto3.parse_url!/1` before Ecto sees it —
+  `config :app, Repo, url: System.fetch_env!("DATABASE_URL")` is all
+  a Phoenix app needs. Repos with a custom `init/2` are left
+  untouched (the README shows the two lines they keep).
+
 - **Per-connection prepared-statement cache.** Every pooled connection
   keeps an LRU cache of prepared statements keyed by SQL text
   (`statement_cache_size`, default 50; `0` disables). Repeated

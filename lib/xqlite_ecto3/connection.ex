@@ -641,6 +641,9 @@ defmodule XqliteEcto3.Connection do
   end
 
   @impl true
+  # Prefixes EXPLAIN onto Ecto-compiled SQL — adapter-internal input,
+  # exactly what every SQL adapter's explain does.
+  # sobelow_skip ["SQL.Query"]
   def explain_query(conn, query, params, opts) do
     type = Keyword.get(opts, :type, :query_plan)
 

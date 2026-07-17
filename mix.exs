@@ -52,10 +52,11 @@ defmodule XqliteEcto3.MixProject do
         "format --check-formatted",
         "compile --warnings-as-errors",
         "deps.audit",
-        # .sobelow-skips holds fingerprints for role-inherent findings:
-        # storage_up/down + dump/load File ops on CONFIG-provided database
-        # paths, and EXPLAIN/table-rebuild SQL built from Ecto-compiled or
-        # sqlite_schema-sourced statements. New findings still fail.
+        # Role-inherent findings are skipped via inline `# sobelow_skip`
+        # marks on the functions themselves (storage/structure File ops on
+        # config paths; EXPLAIN/rebuild SQL from adapter-internal sources) —
+        # position-independent, unlike .sobelow-skips fingerprints, which
+        # broke on every line shift. New findings still fail the gate.
         "sobelow --skip --exit low",
         "dialyzer",
         "xqlite_ecto3.test.seq"

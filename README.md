@@ -55,21 +55,21 @@ config :my_app, MyApp.Repo,
 config :my_app, ecto_repos: [MyApp.Repo]
 ```
 
-…or, 12-factor-style, drive it from a URL:
+…or, 12-factor-style, drive it from a URL — the adapter parses `sqlite://` URLs natively, so the standard Phoenix pattern just works:
 
 ```elixir
 # config/runtime.exs
-opts =
-  "DATABASE_URL"
-  |> System.fetch_env!()
-  |> XqliteEcto3.parse_url!()
-
-sqlite_opts = Keyword.merge([adapter: XqliteEcto3, pool_size: 5], opts)
-
-config :my_app, MyApp.Repo, sqlite_opts
+config :my_app, MyApp.Repo,
+  url: System.fetch_env!("DATABASE_URL"),
+  pool_size: 5
 ```
 
-Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases.
+Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases. (Ecto's own generic URL parsing would reject these URLs; the adapter injects a default `init/2` into repos that don't define one, translating `:url` before Ecto sees it.) If your repo defines its own `init/2`, put these two lines in it:
+
+```elixir
+{url, config} = Keyword.pop(config, :url)
+{:ok, Keyword.merge(config, XqliteEcto3.parse_url!(url))}
+```
 
 Every pooled connection caches prepared statements in an LRU keyed by SQL text (`statement_cache_size`, default 50; `0` disables) — repeated queries skip SQLite's parse/plan step, and timeouts still cancel through the cached path.
 
