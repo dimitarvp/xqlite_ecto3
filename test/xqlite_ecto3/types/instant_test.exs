@@ -125,6 +125,7 @@ defmodule XqliteEcto3.Types.InstantTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
+
       TestRepo.query!("CREATE TEMP TABLE inst_test(id INTEGER PRIMARY KEY, ts INTEGER)")
       :ok
     end

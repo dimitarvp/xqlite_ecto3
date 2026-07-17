@@ -3,6 +3,7 @@ defmodule XqliteEcto3.QueryFeaturesTest do
 
   defmodule QU do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "qf_users" do
@@ -19,6 +20,7 @@ defmodule XqliteEcto3.QueryFeaturesTest do
 
   defmodule QP do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "qf_posts" do

@@ -158,6 +158,7 @@ defmodule XqliteEcto3.Types.DurationTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
+
       TestRepo.query!("CREATE TEMP TABLE dur_test(id INTEGER PRIMARY KEY, d INTEGER)")
       :ok
     end

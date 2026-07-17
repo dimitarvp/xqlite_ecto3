@@ -3,8 +3,9 @@ defmodule XqliteEcto3.Driver do
 
   @behaviour DBConnection
 
-  alias XqliteNIF, as: NIF
   import XqliteEcto3.Telemetry, only: [emit: 3, span_with_stop_metadata: 3]
+
+  alias XqliteNIF, as: NIF
 
   defstruct [
     :conn,
@@ -79,8 +80,6 @@ defmodule XqliteEcto3.Driver do
              rich_fk_diagnostics: rich_fk_diagnostics,
              stmt_cache_size: stmt_cache_size
            }}
-        else
-          {:error, reason} -> {:error, reason}
         end
 
       classify(result, start_md)
@@ -118,8 +117,7 @@ defmodule XqliteEcto3.Driver do
 
   defp apply_custom_pragmas(_conn, []), do: {:ok, :done}
 
-  defp apply_custom_pragmas(conn, [{name, value} | rest])
-       when is_atom(name) or is_binary(name) do
+  defp apply_custom_pragmas(conn, [{name, value} | rest]) when is_atom(name) or is_binary(name) do
     case NIF.set_pragma(conn, to_string(name), value) do
       {:ok, _} -> apply_custom_pragmas(conn, rest)
       {:error, _} = err -> err

@@ -3,6 +3,7 @@ defmodule XqliteEcto3.NullHandlingTest do
 
   defmodule NU do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "null_records" do

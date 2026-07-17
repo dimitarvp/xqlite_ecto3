@@ -159,11 +159,10 @@ defmodule XqliteEcto3.BulkOperationsTest do
 
     for i <- 1..n do
       {:ok, _} =
-        Repo.insert(
-          BU.changeset(%BU{}, %{name: "User #{i}", age: i})
-          |> Ecto.Changeset.put_change(:inserted_at, now)
-          |> Ecto.Changeset.put_change(:updated_at, now)
-        )
+        BU.changeset(%BU{}, %{name: "User #{i}", age: i})
+        |> Ecto.Changeset.put_change(:inserted_at, now)
+        |> Ecto.Changeset.put_change(:updated_at, now)
+        |> Repo.insert()
     end
   end
 end

@@ -168,6 +168,7 @@ defmodule XqliteEcto3.Types.TimestampTZTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
+
       TestRepo.query!("CREATE TEMP TABLE tsz_test(id INTEGER PRIMARY KEY, t TEXT)")
       :ok
     end

@@ -53,8 +53,7 @@ defmodule XqliteEcto3.URLError do
     do:
       "URL carries a host component #{inspect(h)}; SQLite is embedded and xqlite_ecto3 URLs must not declare a host"
 
-  defp format_reason({:unknown_option, key}),
-    do: "unknown query parameter #{inspect(key)}"
+  defp format_reason({:unknown_option, key}), do: "unknown query parameter #{inspect(key)}"
 
   defp format_reason({:invalid_option, key, inner}),
     do: "invalid value for #{inspect(key)}: #{inspect(inner)}"

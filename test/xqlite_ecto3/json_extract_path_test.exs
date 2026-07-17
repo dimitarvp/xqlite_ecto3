@@ -80,7 +80,7 @@ defmodule XqliteEcto3.JsonExtractPathTest do
   end
 
   test "dynamic segment in WHERE position" do
-    assert Repo.one(from(d in Doc, where: d.meta[d.label][0]["name"] == "red", select: d.id))
+    assert Repo.exists?(from(d in Doc, where: d.meta[d.label][0]["name"] == "red", select: d.id))
   end
 
   # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ defmodule XqliteEcto3.JsonExtractPathTest do
   end
 
   test "boolean comparisons in WHERE work without typing" do
-    assert Repo.one(from(d in Doc, where: d.meta["enabled"] == true, select: d.id))
-    refute Repo.one(from(d in Doc, where: d.meta["disabled"] == true, select: d.id))
+    assert Repo.exists?(from(d in Doc, where: d.meta["enabled"] == true, select: d.id))
+    refute Repo.exists?(from(d in Doc, where: d.meta["disabled"] == true, select: d.id))
   end
 end

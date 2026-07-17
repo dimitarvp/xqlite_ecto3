@@ -3,6 +3,7 @@ defmodule XqliteEcto3.StreamTest do
 
   defmodule SI do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "stream_items" do

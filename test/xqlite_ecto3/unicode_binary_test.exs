@@ -3,6 +3,7 @@ defmodule XqliteEcto3.UnicodeBinaryTest do
 
   defmodule UB do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "ub_records" do
@@ -11,8 +12,7 @@ defmodule XqliteEcto3.UnicodeBinaryTest do
       timestamps()
     end
 
-    def changeset(record, attrs \\ %{}),
-      do: record |> cast(attrs, [:text_field, :blob_field])
+    def changeset(record, attrs \\ %{}), do: record |> cast(attrs, [:text_field, :blob_field])
   end
 
   setup_all do

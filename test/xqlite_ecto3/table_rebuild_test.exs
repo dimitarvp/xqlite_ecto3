@@ -18,7 +18,7 @@ defmodule XqliteEcto3.TableRebuildTest do
       Application.put_env(
         :xqlite_ecto3,
         TestRepo,
-        Keyword.drop(repo_config, [:support_alter_via_table_rebuild])
+        Keyword.delete(repo_config, :support_alter_via_table_rebuild)
       )
 
       on_exit(fn -> Application.put_env(:xqlite_ecto3, TestRepo, repo_config) end)

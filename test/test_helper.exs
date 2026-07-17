@@ -1,3 +1,6 @@
+alias Ecto.Integration.PoolRepo
+alias Ecto.Integration.TestRepo
+
 Logger.configure(level: :info)
 
 Application.put_env(:ecto, :primary_key_type, :id)
@@ -5,9 +8,6 @@ Application.put_env(:ecto, :async_integration_tests, false)
 
 ecto = Mix.Project.deps_paths()[:ecto]
 ecto_sql = Mix.Project.deps_paths()[:ecto_sql]
-
-alias Ecto.Integration.TestRepo
-alias Ecto.Integration.PoolRepo
 
 # -- Repo configuration -------------------------------------------------------
 

@@ -172,6 +172,7 @@ defmodule XqliteEcto3.Types.ArrayTest do
   describe "round-trip via TestRepo" do
     setup do
       alias Ecto.Integration.TestRepo
+
       TestRepo.query!("CREATE TEMP TABLE arr_test(id INTEGER PRIMARY KEY, items TEXT)")
       :ok
     end

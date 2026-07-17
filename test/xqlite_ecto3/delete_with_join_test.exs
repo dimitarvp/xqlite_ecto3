@@ -1,11 +1,11 @@
 defmodule XqliteEcto3.DeleteWithJoinTest do
   use ExUnit.Case, async: true
 
-  alias XqliteEcto3.Connection
+  import Ecto.Query
+
   alias Ecto.Integration.Comment
   alias Ecto.Integration.User
-
-  import Ecto.Query
+  alias XqliteEcto3.Connection
 
   defp to_sql(query) do
     {query, _, _} = Ecto.Query.Planner.plan(query, :delete_all, XqliteEcto3)

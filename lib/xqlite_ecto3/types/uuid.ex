@@ -64,7 +64,7 @@ defmodule XqliteEcto3.Types.UUID do
   def init(opts) do
     storage = Keyword.get(opts, :storage, :string)
 
-    unless storage in [:string, :binary] do
+    if storage not in [:string, :binary] do
       raise ArgumentError,
             "XqliteEcto3.Types.UUID :storage must be :string or :binary, got: " <>
               inspect(storage)
@@ -107,9 +107,8 @@ defmodule XqliteEcto3.Types.UUID do
   def dump(value, _dumper, %{storage: :binary}) do
     # Normalize to string first (handles both raw and string input), then convert
     # to raw 16 bytes for BLOB storage.
-    with {:ok, string_form} <- Ecto.UUID.cast(value),
-         {:ok, raw} <- Ecto.UUID.dump(string_form) do
-      {:ok, raw}
+    with {:ok, string_form} <- Ecto.UUID.cast(value) do
+      Ecto.UUID.dump(string_form)
     end
   end
 

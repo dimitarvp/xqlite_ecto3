@@ -24,11 +24,11 @@ defmodule XqliteEcto3.AdapterCase do
 
   using do
     quote do
-      alias Ecto.Integration.TestRepo, warn: false
-      alias Ecto.Integration.TestRepo, as: Repo, warn: false
-
       import Ecto.Query, warn: false
       import XqliteEcto3.TableHelper, warn: false
+
+      alias Ecto.Integration.TestRepo, as: Repo, warn: false
+      alias Ecto.Integration.TestRepo, warn: false
     end
   end
 

@@ -1,6 +1,8 @@
 defmodule XqliteEcto3.MigrationTest do
   use XqliteEcto3.AdapterCase, async: true
 
+  alias XqliteEcto3.Connection
+
   test "create and drop table via raw SQL" do
     TestRepo.query!("CREATE TABLE IF NOT EXISTS mig_test (id INTEGER PRIMARY KEY, name TEXT)")
     TestRepo.query!("INSERT INTO mig_test VALUES (1, 'alice')")
@@ -143,8 +145,6 @@ defmodule XqliteEcto3.MigrationTest do
   test "supports_ddl_transaction? returns true" do
     assert XqliteEcto3.supports_ddl_transaction?() == true
   end
-
-  alias XqliteEcto3.Connection
 
   test "execute_ddl passes raw SQL strings through unchanged" do
     sql =

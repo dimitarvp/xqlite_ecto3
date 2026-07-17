@@ -9,6 +9,7 @@ defmodule XqliteEcto3.ConstraintsTest do
 
   defmodule CP do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "constr_posts" do
@@ -24,6 +25,7 @@ defmodule XqliteEcto3.ConstraintsTest do
 
   defmodule CC do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "constr_constrained" do

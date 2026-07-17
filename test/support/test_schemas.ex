@@ -29,6 +29,7 @@ defmodule XqliteEcto3.TestSchemas do
 
       quote do
         use Ecto.Schema
+
         import Ecto.Changeset
 
         schema unquote(table) do

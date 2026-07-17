@@ -72,7 +72,7 @@ defmodule XqliteEcto3.Types.Array do
   def init(opts) do
     element = Keyword.get(opts, :element, :any)
 
-    unless element in [:any, :string, :integer, :float, :boolean] do
+    if element not in [:any, :string, :integer, :float, :boolean] do
       raise ArgumentError,
             "XqliteEcto3.Types.Array :element must be one of " <>
               ":any, :string, :integer, :float, :boolean — got: #{inspect(element)}"
@@ -109,9 +109,8 @@ defmodule XqliteEcto3.Types.Array do
   def load(nil, _loader, _params), do: {:ok, nil}
 
   def load(json, _loader, params) when is_binary(json) do
-    with {:ok, decoded} when is_list(decoded) <- Jason.decode(json) do
-      cast_elements(decoded, params.element, [])
-    else
+    case Jason.decode(json) do
+      {:ok, decoded} when is_list(decoded) -> cast_elements(decoded, params.element, [])
       _ -> :error
     end
   end

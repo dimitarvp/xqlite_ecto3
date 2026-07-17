@@ -35,11 +35,11 @@ defmodule XqliteEcto3.FkDiagnostics do
   output is deterministic for a given database state.
   """
 
+  import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
+
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.{Constraint, FkViolation}
   alias XqliteNIF, as: NIF
-
-  import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
 
   # Reserved name, never collides with the driver's managed stack
   # ("xqlite_sp_<random prefix>_<n>") or plausible user savepoints.

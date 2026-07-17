@@ -63,7 +63,8 @@ defmodule XqliteEcto3.MixProject do
       {:telemetry, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
-      {:ex_doc, "~> 0.20", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.20", only: :dev, runtime: false},
+      {:quokka, "~> 2.13", only: [:dev, :test], runtime: false}
     ]
   end
 

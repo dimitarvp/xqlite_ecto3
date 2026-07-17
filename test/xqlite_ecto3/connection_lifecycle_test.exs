@@ -3,6 +3,7 @@ defmodule XqliteEcto3.ConnectionLifecycleTest do
 
   defmodule CL do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "cl_users" do

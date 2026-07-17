@@ -1,9 +1,9 @@
 defmodule XqliteEcto3.DistinctOnTest do
   use XqliteEcto3.AdapterCase, async: true
 
-  alias XqliteEcto3.Connection
-
   import Ecto.Query
+
+  alias XqliteEcto3.Connection
 
   defmodule DU do
     use XqliteEcto3.TestSchemas.StandardUser, table: "distinct_users"

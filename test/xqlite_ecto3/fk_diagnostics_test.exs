@@ -43,7 +43,7 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
   end
 
   setup context do
-    path = tmp_db(context.test |> Atom.to_string() |> String.replace(~r/[^A-Za-z0-9]/, ""))
+    path = context.test |> Atom.to_string() |> String.replace(~r/[^A-Za-z0-9]/, "") |> tmp_db()
 
     on_exit(fn ->
       for ext <- ["", "-wal", "-shm"], do: File.rm(path <> ext)

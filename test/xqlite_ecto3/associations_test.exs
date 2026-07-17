@@ -3,6 +3,7 @@ defmodule XqliteEcto3.AssociationsTest do
 
   defmodule AU do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "assoc_users" do
@@ -22,6 +23,7 @@ defmodule XqliteEcto3.AssociationsTest do
 
   defmodule AP do
     use Ecto.Schema
+
     import Ecto.Changeset
 
     schema "assoc_posts" do

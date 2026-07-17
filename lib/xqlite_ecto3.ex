@@ -128,11 +128,11 @@ defmodule XqliteEcto3 do
   raw begin/commit and do not wrap it in `Repo.transaction`.
   """
 
-  use Ecto.Adapters.SQL,
-    driver: :xqlite_ecto3
-
   @behaviour Ecto.Adapter.Storage
   @behaviour Ecto.Adapter.Structure
+
+  use Ecto.Adapters.SQL,
+    driver: :xqlite_ecto3
 
   @doc """
   Parses a database URL into keyword-list options.
@@ -447,8 +447,7 @@ defmodule XqliteEcto3 do
       )
 
     rows
-    |> Enum.map(fn [col_name] -> col_name end)
-    |> MapSet.new()
+    |> MapSet.new(fn [col_name] -> col_name end)
   end
 
   # Thread the live column set through the changes so two
@@ -530,7 +529,7 @@ defmodule XqliteEcto3 do
   end
 
   defp rebuild_table(meta, table, changes, opts) do
-    unless rebuild_enabled?(meta) do
+    if !rebuild_enabled?(meta) do
       raise ArgumentError,
             "SQLite does not support ALTER TABLE ... MODIFY COLUMN. xqlite_ecto3 " <>
               "can implement it via a full table rebuild (create new, copy, drop, " <>
@@ -764,9 +763,7 @@ defmodule XqliteEcto3 do
   end
 
   defp copy_rows_sql(table, copy_pairs) do
-    if copy_pairs == [] do
-      nil
-    else
+    if copy_pairs != [] do
       {old_cols, new_cols} = Enum.unzip(copy_pairs)
 
       new_list = Enum.map_join(new_cols, ", ", &~s|"#{&1}"|)
