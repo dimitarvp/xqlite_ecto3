@@ -135,6 +135,18 @@ difference:
 The `xqlite_ecto3.handle_execute.stop` minus the inner
 `xqlite.query.stop` duration is your adapter glue overhead.
 
+### Properly-named database attributes (semantic conventions)
+
+Database-aware backend features key off OpenTelemetry's [stable
+database semantic-convention names](https://opentelemetry.io/docs/specs/semconv/database/database-spans/).
+`XqliteEcto3.Telemetry.OpenTelemetry` maps the adapter's events to
+that vocabulary (`db.system.name`, `db.query.text`,
+`db.operation.name`, `db.namespace`, `error.type`) with no
+OpenTelemetry dependency — call `attributes/3` from your own handler
+and attach the result to the span you create. The xqlite library
+events have their mirror in `Xqlite.Telemetry.OpenTelemetry`. Every
+mapped name is cited to its spec page in the module docs.
+
 ### OpenTelemetry
 
 Use `:opentelemetry_telemetry`:

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`XqliteEcto3.Telemetry.OpenTelemetry`.** A pure, dependency-free
+  mapping from the adapter's telemetry events to OpenTelemetry's
+  stable database semantic-convention attributes, mirroring
+  `Xqlite.Telemetry.OpenTelemetry`. Spec sources cited per name in
+  the module docs.
+
 - **Repo-level observability surface.** `XqliteEcto3.txn_state/2`
   and `connection_stats/1` observe a pooled connection through the
   pool (with documented plain-pool-vs-Sandbox checkout semantics —
