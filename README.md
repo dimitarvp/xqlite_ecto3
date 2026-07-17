@@ -71,9 +71,11 @@ Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and sim
 {:ok, Keyword.merge(config, XqliteEcto3.parse_url!(url))}
 ```
 
-Every pooled connection caches prepared statements in an LRU keyed by SQL text (`statement_cache_size`, default 50; `0` disables) — repeated queries skip SQLite's parse/plan step, and timeouts still cancel through the cached path.
+Every pooled connection caches prepared statements in an LRU keyed by SQL text (`statement_cache_size`, default 50; `0` disables) — repeated queries skip SQLite's parse/plan step, and timeouts still cancel through the cached path. Cache behavior is observable via `[:xqlite_ecto3, :statement_cache, :hit | :miss | :evicted]` telemetry.
 
-Beyond the URL-expressible parameters, repo config also accepts: `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit config always wins (deliberately config-only, not URL-exposed); `mode: :readonly` — a read-only pool (write-requiring default pragmas are skipped; writes fail with structured `{:read_only_database, _}` errors; a second read-only repo pointed at the same database file is the composable read-scaling pattern); and `default_transaction_mode: :deferred | :immediate | :exclusive` — default `:immediate`, deliberately: write transactions take their lock up front instead of hitting deadlock-prone mid-transaction lock upgrades (this diverges from ecto_sqlite3's `:deferred` default on purpose). Pass `mode:` to `Repo.transaction/2` for a per-transaction override.
+Repo-level observability rounds this out: `XqliteEcto3.txn_state(repo)` and `XqliteEcto3.connection_stats(repo)` observe a pooled connection's transaction state and SQLite's per-connection counters through the pool, and the `hooks:` config above streams per-connection update/WAL/commit/rollback/progress events to a named process — the building blocks for caller-side concurrency strategies.
+
+Beyond the URL-expressible parameters, repo config also accepts: `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit config always wins (deliberately config-only, not URL-exposed); `mode: :readonly` — a read-only pool (write-requiring default pragmas are skipped; writes fail with structured `{:read_only_database, _}` errors; a second read-only repo pointed at the same database file is the composable read-scaling pattern); and `default_transaction_mode: :deferred | :immediate | :exclusive` — default `:immediate`, deliberately: write transactions take their lock up front instead of hitting deadlock-prone mid-transaction lock upgrades (this diverges from ecto_sqlite3's `:deferred` default on purpose). Pass `mode:` to `Repo.transaction/2` for a per-transaction override. Finally, `hooks: [update: MyListener, wal: MyListener, progress: {MyListener, every_n: 500}]` installs xqlite's connection hooks (update / wal / commit / rollback / progress) on **every pooled connection** at connect time — subscribers are registered process *names* (config survives restarts; the name must be alive when connections open, or connect fails with a structured `{:hook_subscriber_not_registered, name}`), and messages arrive in xqlite's shapes (`{:xqlite_update, action, db, table, rowid}` etc.), so one listener hears every write the pool makes.
 
 Define the repo:
 
@@ -404,8 +406,6 @@ Most adapters that handle DELETE+JOIN quietly guess at composite PKs, schemaless
 ## Roadmap
 
 Prioritized. Anything not listed is deferred.
-
-1. **Repo-level observability surface.** xqlite 0.7.0 ships multi-subscriber hooks (update / WAL / commit / rollback / progress / busy) and connection-state introspection; this adapter will expose them through its own surface — subscribe to hooks on pool connections, surface `txn_state` / `connection_stats` per checkout — so users can build their own concurrency strategies without leaving the Repo.
 
 Deferred until demand materializes:
 

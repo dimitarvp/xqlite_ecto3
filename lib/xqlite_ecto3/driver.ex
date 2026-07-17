@@ -47,6 +47,7 @@ defmodule XqliteEcto3.Driver do
     default_transaction_mode = Keyword.get(opts, :default_transaction_mode, :immediate)
     statement_cache_size = Keyword.get(opts, :statement_cache_size, 50)
     rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
+    hooks = Keyword.get(opts, :hooks, [])
 
     start_md = %{database: database}
 
@@ -69,7 +70,8 @@ defmodule XqliteEcto3.Driver do
                set_optional_pragma(conn, "wal_autocheckpoint", writable(wal_autocheckpoint, mode)),
              {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size),
              # user pragmas go last so explicit config wins over every default
-             {:ok, _} <- apply_custom_pragmas(conn, custom_pragmas) do
+             {:ok, _} <- apply_custom_pragmas(conn, custom_pragmas),
+             :ok <- register_config_hooks(conn, hooks) do
           {:ok,
            %__MODULE__{
              conn: conn,
@@ -93,6 +95,65 @@ defmodule XqliteEcto3.Driver do
   defp validate_statement_cache_size(other) do
     {:error, {:invalid_statement_cache_size, other}}
   end
+
+  # Repo-config hook subscribers: registered NAMES (not pids — config
+  # survives restarts, pids don't), resolved at connect time, installed
+  # on every pooled connection. Handles are discarded — hooks live and
+  # die with the connection.
+  @config_hook_kinds [:update, :wal, :commit, :rollback]
+
+  defp register_config_hooks(_conn, []), do: :ok
+
+  defp register_config_hooks(conn, hooks) when is_list(hooks) do
+    Enum.reduce_while(hooks, :ok, fn entry, :ok ->
+      case register_config_hook(conn, entry) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp register_config_hooks(_conn, other), do: {:error, {:invalid_hooks_config, other}}
+
+  defp register_config_hook(conn, {kind, name})
+       when kind in @config_hook_kinds and is_atom(name) do
+    with {:ok, pid} <- resolve_hook_subscriber(name),
+         {:ok, _handle} <- register_hook_kind(conn, kind, pid) do
+      :ok
+    end
+  end
+
+  defp register_config_hook(conn, {:progress, name}) when is_atom(name) do
+    register_config_hook(conn, {:progress, {name, []}})
+  end
+
+  defp register_config_hook(conn, {:progress, {name, opts}})
+       when is_atom(name) and is_list(opts) do
+    every_n = Keyword.get(opts, :every_n, 1000)
+    tag = progress_tag(Keyword.get(opts, :tag))
+
+    with {:ok, pid} <- resolve_hook_subscriber(name),
+         {:ok, _handle} <- NIF.register_progress_hook(conn, pid, every_n, tag) do
+      :ok
+    end
+  end
+
+  defp register_config_hook(_conn, entry), do: {:error, {:invalid_hook_config, entry}}
+
+  defp resolve_hook_subscriber(name) do
+    case Process.whereis(name) do
+      nil -> {:error, {:hook_subscriber_not_registered, name}}
+      pid -> {:ok, pid}
+    end
+  end
+
+  defp register_hook_kind(conn, :update, pid), do: NIF.register_update_hook(conn, pid)
+  defp register_hook_kind(conn, :wal, pid), do: NIF.register_wal_hook(conn, pid)
+  defp register_hook_kind(conn, :commit, pid), do: NIF.register_commit_hook(conn, pid)
+  defp register_hook_kind(conn, :rollback, pid), do: NIF.register_rollback_hook(conn, pid)
+
+  defp progress_tag(nil), do: nil
+  defp progress_tag(tag) when is_atom(tag), do: Atom.to_string(tag)
 
   defp validate_transaction_mode(mode) when mode in [:deferred, :immediate, :exclusive] do
     {:ok, mode}

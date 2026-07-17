@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Repo-level observability surface.** `XqliteEcto3.txn_state/2`
+  and `connection_stats/1` observe a pooled connection through the
+  pool (with documented plain-pool-vs-Sandbox checkout semantics —
+  also now documented on `with_xqlite/3`), and the new `hooks:` repo
+  config installs xqlite's update/WAL/commit/rollback/progress hooks
+  on every pooled connection at connect time, delivering messages to
+  registered process names. Unresolvable names and unknown hook
+  kinds are structured connect errors.
+
 - **Statement-cache telemetry.**
   `[:xqlite_ecto3, :statement_cache, :hit | :miss | :evicted]`
   events (compile-flagged like the rest of the adapter's telemetry):

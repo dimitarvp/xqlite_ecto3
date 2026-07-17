@@ -189,8 +189,45 @@ defmodule XqliteEcto3 do
   def parse_url!(url), do: XqliteEcto3.URL.parse!(url)
 
   @doc """
+  Returns a pooled connection's transaction state:
+  `{:ok, :none | :read | :write}`.
+
+  Checks a connection out of the pool: an idle pool reports
+  `{:ok, :none}`; under `Ecto.Adapters.SQL.Sandbox` the caller's
+  sandboxed connection is observed (typically `{:ok, :write}` — the
+  sandbox wrapper transaction under the `:immediate` default). Do not
+  call inside `Repo.transaction/2` on a plain pool — like
+  `with_xqlite/3` it needs a checkout while the transaction already
+  holds one; there, call `XqliteNIF.txn_state/2` on the connection you
+  already hold. `schema` names an attached database (default
+  `"main"`).
+  """
+  @spec txn_state(module() | pid(), String.t()) ::
+          {:ok, :none | :read | :write} | {:error, term()}
+  def txn_state(repo, schema \\ "main") do
+    with_xqlite(repo, fn conn -> XqliteNIF.txn_state(conn, schema) end)
+  end
+
+  @doc """
+  Returns SQLite's per-connection counters (`sqlite3_db_status`) for a
+  pooled connection as `{:ok, map}` of integers — cache
+  hits/misses/spills, schema and statement memory, lookaside stats.
+  """
+  @spec connection_stats(module() | pid()) :: {:ok, map()} | {:error, term()}
+  def connection_stats(repo) do
+    with_xqlite(repo, fn conn -> XqliteNIF.connection_stats(conn) end)
+  end
+
+  @doc """
   Checks a connection out of `repo`'s pool and calls `fun` with the raw
   `XqliteNIF` connection reference.
+
+  Because it needs its own checkout, do not call it from inside
+  `Repo.transaction/2` on a plain pool — the transaction already holds
+  a connection, and a second checkout queues behind the pool (deadlock
+  on `pool_size: 1`). Under `Ecto.Adapters.SQL.Sandbox` ownership the
+  caller's sandboxed connection is reused instead, so nesting is fine
+  there.
 
   This is the bridge to SQLite-specific xqlite features that have no
   Ecto-level equivalent — session extension, incremental blob I/O,
