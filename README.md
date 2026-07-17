@@ -342,7 +342,7 @@ Whatever xqlite ships (currently 3.53.2). `Xqlite.sqlite_version/0` if you need 
 Yes, as any Ecto adapter does. There is no `--database xqlite_ecto3` shortcut in `mix phx.new` yet — add the dep manually and configure the repo per the install steps above.
 
 **Concurrency?**
-SQLite is single-writer per database file. The adapter runs a standard DBConnection pool (default `pool_size: 5`) against a single file in WAL mode. Readers are parallel; writers serialize. For high sustained writes, SQLite is the wrong tool and no adapter can change that.
+SQLite is single-writer per database file. The adapter runs a standard DBConnection pool (default `pool_size: 5`) against a single file in WAL mode. Readers are parallel; writers serialize. For high sustained writes, SQLite is the wrong tool and no adapter can change that. Working patterns are in "Living with a single writer" under Design notes.
 
 **Can I use both xqlite_ecto3 and ecto_sqlite3 in the same app?**
 Technically yes — they target different Repo modules with different `:adapter`. But don't. Pick one. Mixing is a footgun for schema migrations and types.
@@ -356,6 +356,7 @@ Permanent SQLite constraints (not adapter choices):
 - No `FOR UPDATE` row-level locks
 - No user/role/GRANT system — file permissions are the only access gate
 - Foreign-key violation errors do not carry the FK name (`SQLITE_CONSTRAINT_FOREIGNKEY` has no name field) — the opt-in `rich_fk_diagnostics: true` recovers table/columns/rowid and a convention-synthesized name (see Features)
+- `ON DELETE SET NULL` / `SET DEFAULT` always apply to every column of the foreign key — there is no PostgreSQL-15-style per-column list (`ON DELETE SET NULL (col)`). Workarounds: split the relationship into separate single-column foreign keys, or create an `AFTER DELETE` trigger on the parent (via `execute/2` in a migration) that nulls exactly the columns you need
 - `ALTER TABLE` cannot modify primary keys or foreign keys in-place (rebuild required)
 - SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds
 
@@ -374,6 +375,17 @@ Ecto users migrating from PostgreSQL expect `:not_null`, `CHECK`, UNIQUE indexes
 SQLite's error messages are the canonical string-based format. Most Ecto adapters grep those strings to classify constraint failures. This adapter never does. Extended error codes (SQLITE_CONSTRAINT_UNIQUE etc.) + PRAGMA cross-references produce structured atoms and details in Rust at the xqlite layer; xqlite_ecto3 consumes those and maps to `Ecto.Changeset.*_constraint/3` calls without string work.
 
 The one exception is named CHECK constraints, where the name is only present in SQLite's error text and no PRAGMA exposes it. Parsing happens once, in Rust, at the NIF boundary — never in Elixir.
+
+### Living with a single writer
+
+SQLite serializes writers per database file; a pool cannot change that — it only decides where the contention shows up. Patterns that work, in the order to try them:
+
+- **Batch writes.** One transaction carrying 500 inserts beats 500 transactions each holding the write lock for one insert — `Repo.insert_all/3`, or `Repo.transaction/2` around a loop. `default_transaction_mode: :immediate` (the default) takes the write lock up front, so queued batches wait cleanly instead of deadlocking on a mid-transaction lock upgrade.
+- **Retry with backoff.** For bursty writes, let `busy_timeout` absorb short waits (repo config or URL parameter), and treat `{:database_busy_or_locked, _}` errors as retryable — the shape is structured and stable, no message parsing needed.
+- **Queue writes in the caller.** Under sustained pressure, funnel writes through a single process (GenServer, queue) per database and let the pool serve reads. WAL readers are parallel, so reads scale in the pool; a second read-only repo on the same file (`mode: :readonly`) makes the read/write split explicit.
+- **Measure instead of guessing.** `Xqlite.set_busy_handler/3` forwards a `{:xqlite_busy, retries, elapsed_ms}` message per contention event; `XqliteNIF.txn_state/2` answers "does this connection hold a write transaction right now"; `Xqlite.wal_checkpoint/3` and the WAL hook expose checkpoint pressure. All of it bridges into `:telemetry` if you want dashboards.
+
+If sustained write volume outgrows all of this, that is SQLite's honest ceiling — reach for a client/server database.
 
 ### Migration rebuild is opt-in
 
