@@ -8,6 +8,7 @@
 [![SQLite](https://img.shields.io/badge/SQLite-3.53.2-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/releaselog/3_53_2.html)
 [![Ecto](https://img.shields.io/badge/Ecto-~%3E%203.12-6e4a7e)](https://hexdocs.pm/ecto_sql)
 [![Elixir](https://img.shields.io/badge/Elixir-~%3E%201.15-4B275F?logo=elixir&logoColor=white)](https://elixir-lang.org)
+[![Coverage](https://coveralls.io/repos/github/dimitarvp/xqlite_ecto3/badge.svg?branch=main)](https://coveralls.io/github/dimitarvp/xqlite_ecto3?branch=main)
 [![Build Status](https://github.com/dimitarvp/xqlite_ecto3/actions/workflows/ci.yml/badge.svg)](https://github.com/dimitarvp/xqlite_ecto3/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

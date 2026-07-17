@@ -25,8 +25,20 @@ defmodule XqliteEcto3.MixProject do
       # type checking
       dialyzer: dialyzer(),
 
+      # testing
+      test_coverage: [tool: ExCoveralls],
+
       # convenience
       aliases: aliases()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.github": :test
+      ]
     ]
   end
 
@@ -73,6 +85,7 @@ defmodule XqliteEcto3.MixProject do
       {:jason, "~> 1.4"},
       {:dialyxir, "~> 1.4", only: :dev, runtime: false},
       {:ex_doc, "~> 0.20", only: :dev, runtime: false},
+      {:excoveralls, "~> 0.18", only: :test},
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       {:quokka, "~> 2.13", only: [:dev, :test], runtime: false},
       {:sobelow, "~> 0.14", only: [:dev, :test], runtime: false}

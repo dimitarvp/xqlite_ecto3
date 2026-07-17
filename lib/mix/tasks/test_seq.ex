@@ -11,6 +11,12 @@ defmodule Mix.Tasks.XqliteEcto3.Test.Seq do
 
       mix xqlite_ecto3.test.seq
       mix xqlite_ecto3.test.seq --trace
+      mix xqlite_ecto3.test.seq --cover   # per-file .coverdata under cover/
+
+  With `--cover`, each file's OS process exports a distinctly named
+  `.coverdata` (derived from the file path). Merge and publish
+  afterwards, e.g.
+  `mix coveralls.github --import-cover cover test/xqlite_ecto3/url_test.exs`.
   """
 
   use Mix.Task
@@ -36,13 +42,22 @@ defmodule Mix.Tasks.XqliteEcto3.Test.Seq do
   defp run_test_files([file | rest], args, failed_files) do
     IO.puts("\n=== Running #{file} ===")
 
-    case System.cmd("mix", ["test", file] ++ args, into: IO.stream()) do
+    case System.cmd("mix", ["test", file] ++ args ++ coverage_args(args, file), into: IO.stream()) do
       {_, 0} ->
         run_test_files(rest, args, failed_files)
 
       {_, exit_code} ->
         IO.puts("FAILED (exit code: #{exit_code})")
         run_test_files(rest, args, [file | failed_files])
+    end
+  end
+
+  # Distinct export names per file (full-path-derived, collision-proof).
+  defp coverage_args(args, file) do
+    if "--cover" in args do
+      ["--export-coverage", String.replace(Path.rootname(file), ["/", "\\"], "_")]
+    else
+      []
     end
   end
 
