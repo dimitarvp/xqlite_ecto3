@@ -187,6 +187,20 @@ defmodule XqliteEcto3.Error do
     }
   end
 
+  def wrap({tag, extended_code, msg})
+      when tag in [
+             :database_busy_or_locked,
+             :read_only_database,
+             :schema_changed,
+             :authorization_denied
+           ] and is_integer(extended_code) and is_binary(msg) do
+    %__MODULE__{message: msg, type: tag, details: %{extended_code: extended_code}}
+  end
+
+  def wrap({:utf8_error, column, msg}) when is_integer(column) and is_binary(msg) do
+    %__MODULE__{message: msg, type: :utf8_error, details: %{column: column}}
+  end
+
   def wrap({tag, msg}) when is_atom(tag) and is_binary(msg) do
     %__MODULE__{message: msg, type: tag}
   end

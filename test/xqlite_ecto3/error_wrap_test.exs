@@ -123,6 +123,37 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
   end
 
+  describe "wrap/1 on code-carrying {tag, extended_code, msg}" do
+    test "preserves tag as type and carries the extended code" do
+      e = Error.wrap({:database_busy_or_locked, 5, "database is locked"})
+      assert e.type == :database_busy_or_locked
+      assert e.message == "database is locked"
+      assert e.details == %{extended_code: 5}
+    end
+
+    test "handles every code-carrying tag" do
+      for tag <- [
+            :database_busy_or_locked,
+            :read_only_database,
+            :schema_changed,
+            :authorization_denied
+          ] do
+        e = Error.wrap({tag, 8, "m"})
+        assert e.type == tag
+        assert e.details == %{extended_code: 8}
+      end
+    end
+  end
+
+  describe "wrap/1 on {:utf8_error, column, msg}" do
+    test "preserves the type and carries the column" do
+      e = Error.wrap({:utf8_error, 0, "invalid utf-8 sequence"})
+      assert e.type == :utf8_error
+      assert e.message == "invalid utf-8 sequence"
+      assert e.details == %{column: 0}
+    end
+  end
+
   describe "wrap/1 on atom reason" do
     test "uses atom as both type and message" do
       e = Error.wrap(:connection_closed)
