@@ -407,8 +407,6 @@ defmodule XqliteEcto3.Connection do
         update_fields(:update, query, sources)
       end
 
-    # TODO: Add support for `update or rollback foo`
-
     {join, wheres} = using_join(query, :update_all, "FROM", sources)
     prefix = prefix || ["UPDATE ", from, " AS ", name, " SET "]
     where = where(%{query | wheres: wheres ++ query.wheres}, sources)
@@ -1698,7 +1696,6 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  # TODO It technically is, its just a json array, so we *could* support it
   defp expr(list, _sources, query) when is_list(list) do
     raise Ecto.QueryError,
       query: query,

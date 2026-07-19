@@ -68,8 +68,7 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     test "every pragma the URL parser accepts takes effect at connect" do
       # The URL string stays platform-neutral: Windows absolute paths
       # (C:\...) are not expressible in the sqlite:// grammar, so the
-      # real tmp path is swapped into the parsed opts instead
-      # (CLAUDE.md gotcha 15).
+      # real tmp path is swapped into the parsed opts instead.
       url =
         "sqlite:///ignored.db?auto_vacuum=incremental&wal_autocheckpoint=0" <>
           "&mmap_size=2097152&cache_size=-2000&foreign_keys=false" <>
