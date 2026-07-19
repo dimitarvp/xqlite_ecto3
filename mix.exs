@@ -13,6 +13,7 @@ defmodule XqliteEcto3.MixProject do
       name: @name,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      elixirc_options: [warnings_as_errors: true],
       deps: deps(),
 
       # hex
@@ -48,9 +49,10 @@ defmodule XqliteEcto3.MixProject do
   # verify, minus the Rust steps (no NIF in this library).
   defp aliases do
     [
+      test: "test --warnings-as-errors",
       verify: [
         "format --check-formatted",
-        "compile --warnings-as-errors",
+        "compile",
         "deps.audit",
         # Role-inherent findings are skipped via inline `# sobelow_skip`
         # marks on the functions themselves (storage/structure File ops on

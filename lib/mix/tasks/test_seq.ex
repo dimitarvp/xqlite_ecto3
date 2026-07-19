@@ -42,7 +42,11 @@ defmodule Mix.Tasks.XqliteEcto3.Test.Seq do
   defp run_test_files([file | rest], args, failed_files) do
     IO.puts("\n=== Running #{file} ===")
 
-    case System.cmd("mix", ["test", file] ++ args ++ coverage_args(args, file), into: IO.stream()) do
+    case System.cmd(
+           "mix",
+           ["test", file] ++ warnings_args(file) ++ args ++ coverage_args(args, file),
+           into: IO.stream()
+         ) do
       {_, 0} ->
         run_test_files(rest, args, failed_files)
 
@@ -51,6 +55,13 @@ defmodule Mix.Tasks.XqliteEcto3.Test.Seq do
         run_test_files(rest, args, [file | failed_files])
     end
   end
+
+  # The shared ecto/ecto_sql integration cases compile from deps/ at test
+  # time and carry warnings only fixable upstream (Tds-adapter references,
+  # adapter-disjoint comparisons); this one run must not fail on them.
+  # Every other file stays fully enforced via the :test alias.
+  defp warnings_args("test/ecto3_integration/all_test.exs"), do: ["--no-warnings-as-errors"]
+  defp warnings_args(_file), do: []
 
   # Distinct export names per file (full-path-derived, collision-proof).
   defp coverage_args(args, file) do

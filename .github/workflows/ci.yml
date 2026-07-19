@@ -53,7 +53,7 @@ jobs:
         run: mix format --check-formatted
 
       - name: Elixir compilation (warnings as errors)
-        run: mix compile --warnings-as-errors
+        run: mix compile
 
       - name: Dependency audit
         run: mix deps.audit
@@ -225,7 +225,7 @@ jobs:
           mix deps.get
 
       - name: Compile project (warnings as errors)
-        run: mix compile --warnings-as-errors
+        run: mix compile
 
       - name: Run tests
         run: mix xqlite_ecto3.test.seq

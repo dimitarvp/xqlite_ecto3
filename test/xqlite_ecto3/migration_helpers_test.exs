@@ -55,13 +55,13 @@ defmodule XqliteEcto3.MigrationHelpersTest do
 
   describe "enum_check/3 argument validation" do
     test "refuses empty values list" do
-      assert_raise FunctionClauseError, fn ->
+      assert_raise ArgumentError, fn ->
         Migration.enum_check(:status, [])
       end
     end
 
     test "refuses non-atom column" do
-      assert_raise FunctionClauseError, fn ->
+      assert_raise ArgumentError, fn ->
         Migration.enum_check("status", [:active])
       end
     end

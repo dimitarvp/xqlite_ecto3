@@ -74,17 +74,28 @@ defmodule XqliteEcto3.Migration do
 
       iex> XqliteEcto3.Migration.enum_check(:role, [:admin], name: "admin_only")
       %{name: "admin_only", expr: "role IN ('admin')"}
+
+  Raises `ArgumentError` unless `column` is an atom and `values` is a
+  non-empty list.
   """
   @spec enum_check(atom(), [atom()] | keyword(), keyword()) :: %{
           name: String.t(),
           expr: String.t()
         }
   def enum_check(column, values, opts \\ [])
+
+  def enum_check(column, values, opts)
       when is_atom(column) and is_list(values) and values != [] do
     %{
       name: Keyword.get(opts, :name, "#{column}_enum_check"),
       expr: "#{column} IN (#{format_values(values)})"
     }
+  end
+
+  def enum_check(column, values, _opts) do
+    raise ArgumentError,
+          "enum_check expects an atom column and a non-empty values list, " <>
+            "got: #{inspect(column)} and #{inspect(values)}"
   end
 
   # Keyword list with atom keys = integer-backed Ecto.Enum form.
