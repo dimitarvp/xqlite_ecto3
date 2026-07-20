@@ -103,7 +103,13 @@ excludes = [
   # layer). The sibling parameterized-query cache test passes.
   {:location, {"deps/ecto_sql/integration_test/sql/alter.exs", 44}},
 
-  # Telemetry handler uses Process.put which doesn't cross sandbox proxy process boundary
+  # logging.exs:74 "cast params" asserts the query-telemetry params for a
+  # UUID field equal Ecto.UUID.dump!/1 — the raw 16-byte binary (Postgres's
+  # binary UUID storage). This adapter stores UUIDs as TEXT by default
+  # (binary_id_storage: :string), so the bound param is the 36-char string
+  # form and metadata.params faithfully reports it. The telemetry handler
+  # fires correctly in the sandboxed process (the in-handler assertion runs);
+  # only the storage shape differs, so the params equality can't hold.
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 
   # type.exs:362 "json_extract_path with primitive values": two SELECT

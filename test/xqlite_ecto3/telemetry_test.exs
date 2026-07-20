@@ -90,7 +90,9 @@ defmodule XqliteEcto3.TelemetryTest do
       {:ok, state} = Driver.connect(database: db)
       :ok = Driver.disconnect(:normal, state)
 
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :disconnect], _, _metadata}
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :disconnect], _, metadata}
+      assert metadata.conn
+      assert metadata.reason == :normal
 
       for ext <- ["", "-wal", "-shm", "-journal"], do: File.rm(db <> ext)
       :telemetry.detach(handler_id)
@@ -244,9 +246,13 @@ defmodule XqliteEcto3.TelemetryTest do
       {:halt, _, state5} = Driver.handle_fetch(query2, cursor, [], state4)
       {:ok, _, _state6} = Driver.handle_deallocate(query2, cursor, [], state5)
 
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_declare, :stop], _, _}
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_fetch, :stop], _, _}
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_deallocate, :stop], _, _}
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_declare, :stop], _, declare_md}
+      assert declare_md.query
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_fetch, :stop], _, fetch_md}
+      assert fetch_md.cursor
+      refute Map.has_key?(fetch_md, :query)
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_deallocate, :stop], _, dealloc_md}
+      assert dealloc_md.cursor
 
       :telemetry.detach(handler_id)
     end

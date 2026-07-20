@@ -205,7 +205,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def disconnect(_err, state) do
+  def disconnect(err, state) do
     # Reset transient fields for debug-consistency. The struct is local to
     # this call but anything that captured it earlier (telemetry, traces)
     # reads post-close values instead of stale mid-transaction cache.
@@ -220,7 +220,7 @@ defmodule XqliteEcto3.Driver do
     emit(
       [:xqlite_ecto3, :disconnect],
       %{monotonic_time: XqliteEcto3.Telemetry.monotonic_time()},
-      %{conn: state.conn}
+      %{conn: state.conn, reason: err}
     )
 
     :ok

@@ -24,7 +24,7 @@ defmodule XqliteEcto3.Telemetry do
 
       [:xqlite_ecto3, :connect, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
-        metadata:     %{database, repo, result_class, error_reason}
+        metadata:     %{database, result_class, error_reason}
 
       [:xqlite_ecto3, :disconnect]
         measurements: %{monotonic_time}
@@ -40,19 +40,19 @@ defmodule XqliteEcto3.Telemetry do
       [:xqlite_ecto3, :handle_commit, :start | :stop | :exception]
       [:xqlite_ecto3, :handle_rollback, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
-        metadata:     %{conn, mode (begin only), result_class, error_reason}
+        metadata:     %{conn, mode, result_class, error_reason}
 
   ### Query / cursor lifecycle (DBConnection callbacks)
 
       [:xqlite_ecto3, :handle_execute, :start | :stop | :exception]
-        measurements: %{monotonic_time, duration, num_rows (on :stop)}
-        metadata:     %{conn, query, result_class, error_reason}
-
       [:xqlite_ecto3, :handle_declare, :start | :stop | :exception]
+        measurements: %{monotonic_time, duration}
+        metadata:     %{conn, query, sql, result_class, error_reason}
+
       [:xqlite_ecto3, :handle_fetch, :start | :stop | :exception]
       [:xqlite_ecto3, :handle_deallocate, :start | :stop | :exception]
-        measurements: %{monotonic_time, duration, num_rows (on :stop)}
-        metadata:     %{conn, query, cursor (after declare), result_class, error_reason}
+        measurements: %{monotonic_time, duration}
+        metadata:     %{conn, cursor, result_class, error_reason}
 
   ### Statement cache
 

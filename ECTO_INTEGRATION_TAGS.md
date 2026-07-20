@@ -1,7 +1,7 @@
 # Ecto Integration Test Tags
 
 Status of every exclusion tag from the shared ecto/ecto_sql integration test suite.
-Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
+Bundled SQLite version: **3.53.2**. Shared files loaded: **16/18**.
 
 | Tag | Status | Notes |
 |-----|--------|-------|
@@ -36,6 +36,6 @@ Bundled SQLite version: **3.51.3**. Shared files loaded: **15/18**.
 | `:selected_as_with_having` | supported | SQLite allows column alias references in HAVING |
 | `:selected_as_with_order_by` | supported | SQLite allows column alias references in ORDER BY |
 | `:selected_as_with_order_by_expression` | supported | SQLite allows expressions on aliases in ORDER BY |
-| `:transaction_checkout_raises` | needs adapter work | handle_status/checkout interaction with raw BEGIN query |
+| `:transaction_checkout_raises` | supported | not excluded and passes (`--only transaction_checkout_raises` ⇒ 1 passed): `checkout` raises `DBConnection.ConnectionError` on a raw `BEGIN` |
 | `:transaction_isolation` | excluded | SQLite has no SQL-standard isolation levels |
-| `:values_list` | partial | VALUES works; only the `delete_all` subtest fails (DELETE has no JOIN) |
+| `:values_list` | supported | not excluded and all 5 subtests pass (`--only values_list` ⇒ 5 passed); `delete_all` works via the DELETE+JOIN rewrite |

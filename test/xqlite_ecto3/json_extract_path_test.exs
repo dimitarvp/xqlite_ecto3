@@ -41,7 +41,10 @@ defmodule XqliteEcto3.JsonExtractPathTest do
           "enabled" => true,
           "disabled" => false,
           "tags" => [%{"name" => "red"}, %{"name" => "green"}],
-          "dotted.key" => "found"
+          "dotted.key" => "found",
+          "quo\"ted" => "qv",
+          "back\\slash" => "bv",
+          "nested" => %{"a.b" => "deep"}
         }
       })
 
@@ -81,6 +84,33 @@ defmodule XqliteEcto3.JsonExtractPathTest do
 
   test "dynamic segment in WHERE position" do
     assert Repo.exists?(from(d in Doc, where: d.meta[d.label][0]["name"] == "red", select: d.id))
+  end
+
+  # ---------------------------------------------------------------------------
+  # Compile-time literal keys with special characters. SQLite's `$.key` bare
+  # path form treats `.` and `"` as structural, so a literal object key
+  # containing them must emit the quoted-label form `$."key"` (with JSON
+  # escaping) or the key silently resolves to nothing.
+  # ---------------------------------------------------------------------------
+
+  test "literal key containing a dot resolves the whole key, not nested steps" do
+    assert Repo.one(from(d in Doc, select: d.meta["dotted.key"])) == "found"
+  end
+
+  test "literal key containing a double quote extracts its value" do
+    assert Repo.one(from(d in Doc, select: d.meta["quo\"ted"])) == "qv"
+  end
+
+  test "literal key containing a backslash extracts its value" do
+    assert Repo.one(from(d in Doc, select: d.meta["back\\slash"])) == "bv"
+  end
+
+  test "nested literal key containing a dot resolves under a parent" do
+    assert Repo.one(from(d in Doc, select: d.meta["nested"]["a.b"])) == "deep"
+  end
+
+  test "literal special-char key in WHERE position" do
+    assert Repo.exists?(from(d in Doc, where: d.meta["dotted.key"] == "found", select: d.id))
   end
 
   # ---------------------------------------------------------------------------

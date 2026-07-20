@@ -1650,7 +1650,7 @@ defmodule XqliteEcto3.Connection do
       path =
         Enum.map(path, fn
           binary when is_binary(binary) ->
-            [?., escape_json_key(binary)]
+            [?., ?", escape_json_key(binary), ?"]
 
           integer when is_integer(integer) ->
             "[#{integer}]"
@@ -2268,7 +2268,7 @@ defmodule XqliteEcto3.Connection do
     segments =
       Enum.map(path, fn
         binary when is_binary(binary) ->
-          ["'.", escape_json_key(binary), "'"]
+          ["'.\"", escape_json_key(binary), "\"'"]
 
         integer when is_integer(integer) ->
           "'[#{integer}]'"
