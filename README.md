@@ -178,6 +178,8 @@ MyApp.Repo.all(slow_query, timeout: 5_000)
 #    and an %DBConnection.ConnectionError{} surfaces — no zombie queries.
 ```
 
+Through a pool, that same `:timeout` also trips DBConnection's own checkout deadline (the same value), which disconnects and reconnects that connection — standard DBConnection behavior for every adapter, not specific to this one. So connection-local state does not survive a pooled query timeout: temp tables, session `PRAGMA`s, and the prepared-statement cache on that connection are gone, and there is a reconnect cost. What the graceful cancel adds on top is that the blocked query *returns at the deadline* instead of running to completion first — the connection recycles promptly rather than after the runaway query finishes.
+
 ### Structured constraint errors
 
 ```elixir
@@ -298,7 +300,7 @@ alter table(:users) do
 end
 ```
 
-All changes in one `alter` block batch into a single rebuild — not N rebuilds for N columns. Indexes, triggers, and AUTOINCREMENT sequences are preserved through the dance. The rebuild reconstructs columns from `PRAGMA table_xinfo`, which cannot carry foreign keys, `CHECK` constraints, `COLLATE`/inline-`UNIQUE` clauses, or generated columns; rather than silently drop them, a rebuild of a table that declares any of those **refuses loudly** — do that column change by hand with `execute/1`, recreating the full table so nothing is lost.
+All changes in one `alter` block batch into a single rebuild — not N rebuilds for N columns. Foreign keys and UNIQUE constraints are reconstructed from SQLite's structural pragmas, so they survive the rebuild (with their `ON DELETE`/`ON UPDATE` actions), alongside indexes, triggers, and AUTOINCREMENT sequences. What a structural rebuild cannot carry — `CHECK` constraints, `COLLATE` clauses, generated columns, `DEFERRABLE` foreign keys, and `ON CONFLICT` clauses — makes the rebuild **refuse loudly** rather than silently drop it; do that column change by hand with `execute/1`, recreating the full table so nothing is lost. One caveat: if another, *populated* table references the rebuilt table with an `ON DELETE CASCADE`/`SET NULL`/`SET DEFAULT` action, the rebuild **refuses loudly** — dropping the old table would fire that action on the referencing rows, silently deleting or mutating them. Empty those referencing rows first, or make the change by hand. Empty referencing tables are fine, and a `NO ACTION`/`RESTRICT` reference makes the rebuild fail loudly by SQLite's own rules.
 
 ### DELETE with JOIN
 
@@ -395,9 +397,27 @@ Shutdown needs no ceremony: when the pool drains, cached statements are finalize
 
 If sustained write volume outgrows all of this, that is SQLite's honest ceiling — reach for a client/server database.
 
+### First-boot WAL noise on a fresh database
+
+The adapter opens every pooled connection in WAL mode, which on a brand-new, never-opened database file means the first connections each run `PRAGMA journal_mode = wal` — a write that needs a brief exclusive lock. If something else is holding a write lock at that exact moment — most commonly a boot-time migration running on a fresh file while the app pool is starting — those flips can lose the race and DBConnection logs a burst of
+
+```
+[error] XqliteEcto3.Driver (#PID<...>) failed to connect: {:database_busy_or_locked, 5, "database is locked"}
+```
+
+then retries with backoff. **This is harmless and self-healing:** the connections reconnect once the lock clears, every query succeeds, and the WAL header persists to the file, so every later boot is clean (the noise only ever appears on the very first boot of a fresh database). No query caller sees an error. The only cost is the log burst, which can look alarming or trip error-rate alerts. To avoid it:
+
+- **Run migrations before starting the app pool** (or in a separate release step) so the pool never opens connections while a migration holds the write lock. This is the cleanest fix.
+- **Pre-create the database with WAL already set** — open it once and run `PRAGMA journal_mode = wal` before the app starts (this is exactly what the test suite does), so pool connections find WAL already in place and never write it.
+- **Raise the connect-time `busy_timeout`** (repo config or URL parameter) so the flip waits out a short-lived competing lock instead of failing.
+
 ### Migration rebuild is opt-in
 
-SQLite cannot `ALTER TABLE MODIFY COLUMN`. The canonical workaround is a 12-step rebuild: `PRAGMA defer_foreign_keys`, create new table, `INSERT ... SELECT`, drop old, rename, re-create every index/trigger/view, restore `AUTOINCREMENT` sequence, `PRAGMA foreign_key_check`. This is expensive on large tables (full rewrite + re-index). We do not do it unless you explicitly set `support_alter_via_table_rebuild: true`. If the flag is off and your migration contains a `:modify`, we raise with a clear pointer to the flag — no silent "can't do that, skipping". Our rebuild reconstructs columns from `PRAGMA table_xinfo` and re-creates standalone indexes and triggers, but that column-info cannot carry foreign keys, `CHECK` constraints, `COLLATE`/inline-`UNIQUE` clauses, or generated columns. So with the flag ON, a `:modify` on a table that declares any of those also raises loudly rather than silently dropping the constraint — recreate that table by hand with `execute/1` where you control the full schema.
+SQLite cannot `ALTER TABLE MODIFY COLUMN`. The canonical workaround is a 12-step rebuild: `PRAGMA defer_foreign_keys`, create new table, `INSERT ... SELECT`, drop old, rename, re-create every index/trigger/view, restore `AUTOINCREMENT` sequence, `PRAGMA foreign_key_check`. This is expensive on large tables (full rewrite + re-index). We do not do it unless you explicitly set `support_alter_via_table_rebuild: true`. If the flag is off and your migration contains a `:modify`, we raise with a clear pointer to the flag — no silent "can't do that, skipping".
+
+The rebuild reconstructs everything SQLite exposes structurally: columns, foreign keys (via `PRAGMA foreign_key_list` — composite keys, `ON DELETE`/`ON UPDATE` actions, and implicit-primary-key references all reproduced), UNIQUE constraints (via `PRAGMA index_list`), standalone indexes, and triggers. A self-referencing foreign key is reconstructed against the transient rebuild table so the drop cannot cascade into the freshly-copied rows; the rename then restores the final name. What lives only in the original `CREATE TABLE` text or carries detail no pragma exposes — `CHECK` constraints, `COLLATE` clauses, generated columns, `DEFERRABLE` foreign keys, and `ON CONFLICT` clauses — makes a `:modify` raise loudly rather than silently dropping it. Recreate those tables by hand with `execute/1` where you control the full schema.
+
+One structural limitation shapes how a *referenced* table rebuilds: the dance runs inside the migration transaction, where SQLite makes `PRAGMA foreign_keys=OFF` a no-op, and `defer_foreign_keys` defers only the enforcement check, not the referential *actions*. So dropping the old table fires the `ON DELETE` action of any other table that references it. Rather than let that happen silently, the rebuild **refuses loudly** when a *populated* table references the rebuilt one with an `ON DELETE CASCADE`/`SET NULL`/`SET DEFAULT` action — naming the referencing table so you can empty its rows first or do the change by hand. Empty referencing tables rebuild fine (the action is a no-op on zero rows), and a `NO ACTION`/`RESTRICT` reference makes the rebuild fail loudly and roll back by SQLite's own rules. Rebuilding the table that *holds* a foreign key (including self-references) is always safe.
 
 ### DELETE with JOIN refuses best-effort
 
