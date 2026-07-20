@@ -162,3 +162,124 @@ Consult before any xqlite public-surface change:
   inspect-fallback as intended for exotic shapes. B7 loud-refusal
   sweep (migration DDL) and B-axis semantic depth remain untouched
   (out of scope this run). No runtime perf claims made.
+
+---
+
+## Run 2 — 2026-07-20 — second covering pass: B6 + B5 + B3
+
+- Commit at scan: `835f6e5` (after adapter Run 1). Deps compiled at
+  xqlite 0.10.0. Single Opus reviewer; direct source audit + live
+  generated-SQL inspection and execution against bundled SQLite 3.53.2.
+- Scope: query translation (B6, prioritized), constraint mapping (B5),
+  sandbox/pooling under a single writer (B3). Callback contracts read
+  from `deps/` source: `Ecto.Adapters.SQL.Connection` overrides,
+  `to_constraints/2` (`Keyword.t()`), and `constraints_to_errors/3` in
+  `deps/ecto/lib/ecto/repo/schema.ex` (the matcher this feeds).
+
+### B6 — query translation (PRIMARY; richest surface)
+
+Audited every SQL-generation override against the stock behaviour and,
+crucially, built + ran real queries to inspect the emitted SQL. Three
+CONFIRMED bugs, all fixed RED→green this run:
+
+- **F-B6-1 (S1, CONFIRMED + FIXED).** `escape_string/1` doubled
+  backslashes. SQLite string literals escape ONLY `'` (by doubling);
+  backslash is ordinary. Probe: `SELECT 'a\b', length('a\b')` ⇒
+  `["a\b", 3]` but `'a\\b'` ⇒ `["a\\b", 4]` — different values. The
+  adapter emitted `WHERE (p0."title" = 'a\\b')` for a literal `"a\b"`;
+  end-to-end, a row stored (via param) as `a\b` was NOT found by the
+  inlined literal (`rows: []`, should be `[[1]]`) — silent wrong
+  results. Reachable via any inlined string literal in WHERE/LIKE and
+  via DDL string defaults. Fix: escape only `'`; `escape_json_key/1`
+  now does its own backslash+quote escaping (JSON-path output verified
+  byte-identical: `'$.a\"b\\c'` before and after). Tests: literal
+  round-trip in `query_features_test.exs`, string default in
+  `connection_test.exs`.
+- **F-B6-2 (S2, CONFIRMED + FIXED).** Offset without limit emitted a
+  bare `OFFSET n`. SQLite's grammar has no bare OFFSET (`SELECT x FROM t
+  OFFSET 1` ⇒ `near "OFFSET": syntax error`). `from(x, offset: 2)` (a
+  legitimate paginating query, valid in Postgres/MySQL) failed to
+  compile. Fix: `limit/2` emits `LIMIT -1` when limit is nil and offset
+  present ⇒ `... LIMIT -1 OFFSET 1` (verified: returns the correct tail
+  rows). The pre-existing test `"offset without limit requires LIMIT in
+  SQLite"` masked the bug with `limit: 999`; rewritten to the genuine
+  case. Also fixes DISTINCT ON + offset-no-limit (shared limit/offset
+  path). Test: `query_features_test.exs`.
+- **F-B6-3 (S2, CONFIRMED + FIXED).** `quote_entity/1` did not escape an
+  embedded `"` in identifiers. Probe: `identifier(^~s|x" FROM
+  secrets;--|)` in a fragment generated `SELECT "x" FROM secrets;--"
+  FROM "posts" AS p0` — a live SQL-injection through Ecto's public
+  `identifier/1` API (and broken SQL for any identifier containing `"`).
+  The same repo's `FkDiagnostics.quote_ident/1` already doubles quotes,
+  proving intent. Fix: double `"` → `""` in `quote_entity/1`; the evil
+  input now collapses to one inert identifier `"x"" FROM secrets;--"`.
+  Test: `connection_test.exs`.
+
+Also inspected and found CORRECT: single-quote escaping (`O''Brien`),
+`?N` positional placeholders, `$N::TYPE` values-list grammar, empty
+`IN []` ⇒ `0`, DELETE+JOIN rewrite guards, on_conflict/upsert
+disambiguator, RETURNING, subquery/CTE parent-alias threading, the
+`INSERT ... SELECT ... ON CONFLICT` trivial-WHERE workaround.
+
+### B5 — constraint mapping
+
+Triggered every constraint subtype live and inspected the wrapped
+`Error.Constraint` + `to_constraints/2` output. UNIQUE ⇒ `[unique:
+"users_email_index"]`, composite ⇒ `[unique:
+"users_tenant_id_email_index"]`, PRIMARY KEY ⇒ `[unique:
+"users_id_index"]`, CHECK (named) ⇒ `[check: name]` / (unnamed) ⇒
+`[check: "<expr>"]` (SQLite reports the expression — best available),
+NOT NULL ⇒ `[not_null: "users.email"]`, named unique index ⇒ the index
+name. All derive Ecto's default `<table>_<col>_index` convention, so
+`unique_constraint/3` matches out of the box. One finding:
+
+- **F-B5-1 (S3, BACKLOG).** FK violation without a rich-diagnostics
+  payload (default `rich_fk_diagnostics: false`, or a diagnosis that
+  finds no rows) ⇒ `[foreign_key: nil]`. `nil` is not a valid
+  constraint name: with `match: :exact` it never matches (raises
+  `Ecto.ConstraintError` with a nil name), and with `match:
+  :suffix`/`:prefix` Ecto's `constraints_to_errors/3` calls
+  `String.ends_with?(nil, cc)` and crashes with `FunctionClauseError`
+  (verified `String.ends_with?(nil, "x")` raises). Latent, narrow
+  trigger. → BACKLOG.
+
+### B3 — sandbox + pooling under a single writer
+
+Resolved the standing `:memory:`-guard probe and relied on the passing
+async suite for baseline sandbox correctness.
+
+- **F-B3-1 (S3, BACKLOG).** No guard against private-`:memory:` + a
+  multi-connection pool. `database: ":memory:"` with no `pool_size`
+  starts cleanly at Ecto's default pool of 10, but each private
+  in-memory connection is a separate database. Probe: 10 reads of a
+  just-inserted row ⇒ 9× `{:error, :no_such_table}` + 1× `{:ok, []}` +
+  0× the row. Default-reachable, wholly broken repo — but fails loudly
+  and the remedy (raise / force pool 1 / document shared-cache) is a
+  maintainer design call. `ecto_sqlite3` raises. Sub-note: the
+  advertised `@default_opts pool_size: 5` is dead (Ecto sizes the pool
+  before `child_spec` merges defaults; default 10 wins). → BACKLOG.
+- Baseline sandbox checkout/checkin/rollback isolation and concurrent
+  checkouts are exercised by the entire `async: true` AdapterCase suite
+  (manual mode, per-test checkout) — passing. Failed begin/commit/
+  rollback all return `{:disconnect, …}`, so a wedged transaction is
+  torn down + reconnected, not reused (conservative, correct). The
+  hard single-writer concurrent-transaction limit is known + excluded
+  (transaction.exs:161). Storm probes (connect-time PRAGMA storm, busy
+  storms) NOT run — owed.
+
+### Verdict + dryness
+
+- 1 S1 + 2 S2 CONFIRMED+FIXED (F-B6-1/2/3, RED→green), 2 S3 → BACKLOG
+  (F-B5-1, F-B3-1). B6 had the richest surface and yielded all three
+  fixed bugs. `mix verify` green at close.
+- Dryness: B6/B5/B3 now each have ONE covering pass — NOT DRY, one more
+  owed each. Confirmed findings surfaced on every axis, so none can be
+  marked dry. Re-wetters recorded in REVIEW_AXES.md.
+- Completeness critic: B6 fixes are correctness/injection wins but the
+  audit was breadth-first over overrides — a second B6 pass should go
+  deep on NULL-in-join/aggregate/DISTINCT semantics, NOCASE/LIKE ASCII
+  limits, and window-frame edge cases (axis seed probes not yet pinned).
+  B3 storm probes and the sandbox shared-mode-across-processes allowance
+  remain unrun. F-B5-1 and F-B3-1 were filed not fixed — both are
+  genuine maintainer design calls (return shape / guard shape), not
+  oversights.

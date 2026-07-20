@@ -26,12 +26,38 @@ after the S0–S2 burn-down.
   `:transaction_checkout_raises` and `:values_list` — resolves the
   ledger-vs-README contradiction; failures get classified per the
   bar. (B2)
-- [B3] `:memory:` + pool_size guard probe; connect-time PRAGMA storm
-  under pool cold-start; wedged-txn-state symmetry.
+- [B3] connect-time PRAGMA storm under pool cold-start;
+  wedged-txn-state symmetry. (The `:memory:` + pool_size guard probe
+  RAN in Run 2 and confirmed a defect — see F-B3-1 below.)
 - [B9] Verify CI builds AND tests both telemetry compile configs.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B3-1] No guard on private-`:memory:` + a multi-connection pool.
+  `database: ":memory:"` with NO `pool_size` (Ecto default 10) starts
+  cleanly, but each private in-memory connection is a SEPARATE database:
+  a `CREATE`/`INSERT` lands on one pooled connection while reads scatter
+  across the others. Probe (Run 2): 10 reads of a just-inserted row gave
+  9× `{:error, :no_such_table}` + 1× `{:ok, []}` (empty table) + 0× the
+  row. Default-reachable and produces a wholly broken repo, but fails
+  LOUDLY (`:no_such_table`), and the remedy is a maintainer design call —
+  `ecto_sqlite3` raises here; options are (a) raise at `child_spec` when
+  the database is `":memory:"`/`""` and `pool_size > 1`, (b) auto-force
+  `pool_size: 1`, or (c) document `file::memory:?cache=shared` as the
+  shared-pool form. Related: the adapter's advertised `@default_opts`
+  `pool_size: 5` is dead — pool sizing is consumed by Ecto before
+  `child_spec` merges defaults, so Ecto's default 10 wins. (Run 2, B3)
+- [F-B5-1] `to_constraints/2` returns `[foreign_key: nil]` when an FK
+  violation has no rich-diagnostics payload (default `rich_fk_diagnostics:
+  false`, or a diagnosis that finds no rows). `nil` is not a valid
+  constraint name: with the default `match: :exact` it never matches a
+  user `foreign_key_constraint/3` (→ `Ecto.ConstraintError` with a `nil`
+  name — confusing but tolerable), but with `match: :suffix`/`:prefix`
+  Ecto's `constraints_to_errors` runs `String.ends_with?(nil, cc)` and
+  crashes with a `FunctionClauseError` (verified: `String.ends_with?(nil,
+  "x")` raises). Latent (narrow trigger); consider returning `[]` (raw
+  error) or synthesizing the `<source>_<field>_fkey` name from
+  `options[:source]`. (Run 2, B5)
 - [X1-2] `Error.wrap/1`'s generic `{tag, msg}` clause requires
   `is_binary(msg)`, so ~14 documented `error_reason/0` shapes with a
   map/int/atom/tuple payload fall to the `inspect` catch-all and lose
@@ -69,6 +95,25 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-20 [F-B6-1] (S1) `escape_string/1` doubled backslashes for
+  inline SQL string literals (`WHERE`/`LIKE` literals, DDL string
+  defaults). SQLite treats `\` as an ordinary character, so `'a\\b'` is a
+  4-char value — an inlined `x == "a\b"` silently matched nothing. Fixed
+  to escape only the single quote; `escape_json_key/1` keeps its
+  backslash+quote escaping locally (JSON-path output byte-identical).
+  RED→green in `query_features_test.exs` + `connection_test.exs`. (Run 2, B6)
+- 2026-07-20 [F-B6-2] (S2) offset without limit emitted a bare `OFFSET n`,
+  which is a SQLite syntax error (`near "OFFSET"`). A legitimate paginating
+  query (`from x, offset: 2`) failed to compile. Fixed: `limit/2` emits
+  `LIMIT -1` when limit is nil but offset is present. The pre-existing
+  "offset without limit" test masked this with `limit: 999`; rewritten to
+  the genuine case. RED→green in `query_features_test.exs`. (Run 2, B6)
+- 2026-07-20 [F-B6-3] (S2) `quote_entity/1` did not escape an embedded `"`
+  in identifiers, so a runtime `fragment("?", identifier(^value))` with a
+  crafted value broke out of the quotes and injected SQL
+  (`SELECT "x" FROM secrets;--"`). Fixed by doubling `"` → `""` (mirroring
+  `FkDiagnostics.quote_ident/1`, which was already correct). RED→green in
+  `connection_test.exs`. (Run 2, B6)
 - 2026-07-20 [F-X2-1] (S2) statement-cache path leaked sticky
   `sqlite3_changes()` as `num_rows` for columnless non-DML (DDL/
   PRAGMA) statements — fixed via `total_changes`-delta gating in the

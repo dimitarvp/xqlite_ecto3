@@ -41,8 +41,16 @@ guard pool_size > 1 like ecto_sqlite3 raises? UNKNOWN — probe);
 connect-time PRAGMA storms under pool cold-start (file-level
 serialization class); wedged-txn-state symmetry after failed ops
 (commit vs rollback status reset); busy storms under `async: true`
-app suites; Sandbox ownership semantics. Coverage: sandbox suite
-runs shared cases; none of the storm/guard probes run.
+app suites; Sandbox ownership semantics. Coverage: Run 2 ran the
+`:memory:`-guard probe → F-B3-1 (S3, BACKLOG): no guard on
+private-`:memory:` + a multi-conn pool, default-reachable (Ecto pool
+10; the adapter's `@default_opts pool_size: 5` is dead), yielding a
+scattered per-connection database. Baseline sandbox checkout/rollback
+isolation + concurrent checkouts covered by the passing async
+AdapterCase suite; failed txn ops disconnect-and-reconnect (no wedged
+reuse). Storm probes (PRAGMA storm, busy storms) + shared-mode-across-
+processes still owed. NOT DRY. Re-wets on: any `child_spec`/pool-option
+change, a `connect/1` pragma-sequence change, a DBConnection bump.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -60,7 +68,16 @@ Names match what `unique_constraint/3` etc. expect; **PRAGMA
 foreign_keys is per-connection and OFF by default — prove enforced
 on EVERY pooled connection including after reconnects.** Coverage:
 flagship structured errors + rich FK diagnostics shipped and
-un-excluded the shared tag; reconnect-enforcement probe owed.
+un-excluded the shared tag. Run 2 triggered every subtype live and
+verified the `to_constraints/2` output against Ecto's
+`constraints_to_errors/3` matcher: unique/composite/PK/named-index all
+derive the `<table>_<col>_index` convention (matches
+`unique_constraint/3`); check + not_null map correctly. Found F-B5-1
+(S3, BACKLOG): the no-rich-payload FK path returns `[foreign_key: nil]`,
+which crashes Ecto's matcher (`String.ends_with?(nil, …)`) under
+`match: :suffix`/`:prefix`. NOT DRY. Reconnect-enforcement probe still
+owed. Re-wets on: any `to_constraints/2` clause change, a new xqlite
+constraint subtype, an Ecto constraint-matcher change.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL
@@ -69,7 +86,18 @@ interactions); on_conflict/upsert mapping; subquery LIMIT; windows;
 fragment passthrough; grammar-gap seeds from sibling trackers
 (EXISTS double-parens, ON CONFLICT expression targets, UPDATE FROM
 subquery aliasing). Coverage: DISTINCT ON + DELETE+JOIN heavily
-pinned; grammar-gap shapes not pinned.
+pinned. Run 2 built + ran real queries and inspected the emitted SQL
+across every override; found THREE fixed bugs — F-B6-1 (S1) backslash
+double-escaping in `escape_string/1` (silent wrong results on inlined
+literals/LIKE/DDL defaults), F-B6-2 (S2) bare `OFFSET` without `LIMIT`
+(SQLite syntax error on legit paginating queries), F-B6-3 (S2) missing
+identifier-quote escaping in `quote_entity/1` (live injection via
+`identifier(^value)`). Verified correct: `?N`/`$N::TYPE` placeholders,
+single-quote escaping, empty-`IN`, on_conflict disambiguator, RETURNING,
+subquery/CTE alias threading. NOT DRY. Deep NULL-in-join/aggregate,
+NOCASE/LIKE-ASCII, and window-frame semantics still owed. Re-wets on:
+any change to escaping helpers, `limit/2`, `quote_entity/1`, or an
+ecto_sql SQL.Connection default override.
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which
