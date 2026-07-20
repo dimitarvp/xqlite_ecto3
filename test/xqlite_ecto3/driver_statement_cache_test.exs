@@ -65,6 +65,45 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       assert map_size(state.stmt_cache) == 0
     end
 
+    test "DDL after a DML through the cache reports zero, not the stale change count" do
+      state = seeded!()
+
+      {dml, state} = execute!(state, "UPDATE t SET s = 'x'", [])
+      assert %{num_rows: 2, changes: 2} = dml
+
+      # CREATE INDEX changes no rows, but sqlite3_changes() is sticky at 2.
+      # num_rows must be gated on total_changes moving, not on empty columns.
+      {ddl, state} = execute!(state, "CREATE INDEX idx_t_x ON t (x)", [])
+      assert %{num_rows: 0, rows: nil, changes: 0} = ddl
+
+      {dml2, _state} = execute!(state, "UPDATE t SET s = 'y' WHERE x = 1", [])
+      assert %{num_rows: 1, changes: 1} = dml2
+    end
+
+    test "a PRAGMA set after a DML through the cache reports zero" do
+      state = seeded!()
+
+      {dml, state} = execute!(state, "UPDATE t SET s = 'x'", [])
+      assert %{num_rows: 2} = dml
+
+      {pragma, _state} = execute!(state, "PRAGMA user_version = 7", [])
+      assert %{num_rows: 0, changes: 0} = pragma
+    end
+
+    test "cached and one-shot paths agree on a columnless statement's num_rows" do
+      cached = seeded!()
+      oneshot = seeded!(statement_cache_size: 0)
+
+      {_c, cached} = execute!(cached, "UPDATE t SET s = 'x'", [])
+      {_o, oneshot} = execute!(oneshot, "UPDATE t SET s = 'x'", [])
+
+      {c_ddl, _cached} = execute!(cached, "CREATE INDEX idx_c ON t (x)", [])
+      {o_ddl, _oneshot} = execute!(oneshot, "CREATE INDEX idx_o ON t (x)", [])
+
+      assert c_ddl.num_rows == 0
+      assert c_ddl.num_rows == o_ddl.num_rows
+    end
+
     test "an invalid statement_cache_size is a structured connect error" do
       assert {:error, {:invalid_statement_cache_size, :lots}} =
                Driver.connect(database: ":memory:", statement_cache_size: :lots)

@@ -544,7 +544,8 @@ defmodule XqliteEcto3.Driver do
   defp run_cached_stmt(conn, stmt, params, timeout) do
     case NIF.stmt_bind(stmt, params) do
       :ok ->
-        step_to_completion(conn, stmt, timeout)
+        total_before = conn_total_changes(conn)
+        step_to_completion(conn, stmt, total_before, timeout)
 
       {:error, _} = err ->
         pristine_stmt(stmt)
@@ -552,28 +553,28 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  defp step_to_completion(conn, stmt, :infinity) do
-    collect_rows(conn, stmt, [], [])
+  defp step_to_completion(conn, stmt, total_before, :infinity) do
+    collect_rows(conn, stmt, total_before, [], [])
   end
 
-  defp step_to_completion(conn, stmt, timeout) when is_integer(timeout) do
+  defp step_to_completion(conn, stmt, total_before, timeout) when is_integer(timeout) do
     {:ok, token} = NIF.create_cancel_token()
     canceller = spawn_canceller(token, timeout)
 
     try do
-      collect_rows(conn, stmt, [token], [])
+      collect_rows(conn, stmt, total_before, [token], [])
     after
       send(canceller, :stop)
     end
   end
 
-  defp collect_rows(conn, stmt, tokens, acc) do
+  defp collect_rows(conn, stmt, total_before, tokens, acc) do
     case NIF.stmt_multi_step_cancellable(stmt, @stmt_batch_size, tokens) do
       {:ok, %{rows: rows, done: false}} ->
-        collect_rows(conn, stmt, tokens, [rows | acc])
+        collect_rows(conn, stmt, total_before, tokens, [rows | acc])
 
       {:ok, %{rows: rows, done: true}} ->
-        finish_cached_stmt(conn, stmt, Enum.reverse([rows | acc]))
+        finish_cached_stmt(conn, stmt, total_before, Enum.reverse([rows | acc]))
 
       {:error, _} = err ->
         pristine_stmt(stmt)
@@ -581,17 +582,36 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  defp finish_cached_stmt(conn, stmt, row_batches) do
+  defp finish_cached_stmt(conn, stmt, total_before, row_batches) do
     rows = Enum.concat(row_batches)
     {:ok, columns} = NIF.stmt_column_names(stmt)
-    # Mirrors query_with_changes semantics: only statements without result
-    # columns (DML) report changes. Reading sqlite3_changes here is safe
-    # because DBConnection holds this connection exclusively for the whole
-    # handle_execute call — nothing can interleave another write.
-    changes = if columns == [], do: conn_changes(conn), else: 0
+    changes = changes_since(conn, total_before)
     pristine_stmt(stmt)
 
     {:ok, %{columns: columns, rows: rows, num_rows: length(rows), changes: changes}}
+  end
+
+  # sqlite3_changes() is sticky — it keeps the last DML's count across
+  # intervening SELECT/DDL/PRAGMA statements. An empty-columns heuristic for
+  # "did this change rows" is wrong twice: RETURNING DML has columns yet
+  # changed rows, and DDL/PRAGMA has none yet must report 0, not the stale
+  # count. Gate on sqlite3_total_changes() moving instead, mirroring
+  # query_with_changes. Reading these counters here is safe because
+  # DBConnection holds this connection exclusively for the whole
+  # handle_execute call — nothing can interleave another write.
+  defp changes_since(conn, total_before) do
+    if conn_total_changes(conn) == total_before do
+      0
+    else
+      conn_changes(conn)
+    end
+  end
+
+  defp conn_total_changes(conn) do
+    case NIF.total_changes(conn) do
+      {:ok, n} -> n
+      {:error, _} -> 0
+    end
   end
 
   defp conn_changes(conn) do
