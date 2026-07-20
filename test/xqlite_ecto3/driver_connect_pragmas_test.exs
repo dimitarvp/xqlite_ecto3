@@ -153,4 +153,58 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
                Driver.connect(database: bad_path)
     end
   end
+
+  # PRAGMA foreign_keys is per-connection and off by default in SQLite, so
+  # enforcement must be re-established on every connection the driver hands
+  # out. A pool replaces a dropped connection by calling disconnect/2 then
+  # connect/1 — this exercises exactly that pair and proves the replacement
+  # connection still rejects foreign-key violations.
+  describe "foreign key enforcement survives a disconnect/reconnect cycle" do
+    test "the reconnected connection still rejects FK violations structurally" do
+      db = tmp_db!("fk_reconnect")
+
+      first = connect!(database: db)
+      :ok = create_fk_schema(first.conn)
+
+      assert %XqliteEcto3.Error{
+               type: :constraint_violation,
+               details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
+             } = insert_orphan(first.conn, 1)
+
+      assert pragma!(first.conn, "foreign_keys") == 1
+
+      :ok = Driver.disconnect(%DBConnection.ConnectionError{message: "forced"}, first)
+
+      second = connect!(database: db)
+
+      assert pragma!(second.conn, "foreign_keys") == 1
+
+      # A foreign-key error (not a missing-table error) proves both that the
+      # schema persisted on the file and that enforcement is live again.
+      assert %XqliteEcto3.Error{
+               type: :constraint_violation,
+               details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
+             } = insert_orphan(second.conn, 2)
+    end
+  end
+
+  defp create_fk_schema(conn) do
+    {:ok, _} = NIF.query_with_changes(conn, "CREATE TABLE parents (id INTEGER PRIMARY KEY)", [])
+
+    {:ok, _} =
+      NIF.query_with_changes(
+        conn,
+        "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id))",
+        []
+      )
+
+    :ok
+  end
+
+  defp insert_orphan(conn, id) do
+    {:error, reason} =
+      NIF.query_with_changes(conn, "INSERT INTO children (id, parent_id) VALUES (#{id}, 999)", [])
+
+    XqliteEcto3.Error.wrap(reason)
+  end
 end
