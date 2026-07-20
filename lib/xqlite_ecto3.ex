@@ -25,6 +25,25 @@ defmodule XqliteEcto3 do
   `xqlite_ecto3`; each helper also documents its inline equivalent if
   portability matters more than ergonomics.
 
+  ## `ALTER TABLE ... MODIFY COLUMN` via table rebuild
+
+  SQLite cannot modify a column in place. Set `support_alter_via_table_rebuild:
+  true` in your repo config to enable the opt-in 12-step rebuild dance for a
+  migration `:modify`. The rebuild preserves everything SQLite exposes
+  structurally — foreign keys (composite keys, `ON DELETE`/`ON UPDATE` actions,
+  and implicit-primary-key references included) and UNIQUE constraints are
+  reconstructed from the structural pragmas, alongside indexes, triggers, and
+  the AUTOINCREMENT sequence. `CHECK` constraints, `COLLATE` clauses, generated
+  columns, `DEFERRABLE` foreign keys, and `ON CONFLICT` clauses cannot be
+  reconstructed structurally, so a `:modify` on a table declaring any of them
+  refuses loudly rather than dropping it — perform those by hand with
+  `execute/1`. A rebuild also refuses when another, *populated* table references
+  the rebuilt table with an `ON DELETE CASCADE`/`SET NULL`/`SET DEFAULT` action:
+  dropping the old table would fire that action on the referencing rows, so empty
+  those rows first or make the change by hand. Empty referencing tables are fine;
+  a `NO ACTION`/`RESTRICT` reference fails loudly by SQLite's own rules. See
+  `XqliteEcto3.Migration` and the README for details.
+
   ## UUID / binary_id storage
 
   Set `config :xqlite_ecto3, :binary_id_storage, :string | :binary` and
@@ -676,8 +695,11 @@ defmodule XqliteEcto3 do
     end
 
     refuse_unpreservable_constraints!(meta, table, opts)
+    refuse_incoming_actions_on_populated!(meta, table, opts)
 
     existing_columns = fetch_full_column_info!(meta, table, opts)
+    foreign_keys = fetch_foreign_keys!(meta, table, opts)
+    unique_constraints = fetch_unique_constraints!(meta, table, opts)
     indexes = fetch_user_indexes!(meta, table, opts)
     triggers = fetch_table_triggers!(meta, table, opts)
     autoincrement = fetch_autoincrement_value!(meta, table, opts)
@@ -688,7 +710,7 @@ defmodule XqliteEcto3 do
     statements =
       [
         "PRAGMA defer_foreign_keys = ON",
-        create_rebuild_table_sql(table, new_columns),
+        create_rebuild_table_sql(table, new_columns, foreign_keys ++ unique_constraints),
         copy_rows_sql(table, copy_pairs),
         "DROP TABLE #{quote_name(table.name)}",
         ~s|ALTER TABLE "#{table.name}__xqlite_new" RENAME TO #{quote_name(table.name)}|,
@@ -721,16 +743,16 @@ defmodule XqliteEcto3 do
     end
   end
 
-  # The rebuild reconstructs the new table from PRAGMA table_xinfo, which
-  # exposes only name/type/notnull/default/pk. Foreign keys, CHECK constraints,
-  # COLLATE / inline-UNIQUE clauses, and generated columns cannot be carried
-  # across — a column-info rebuild would silently drop or freeze them, turning a
-  # MODIFY into a silent loss of referential/domain integrity. Refuse loudly
-  # instead. Detection over-approximates (constraints via a scan of the stored
-  # CREATE TABLE SQL, generated columns via table_xinfo), so the only failure
-  # mode is a safe refusal, never a silent drop. Separate CREATE INDEX
-  # statements are untouched by this and are re-created by the rebuild, so a
-  # table whose only uniqueness is a standalone index rebuilds fine.
+  # Foreign keys and UNIQUE constraints are reconstructed from the structural
+  # pragmas (foreign_key_list, index_list), so they survive the rebuild. The
+  # rest — CHECK expressions, COLLATE clauses, generated columns, DEFERRABLE
+  # foreign keys, and ON CONFLICT clauses — live only in the original CREATE
+  # TABLE text or carry detail the structural pragmas do not expose, so a
+  # rebuild would silently drop them. Refuse loudly instead. Detection
+  # over-approximates (a scan of the stored CREATE TABLE SQL, plus a table_xinfo
+  # check for generated columns), so the only failure mode is a safe refusal,
+  # never a silent drop. Separate CREATE INDEX statements are untouched by this
+  # and are re-created by the rebuild.
   defp refuse_unpreservable_constraints!(meta, table, opts) do
     case unpreservable_kind(meta, table, opts) do
       nil ->
@@ -739,11 +761,80 @@ defmodule XqliteEcto3 do
       kind ->
         raise ArgumentError,
               "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: the table declares " <>
-                "#{kind} that a column-info rebuild cannot preserve (SQLite exposes them only " <>
-                "in the original CREATE TABLE text), so rebuilding would silently drop them. " <>
-                "Perform this change by hand with execute/1, recreating the full table — " <>
-                "columns, constraints, indexes, and triggers — so nothing is lost."
+                "#{kind} that a table rebuild cannot preserve, so rebuilding would silently " <>
+                "drop them. Perform this change by hand with execute/1, recreating the full " <>
+                "table — columns, constraints, indexes, and triggers — so nothing is lost."
     end
+  end
+
+  # A rebuild drops the old table before renaming its replacement into place.
+  # With foreign keys enforced — the default, and unavoidable inside a migration
+  # transaction where `PRAGMA foreign_keys=OFF` is a no-op — that drop's implicit
+  # DELETE fires the ON DELETE action of every OTHER table that references this
+  # one: CASCADE would silently delete their rows, SET NULL / SET DEFAULT would
+  # silently mutate them (`defer_foreign_keys` defers the enforcement check, not
+  # the action). So if any such referencing table currently holds rows, refuse
+  # loudly before any destructive step. RESTRICT / NO ACTION references need no
+  # guard here — SQLite makes the drop fail loudly on them by its own rules.
+  # Self-references are excluded: the rebuild repoints them at the transient
+  # table, so the drop cannot reach the freshly-copied rows.
+  defp refuse_incoming_actions_on_populated!(meta, table, opts) do
+    table_name = to_string(table.name)
+
+    populated =
+      meta
+      |> fetch_incoming_action_fks(table_name, opts)
+      |> Enum.uniq()
+      |> Enum.filter(fn {ref_table, _action} -> table_has_rows?(meta, ref_table, opts) end)
+
+    case populated do
+      [] -> :ok
+      hits -> raise ArgumentError, incoming_actions_message(table_name, hits)
+    end
+  end
+
+  # Every other table whose foreign_key_list targets this one with a row-affecting
+  # ON DELETE action. The correlated table-valued pragma reads each candidate
+  # table's foreign keys; `"table"` is the referenced table (matched
+  # case-insensitively, as SQLite table names are), and excluding the rebuilt
+  # table itself drops self-references.
+  defp fetch_incoming_action_fks(meta, table_name, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        ~s|SELECT m.name, fk."on_delete" | <>
+          ~s|FROM sqlite_schema AS m, pragma_foreign_key_list(m.name) AS fk | <>
+          ~s|WHERE m.type = 'table' AND lower(fk."table") = lower(?1) | <>
+          ~s|AND lower(m.name) <> lower(?1) | <>
+          ~s|AND fk."on_delete" IN ('CASCADE', 'SET NULL', 'SET DEFAULT')|,
+        [table_name],
+        opts
+      )
+
+    Enum.map(rows, fn [ref_table, on_delete] -> {ref_table, on_delete} end)
+  end
+
+  # sobelow_skip ["SQL.Query"]
+  defp table_has_rows?(meta, ref_table, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT 1 FROM #{quote_name(ref_table)} LIMIT 1",
+        [],
+        opts
+      )
+
+    rows != []
+  end
+
+  defp incoming_actions_message(table_name, hits) do
+    refs =
+      Enum.map_join(hits, ", ", fn {ref, action} -> "#{inspect(ref)} (ON DELETE #{action})" end)
+
+    "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: dropping the old table as " <>
+      "part of the rebuild would fire ON DELETE actions on rows in the table(s) that reference " <>
+      "it — #{refs} — silently deleting (CASCADE) or mutating (SET NULL / SET DEFAULT) them. " <>
+      "Empty or drop those referencing rows first, or perform this change by hand with execute/1."
   end
 
   # Generated columns are not in the CREATE TABLE keyword set the scan below
@@ -786,12 +877,16 @@ defmodule XqliteEcto3 do
     end
   end
 
+  # REFERENCES and UNIQUE are preserved structurally, so they are not scanned
+  # for here. DEFERRABLE and ON CONFLICT ride on those constructs but carry
+  # detail the pragmas do not expose (deferred enforcement timing, a conflict
+  # resolution algorithm), so they must still refuse.
   defp unpreservable_constraint(create_sql) do
     cond do
-      Regex.match?(~r/\bREFERENCES\b/i, create_sql) -> "foreign-key constraints"
       Regex.match?(~r/\bCHECK\b/i, create_sql) -> "CHECK constraints"
       Regex.match?(~r/\bCOLLATE\b/i, create_sql) -> "COLLATE clauses"
-      Regex.match?(~r/\bUNIQUE\b/i, create_sql) -> "inline UNIQUE constraints"
+      Regex.match?(~r/\bDEFERRABLE\b/i, create_sql) -> "DEFERRABLE foreign keys"
+      Regex.match?(~r/\bON\s+CONFLICT\b/i, create_sql) -> "ON CONFLICT clauses"
       true -> nil
     end
   end
@@ -809,6 +904,107 @@ defmodule XqliteEcto3 do
     Enum.map(rows, fn [col_name, col_type, notnull, dflt, pk] ->
       %{name: col_name, type: col_type, notnull: notnull == 1, default: dflt, pk: pk}
     end)
+  end
+
+  # Reconstruct the table's foreign keys as table-level clauses. Rows from
+  # foreign_key_list carry one entry per key column; group them by `id`
+  # (composite keys share an id, one row per column) and order by `seq` to
+  # recover column order.
+  defp fetch_foreign_keys!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    table_name = to_string(name)
+
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        ~s(SELECT id, seq, "table", "from", "to", on_update, on_delete, "match" ) <>
+          "FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+        [table_name],
+        opts
+      )
+
+    rows
+    |> Enum.group_by(fn [id | _] -> id end)
+    |> Enum.sort_by(fn {id, _group} -> id end)
+    |> Enum.map(fn {_id, group} -> foreign_key_clause(group, table_name) end)
+  end
+
+  defp foreign_key_clause(group, table_name) do
+    sorted = Enum.sort_by(group, fn [_id, seq | _] -> seq end)
+    [_id, _seq, target, _from, _to, on_update, on_delete, match] = hd(sorted)
+    from_cols = Enum.map(sorted, fn [_id, _seq, _table, from | _] -> from end)
+    to_cols = Enum.map(sorted, fn [_id, _seq, _table, _from, to | _] -> to end)
+
+    [
+      "FOREIGN KEY (",
+      quoted_column_list(from_cols),
+      ") REFERENCES ",
+      quote_name(fk_target(target, table_name)),
+      references_column_list(to_cols),
+      fk_action_clause(" ON DELETE ", on_delete),
+      fk_action_clause(" ON UPDATE ", on_update),
+      fk_match_clause(match)
+    ]
+  end
+
+  # A self-reference must point at the transient rebuild table, so that dropping
+  # the original cannot cascade (or restrict) into the freshly-copied rows;
+  # ALTER TABLE ... RENAME then rewrites this target back to the final name.
+  defp fk_target(target, table_name) when target == table_name, do: "#{table_name}__xqlite_new"
+
+  defp fk_target(target, _table_name), do: target
+
+  # A NULL `to` means the key references the target's implicit primary key —
+  # emit `REFERENCES target` with no column list so SQLite resolves it there.
+  defp references_column_list(to_cols) do
+    if Enum.any?(to_cols, &is_nil/1) do
+      []
+    else
+      [" (", quoted_column_list(to_cols), ")"]
+    end
+  end
+
+  # NO ACTION is SQLite's default; omit it rather than emit a redundant clause.
+  defp fk_action_clause(_keyword, "NO ACTION"), do: []
+  defp fk_action_clause(keyword, action), do: [keyword, action]
+
+  # SQLite parses but ignores MATCH and reports NONE for every declared type;
+  # keep a non-default value verbatim on the off chance one surfaces.
+  defp fk_match_clause("NONE"), do: []
+  defp fk_match_clause(match), do: [" MATCH ", match]
+
+  # index_list rows with origin `u` are the auto-indexes backing table/column
+  # UNIQUE constraints; reconstruct each as a table-level `UNIQUE (cols)` clause.
+  # origin `pk` (primary key) is already carried by the column info, and origin
+  # `c` (standalone CREATE INDEX) is re-created separately.
+  defp fetch_unique_constraints!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name FROM pragma_index_list(?1) WHERE origin = 'u' ORDER BY seq",
+        [to_string(name)],
+        opts
+      )
+
+    Enum.map(rows, fn [index_name] -> unique_constraint_clause(meta, index_name, opts) end)
+  end
+
+  defp unique_constraint_clause(meta, index_name, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name FROM pragma_index_info(?1) ORDER BY seqno",
+        [index_name],
+        opts
+      )
+
+    cols = Enum.map(rows, fn [col_name] -> col_name end)
+    ["UNIQUE (", quoted_column_list(cols), ")"]
+  end
+
+  defp quoted_column_list(cols) do
+    cols
+    |> Enum.map(&quote_name/1)
+    |> Enum.intersperse(", ")
   end
 
   defp fetch_user_indexes!(meta, %Ecto.Migration.Table{name: name}, opts) do
@@ -961,15 +1157,16 @@ defmodule XqliteEcto3 do
   defp default_spec({:ok, {:fragment, frag}}), do: [" DEFAULT ", frag]
   defp default_spec(:error), do: ""
 
-  defp create_rebuild_table_sql(table, cols) do
-    col_sqls =
+  defp create_rebuild_table_sql(table, cols, table_constraints) do
+    definitions =
       cols
       |> Enum.map(& &1.spec)
+      |> Kernel.++(table_constraints)
       |> Enum.intersperse(", ")
 
     IO.iodata_to_binary([
       ~s|CREATE TABLE "#{table.name}__xqlite_new" (|,
-      col_sqls,
+      definitions,
       ")"
     ])
   end

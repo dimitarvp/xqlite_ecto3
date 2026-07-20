@@ -31,41 +31,13 @@ defmodule XqliteEcto3.TableRebuildTest do
     end
   end
 
-  describe "refuses to silently drop constraints it cannot reconstruct" do
-    # The rebuild reconstructs columns from PRAGMA table_xinfo, which exposes
-    # only name/type/notnull/default/pk. Foreign keys, CHECK constraints, and
-    # COLLATE/inline-UNIQUE clauses live only in the original CREATE TABLE text,
-    # so a column-info rebuild would silently drop them — turning a MODIFY into
-    # a silent loss of referential/domain integrity. The rebuild must refuse
-    # loudly and leave the table untouched, never quietly strip the constraint.
-
-    test "refuses when the table has a foreign key, leaving it intact" do
-      create("CREATE TABLE rb_fk_parent(id INTEGER PRIMARY KEY, tag TEXT)")
-
-      create(
-        "CREATE TABLE rb_fk_child(id INTEGER PRIMARY KEY, name TEXT, " <>
-          "parent_id INTEGER REFERENCES rb_fk_parent(id))"
-      )
-
-      TestRepo.query!("INSERT INTO rb_fk_parent(id, tag) VALUES (1, 'p')")
-      TestRepo.query!("INSERT INTO rb_fk_child(name, parent_id) VALUES ('a', 1)")
-
-      assert_raise ArgumentError, ~r/foreign-key/, fn ->
-        run_alter(:rb_fk_child, [{:modify, :name, :string, [null: true]}])
-      end
-
-      # The FK must still be present and enforced — the refusal happened before
-      # any destructive rebuild step.
-      %{rows: fk_list} = TestRepo.query!("PRAGMA foreign_key_list('rb_fk_child')")
-      refute fk_list == []
-
-      orphan =
-        assert_raise XqliteEcto3.Error, fn ->
-          TestRepo.query!("INSERT INTO rb_fk_child(name, parent_id) VALUES ('orphan', 999)")
-        end
-
-      assert orphan.type == :constraint_violation
-    end
+  describe "refuses to silently drop constructs it cannot reconstruct" do
+    # Foreign keys and UNIQUE constraints are reconstructed from the structural
+    # pragmas, so they survive the rebuild (see table_rebuild_preservation_test).
+    # The rest — CHECK, COLLATE, generated columns, DEFERRABLE foreign keys, and
+    # ON CONFLICT clauses — live only in the original CREATE TABLE text or carry
+    # detail the pragmas do not expose, so a rebuild would silently drop them.
+    # The rebuild must refuse loudly and leave the table untouched.
 
     test "refuses when the table has a CHECK constraint, leaving it intact" do
       create("CREATE TABLE rb_chk(id INTEGER PRIMARY KEY, qty INTEGER CHECK (qty >= 0))")
@@ -94,12 +66,39 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert rows == [[1]]
     end
 
-    test "refuses when the table has an inline UNIQUE constraint" do
-      create("CREATE TABLE rb_uniq(id INTEGER PRIMARY KEY, sku TEXT UNIQUE)")
+    test "refuses a DEFERRABLE foreign key (pragmas do not expose deferral)" do
+      create("CREATE TABLE rb_def_parent(id INTEGER PRIMARY KEY)")
 
-      assert_raise ArgumentError, ~r/UNIQUE/, fn ->
-        run_alter(:rb_uniq, [{:modify, :sku, :string, [null: true]}])
+      create(
+        "CREATE TABLE rb_def(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "pid INTEGER REFERENCES rb_def_parent(id) DEFERRABLE INITIALLY DEFERRED)"
+      )
+
+      assert_raise ArgumentError, ~r/DEFERRABLE/, fn ->
+        run_alter(:rb_def, [{:modify, :name, :string, [null: true]}])
       end
+
+      # The table is untouched — the deferrable FK is still declared.
+      %{rows: fk_list} = TestRepo.query!("PRAGMA foreign_key_list('rb_def')")
+      refute fk_list == []
+    end
+
+    test "refuses a UNIQUE ... ON CONFLICT clause (pragmas do not expose it)" do
+      create(
+        "CREATE TABLE rb_oc(id INTEGER PRIMARY KEY, name TEXT, sku TEXT, " <>
+          "UNIQUE (sku) ON CONFLICT REPLACE)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_oc(id, name, sku) VALUES (1, 'a', 's1')")
+
+      assert_raise ArgumentError, ~r/ON CONFLICT/, fn ->
+        run_alter(:rb_oc, [{:modify, :name, :string, [null: true]}])
+      end
+
+      # ON CONFLICT REPLACE still active — a duplicate sku replaces, does not error.
+      TestRepo.query!("INSERT INTO rb_oc(id, name, sku) VALUES (2, 'b', 's1')")
+      %{rows: [[count]]} = TestRepo.query!("SELECT count(*) FROM rb_oc")
+      assert count == 1
     end
 
     test "refuses when the table has generated columns, leaving them intact" do
