@@ -128,6 +128,11 @@ pre-sets WAL for exactly this. Wedged-txn-state symmetry re-confirmed from sourc
 (failed begin/commit/rollback → `{:disconnect,…}`, never reused). DRYNESS: a new
 CONFIRMED S3 surfaced, so NOT a clean covering run — **stays at 0 of 2, NOT DRY**.
 Re-wets ALSO on: any connect-time `journal_mode`/`busy_timeout` ordering change.
+REMEDY (2026-07-21 — maintainer ruling F-B3-2): DOC-ONLY (skip-when-already-WAL
+changes nothing; the fresh-file first boot must flip regardless). Added a README
+"First-boot WAL noise on a fresh database" section (symptom + harmless/self-healing
+rationale + three mitigations). NO code change, so B3 is NOT re-wet — its re-wetter
+list is UNCHANGED.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -295,6 +300,30 @@ re-covered (`migration_test.exs` green). DRYNESS: a NEW confirmed (F-B7-2) surfa
 so NOT a clean covering run — **stays at 0 of 2, NOT DRY**; the rebuild-guard fix
 re-wets. Re-wets ALSO on: any `rebuild_table` / `refuse_unpreservable_constraints!`
 / `plan_new_schema` / `fetch_full_column_info!` change.
+REMEDY (2026-07-21 — maintainer ruling A4): the rebuild engine CHURNED AGAIN. The
+blanket refusal was replaced with faithful STRUCTURAL preservation — FKs
+reconstructed from `foreign_key_list` (composite / ON DELETE+UPDATE actions /
+implicit-PK / a self-ref temp-name trick so the drop cannot cascade into copied
+rows) and UNIQUE from `index_list`+`index_info`, both emitted as table-level
+clauses; `refuse_unpreservable_constraints!` dropped REFERENCES/UNIQUE and ADDED
+DEFERRABLE + ON CONFLICT triggers (word-boundary CREATE-text scan);
+`create_rebuild_table_sql/3` now takes table-level constraints; new
+`fetch_foreign_keys!`/`fetch_unique_constraints!`/`foreign_key_clause`/`fk_target`.
+Covered THIS run by RED→green `table_rebuild_preservation_test.exs` (+9, real
+`Ecto.Migrator` migrations against PoolRepo — 1/9 against the old code, 9/9 after)
+but NOT adversarially reviewed — B7 **stays 0 of 2, NOT DRY, re-wet**; the next
+covering pass reviews the preservation engine adversarially (self-ref/incoming
+dance, the incoming-FK populated-referencing refusal, the SQL-scan over-approximation).
+ORCHESTRATOR-GATE CORRECTION (2026-07-21): the A4 incoming cascade/set-action hazard
+was reclassified from a documented foot-gun to a LOUD PRE-FLIGHT REFUSAL. A new
+`refuse_incoming_actions_on_populated!` runs alongside `refuse_unpreservable_constraints!`
+(BEFORE any destructive step), enumerating incoming FKs via a correlated
+`pragma_foreign_key_list` join over `sqlite_schema` (case-insensitive table match,
+self-refs excluded) and refusing when a POPULATED referencing table carries an
+`ON DELETE` CASCADE/SET NULL/SET DEFAULT action; empty referencing tables proceed;
++2 RED→green tests (populated CASCADE + SET NULL). Re-wetters UNCHANGED (now ALSO
+`fetch_foreign_keys!` / `fetch_unique_constraints!` / `create_rebuild_table_sql` /
+`refuse_incoming_actions_on_populated!` / `fetch_incoming_action_fks` / `table_has_rows?`).
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
@@ -352,6 +381,13 @@ Zero new S0–S2 on B8. DRYNESS: Run 3 found F-B8-1/2 (confirmed S3s), so this i
 **first clean covering run over B8, 1 of 2, NOT DRY**, one more owed. Re-wets ALSO
 on: an xqlite scheduler-class change to an adapter-called NIF (a dep bump past
 0.10.0 flips the 5 above).
+REMEDY (2026-07-21 — maintainer ruling F-B8-3): DOC-ONLY (standard DBConnection
+behavior, not an adapter defect). Added an honest line to the README timeout→cancel
+divergence section: a pooled `:timeout` also trips DBConnection's checkout deadline,
+which disconnects+reconnects the connection, so connection-local state (temp tables,
+session PRAGMAs, statement cache) does not survive a timeout and there is a reconnect
+cost; the graceful cancel's value is the blocked query returning at the deadline. NO
+code change, so B8 is NOT re-wet — its re-wetter list is UNCHANGED.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

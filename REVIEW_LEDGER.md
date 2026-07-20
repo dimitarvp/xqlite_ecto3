@@ -1376,3 +1376,204 @@ EVERY pool member AND across reconnects. Zero findings.
   published number still depends on a dedicated quiet machine per the bench README.
   The owed SECOND clean covering pass on B9/B10 and the still-owed first clean run on
   B2 remain for the next dryness lap.
+
+---
+
+## Remedies — 2026-07-21 — maintainer rulings (F-B3-2 doc, F-B8-3 doc, A4 structural preservation)
+
+Three open backlog items ruled on by the maintainer (Dimi) and implemented in one
+pass. Single Opus implementer; every runtime claim below produced THIS session
+(scripts under scratchpad, driven via `mix test` / `mix run`; RED demonstrated by
+`git stash`-ing only the engine change and re-running the committed suite). Base
+commit `2efbaa1`; deps at xqlite 0.10.0 (`XQLITE_PATH` unset).
+
+### F-B3-2 — cold-start WAL-flip boot-log burst (DOC-ONLY, ruled)
+
+Ruling: documentation remedy, no code change. Skip-when-already-WAL changes nothing
+— a fresh, never-WAL file must flip `journal_mode=wal` on first boot regardless, and
+later boots are already no-op clean. Implemented: a README "First-boot WAL noise on a
+fresh database" section (under Design notes, after "Living with a single writer")
+stating the symptom (`[error] … failed to connect: {:database_busy_or_locked, 5,
+"database is locked"}` burst when a boot migration holds the write lock while the pool
+flips WAL on a fresh file), why it is harmless (self-healing, queries succeed, WAL
+persists so later boots are clean, no query caller sees an error), and the three
+mitigations (run migrations before starting the app pool; pre-create the database with
+WAL set; raise the connect `busy_timeout`). BACKLOG [F-B3-2] → Closed.
+
+### F-B8-3 — pooled-timeout connection recycling (DOC-ONLY, ruled)
+
+Ruling: one honest doc line, no code change (standard DBConnection behavior, not an
+adapter defect). Added to the README timeout→cancel divergence section ("Cancel tokens
+wired to `:timeout`"): a pooled query `:timeout` ALSO trips DBConnection's own checkout
+deadline (same value), which disconnects+reconnects that connection, so
+connection-local state — temp tables, session PRAGMAs, the prepared-statement cache —
+does not survive a timeout and there is a reconnect cost; this is how every
+DBConnection adapter behaves on the operation deadline; the graceful cancel's value is
+that the blocked query returns AT the deadline instead of running to completion first.
+BACKLOG [F-B8-3] → Closed.
+
+### A4 — faithful rebuild preservation, STRUCTURAL scope (ruled)
+
+Ruling: replace the blanket refusal with faithful preservation of everything SQLite
+exposes STRUCTURALLY, keeping the loud refusal only for text-only constructs; NO
+hand-rolled parsing of CREATE TABLE text beyond the existing word-boundary scans.
+
+Implemented in `lib/xqlite_ecto3.ex`:
+
+- `fetch_foreign_keys!/3` reads `PRAGMA foreign_key_list`, groups rows by `id` and
+  orders by `seq`, and emits table-level `FOREIGN KEY (cols) REFERENCES target[(cols)]
+  [ON DELETE …] [ON UPDATE …]` clauses via `foreign_key_clause/2`. Default `NO ACTION`
+  and `NONE` MATCH are omitted; a NULL `to` emits `REFERENCES target` with no column
+  list (implicit-PK reference). `fk_target/2` rewrites a SELF-reference to the transient
+  `<table>__xqlite_new` name so dropping the original cannot cascade (or restrict) into
+  the freshly-copied rows — `ALTER TABLE … RENAME` then rewrites the target back to the
+  final name.
+- `fetch_unique_constraints!/3` reads `PRAGMA index_list` origin `u` rows, gets their
+  columns from `PRAGMA index_info` ordered by seqno, and emits `UNIQUE (cols)` clauses.
+  Origin `pk` skipped (carried by column info); origin `c` skipped (re-created as a
+  standalone index already).
+- `create_rebuild_table_sql/3` appends the reconstructed table-level constraints after
+  the column defs.
+- `unpreservable_constraint/1` DROPPED the `REFERENCES` and `UNIQUE` scans (now
+  preserved) and ADDED `\bDEFERRABLE\b` → "DEFERRABLE foreign keys" and
+  `\bON\s+CONFLICT\b` → "ON CONFLICT clauses" (the structural pragmas expose neither the
+  deferral timing nor the conflict algorithm, so those would silently drop). CHECK,
+  COLLATE, and generated-column detections unchanged; refusal message updated to name
+  only the still-unsupported constructs and still points at `execute/1`.
+
+Dance-mechanics discovery (my own probes; recorded because they drove the design):
+- `defer_foreign_keys=ON` defers only the enforcement CHECK, NOT referential ACTIONS —
+  a deferred `DELETE FROM parent` still cascades to children immediately (probed).
+- `PRAGMA foreign_keys=OFF` is a NO-OP inside a transaction (value stayed 1; child
+  cascaded); it takes effect only OUTSIDE the txn. Ecto runs each migration inside a
+  transaction that itself runs in a spawned `Task` (`migrator.ex` `Task.async |>
+  Task.await`), so the adapter cannot toggle `foreign_keys` on that connection via
+  `lock_for_migrations` (different process/connection). `legacy_alter_table=ON` is
+  likewise a no-op inside the txn (the rename still rewrote an external child's FK).
+- Consequence: the transient-name self-reference trick is the fix that works WITHOUT
+  disabling foreign keys — verified: self-ref CASCADE rebuild preserves all 3 rows,
+  fk_check clean, target correctly restored to the final name, orphan rejected, cascade
+  fires on root delete; mutual NO-ACTION rebuild preserves both rows.
+
+A4 preservation evidence — the 9-point matrix, each expected-vs-actual (live via real
+`Ecto.Migrator` migrations against the non-sandboxed `PoolRepo`; the sandbox is
+unusable here because the rebuild's `defer_foreign_keys` never resets under an
+uncommitted sandbox txn, so FK enforcement would stay deferred):
+
+1. Single FK `ON DELETE CASCADE` — rows survive (1), FK present targeting parent with
+   CASCADE, fk_check clean, orphan REJECTED (`:constraint_violation` /
+   `%Error.Constraint{subtype: :constraint_foreign_key}`), parent delete cascades child
+   to 0. Also `SET NULL` (parent delete → child.parent_id NULL) and `ON UPDATE CASCADE`
+   (parent PK update → child FK column follows) each preserved + behaviorally verified.
+2. Composite two-column FK — both rows (seq 0/1, from (pa,pb) → to (a,b)) preserved in
+   order, fk_check clean, orphan rejected, composite cascade fires.
+3. Implicit-PK reference (`REFERENCES parent`, `to`=NULL) — preserved as `REFERENCES
+   parent` (no column list), fk_check clean, orphan rejected.
+4. Incoming FK (child references the rebuilt PARENT) — after the parent's drop+rename
+   dance the child's FK still targets `parent` (name restored), full `foreign_key_check`
+   clean, a post-rebuild child insert enforces, orphan rejected, a working cascade fires
+   from the rebuilt parent. (Limitation, below: pre-existing child ROWS are affected by
+   the drop.)
+5. Self-referencing FK — all 3 rows survive (temp-name trick), FK present targeting the
+   table, fk_check clean, orphan rejected, root delete cascades the chain to 0.
+6. Table-level UNIQUE (single `sku` + composite `(name,region)`) — both origin-`u`
+   auto-indexes present on the rebuilt table; duplicate rejected with
+   `%Error.Constraint{subtype: :constraint_unique, table: "rp_uq"}`, and
+   `XqliteEcto3.Connection.to_constraints/2` still yields `[unique: "<table>_<col>_index"]`
+   (a name usable by `unique_constraint/3`).
+7. Still-refused set — CHECK, COLLATE, generated columns (existing) plus the two NEW
+   triggers DEFERRABLE FK and `UNIQUE … ON CONFLICT REPLACE` each raise the loud
+   `ArgumentError` before any destructive step; verified table left intact (CHECK still
+   rejects, NOCASE still folds, generated columns still compute, deferrable FK still in
+   `foreign_key_list`, `ON CONFLICT REPLACE` still replaces on duplicate).
+8. Full existing rebuild-invariant suite green — `table_rebuild_test.exs` 11 passed
+   (rows, batched changes, standalone index recreated + enforcing, AUTOINCREMENT
+   sequence preserved, trigger recreated, flag-off refusal).
+9. FK enforcement state — the dance leaves `PRAGMA foreign_keys` exactly as found
+   (1 before, 1 after); a rebuild of a table whose rows reference each other (mutual
+   1↔2) copies both without violating (fk_check clean, count 2), proving the copy order
+   under `defer_foreign_keys` cannot violate.
+
+Residual limitation (documented, not silently shipped): rebuilding a table that OTHER
+tables reference with `ON DELETE`/`ON UPDATE CASCADE`/`SET NULL`/`SET DEFAULT` fires
+those actions on the referencing rows when the old table is dropped (probed: incoming
+CASCADE + pre-existing child row → child silently emptied); a `NO ACTION`/`RESTRICT`
+incoming reference makes the rebuild FAIL LOUDLY and roll back (probed: raises "FOREIGN
+KEY constraint failed", child rows intact). This is a hard SQLite constraint —
+`foreign_keys=OFF` cannot be reached from inside the migration transaction, and the
+referencing table is not part of the rebuild so its FK cannot be repointed. Rebuilding
+the table that HOLDS a foreign key (including self-references) is always safe. Recorded
+in README + moduledoc rebuild caveats and the BACKLOG closure.
+
+RED→green: new `table_rebuild_preservation_test.exs` (+9, `async: true`, real
+`Ecto.Migrator` migrations against `PoolRepo`, structured assertions). Against the
+engine reverted to the old blanket refusal (`git stash` of only `lib/xqlite_ecto3.ex`)
+the suite was **1 of 9 passed** — the 8 preservation scenarios all failed on
+`ArgumentError "… declares foreign-key constraints …"`; with the engine restored, **9
+of 9 passed**. `table_rebuild_test.exs` refusal describe updated (FK + inline-UNIQUE
+refusal tests removed — those now preserve; DEFERRABLE FK + `ON CONFLICT` refusal tests
+added), 11 passed.
+
+Docs flipped from "refusal is absolute" to structural preservation: README (Features
+rebuild paragraph + Design-notes "Migration rebuild is opt-in") and the `XqliteEcto3` +
+`XqliteEcto3.Migration` moduledocs now state FKs and UNIQUE survive (with actions /
+implicit-PK / composite), while CHECK/COLLATE/generated/DEFERRABLE/ON-CONFLICT refuse
+with `execute/1` as the escape hatch; the referenced-table cascade caveat is documented.
+
+`mix verify` GREEN at close (format, warnings-as-errors compile, deps.audit, sobelow,
+dialyzer, full `test.seq` suite). BACKLOG [A4] → Closed (structural-preservation scope;
+text-only residue stays refused by design). REVIEW_AXES B7 re-wet (rebuild engine
+churned, stays 0-of-2, next covering pass reviews the preservation engine
+adversarially); B3/B8 doc-only, re-wetter lists unchanged.
+
+### A4 — orchestrator-gate correction (incoming cascade/set-action → loud refusal)
+
+The orchestrator REJECTED the A4 disposition that DOCUMENTED the incoming-FK
+action hazard as a residual foot-gun. That violated the ratified bar (silent data
+loss never ships; unsupported cases refuse LOUDLY — the same principle behind the
+two earlier rebuild findings). The hazard is now a loud PRE-FLIGHT refusal, not a
+doc line: the "Residual limitation (documented…)" paragraph above is superseded —
+the cascade/set-action case is refused, only the physics (why the drop would fire
+the action inside the migration txn) remains true.
+
+Fix (`lib/xqlite_ecto3.ex`, new `refuse_incoming_actions_on_populated!/3` called
+in `rebuild_table` right after `refuse_unpreservable_constraints!`, BEFORE any
+destructive step): a correlated table-valued pragma enumerates INCOMING FKs —
+`SELECT m.name, fk."on_delete" FROM sqlite_schema AS m, pragma_foreign_key_list(
+m.name) AS fk WHERE m.type = 'table' AND lower(fk."table") = lower(?1) AND
+lower(m.name) <> lower(?1) AND fk."on_delete" IN ('CASCADE','SET NULL','SET
+DEFAULT')`. The `lower(...)` match honors SQLite's case-insensitive table names;
+`m.name <> ?1` drops self-references (already safe via the transient-name trick).
+For each distinct hit, `table_has_rows?/3` runs `SELECT 1 FROM "<ref>" LIMIT 1`
+(inside the migration txn → consistent snapshot); any populated referencing table
+raises `ArgumentError` naming the rebuilt table, the referencing table(s), and the
+action, pointing at the escape hatch (empty/drop the referencing rows, or
+`execute/1`). ON UPDATE is intentionally NOT scanned — the drop's implicit DELETE
+fires only ON DELETE actions. Empty referencing tables proceed (action is a no-op
+on zero rows), keeping fresh-schema / populate-after flows working; RESTRICT/NO
+ACTION incoming refs get no new logic (they already fail loudly on the drop).
+`table_has_rows?/3` carries `# sobelow_skip ["SQL.Query"]` (unavoidable table-name
+interpolation; the name is an existing `sqlite_schema` row); the enumerate query is
+fully parameterized. Detection idiom pre-verified against the bundled SQLite 3.53.2
+(CASCADE detected, case-insensitive match confirmed, self-ref + NO ACTION excluded).
+
+RED→green (`table_rebuild_preservation_test.exs`, +2 tests, real `Ecto.Migrator`
+alter migrations against the non-sandboxed `PoolRepo`, raw-query setup so the
+refusal's rollback leaves the setup rows intact): against the CURRENT working-tree
+engine (before this fix) both new tests were RED — `assert_raise ArgumentError`
+reported **"Expected exception ArgumentError but nothing was raised"** (9/11 file
+total), proving the drop silently cascaded/nullified the populated child; after the
+fix **11/11**. (1) populated child `ON DELETE CASCADE` → parent rebuild REFUSES
+naming `rp_pc_child`, both parent+child rows intact (count 1/1), FK still enforced
+(orphan rejected, fk_check clean). (2) populated child `ON DELETE SET NULL` →
+REFUSES naming `rp_ps_child`, child `pid` unchanged (still 1), parent intact. The
+EMPTY-child incoming-FK scenario (existing `IncomingFkMigration`, child populated
+only AFTER the rebuild) stays green — the rebuild PROCEEDS, proving empty
+referencing tables are fine. `table_rebuild_test.exs` unchanged, still 11/11.
+
+Docs flipped from "documented cascade caveat" to "populated-referencing-table
+refusal": README both rebuild sections (also corrected the earlier `ON UPDATE`
+over-claim — only `ON DELETE` fires on drop) + `XqliteEcto3` / `XqliteEcto3.Migration`
+moduledocs. BACKLOG [A4] closure amended (incoming-FK limitation → resolved-by-refusal);
+REVIEW_AXES B7 re-wet note extended (pre-flight now also scans incoming FKs).
+`mix verify` GREEN at close.

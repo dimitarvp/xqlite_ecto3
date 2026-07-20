@@ -74,51 +74,6 @@ after the S0–S2 burn-down.
   `stream_fetch_cancellable` first, then wire a per-fetch token like
   `execute_with_cancel`. Interim: document that stream batches are
   uncancellable and to keep `max_rows` modest. (Run 3, B8)
-- [F-B8-3] (S3, DOCS — standard DBConnection behavior, not an adapter defect)
-  Through a real DBConnection pool/repo, a query `:timeout` fires BOTH the
-  adapter's graceful cancel (returns `{:error, %DBConnection.ConnectionError{}}`
-  "query timed out" to the caller) AND DBConnection's own checkout deadline (the
-  SAME `:timeout` value), and the latter DISCONNECTS+reconnects the connection
-  ("client … timed out because it queued and checked out the connection for longer
-  than 100ms"). Proven live (Run 7): a connection-local TEMP table created before a
-  100 ms-timeout slow query is GONE afterward, and `[:xqlite_ecto3, :disconnect]` +
-  `[:xqlite_ecto3, :connect, :stop]` both fire. This is SAFE and self-healing (the
-  caller gets a clean structured timeout; the pool serves the next query) and is how
-  EVERY DBConnection adapter behaves on the operation deadline — not an xqlite_ecto3
-  defect. The graceful cancel's real pool-level value is making the blocked dirty
-  NIF RETURN promptly (at the deadline, ~100 ms) so the recycle happens then rather
-  than at natural query completion (~3500 ms). Consequence worth a doc line: a
-  pooled query timeout recycles the connection (statement cache reset + reconnect
-  cost), so connection-local state (temp tables, session PRAGMAs) does not survive a
-  timeout. The direct-driver `cancellation_test` cannot observe this (it bypasses
-  the pool); Run 7 pinned the pool-level contract deterministically in
-  `cancellation_test.exs` ("timeout through a real DBConnection pool"). Options:
-  add a line to the B8 timeout-divergence docs; no code change (the adapter cannot
-  prevent DBConnection from recycling a connection whose checkout exceeded the
-  client deadline). (Run 7, B8)
-
-- [F-B3-2] (S3) Cold-start WAL-flip race emits `[error]`-level connect-failure
-  logs. On the FIRST cold-start of a fresh, never-WAL database, every pool
-  member's connect sequence runs `PRAGMA journal_mode = wal` (a write needing an
-  exclusive lock). If a write lock is concurrently held longer than the
-  connect-time `busy_timeout` (a migration running at app boot, common), each
-  member's flip fails and DBConnection logs `[error] XqliteEcto3.Driver (…)
-  failed to connect: {:database_busy_or_locked, 5, "database is locked"}`, then
-  retries with backoff. Repro (Run 6): fresh non-WAL file, one raw connection
-  holds `BEGIN IMMEDIATE` for 2000 ms, pool_size 6, `busy_timeout: 300` → a burst
-  of 6+ `[error]` connect-failure lines at boot; ALL queries still succeed once
-  the lock releases; pool ends healthy; WAL persists so later boots are clean.
-  SELF-HEALING and no query-path impact (query callers never see an error), but
-  the `[error]` burst can alarm operators / trip error-rate alerts and is
-  UNDOCUMENTED. The pure storm (no competing lock) does NOT reproduce it (15
-  members flip WAL concurrently with 0 errors). The test suite already pre-sets
-  WAL for exactly this reason (`test/test_helper.exs` comment). Options (maintainer
-  call): (a) document — run migrations before starting the app pool, or pre-set
-  `journal_mode=wal` once, or raise the connect `busy_timeout`; note the transient
-  connect noise is harmless; (b) skip the `journal_mode` write when the file is
-  already WAL (helps reconnects, not the first cold-start). Evidence:
-  scratchpad `b3_connect_storm.exs` / `b3_connect_vs_lock.exs` / `b3_boot_noise.exs`.
-  (Run 6, B3)
 - [F-B3-1] No guard on private-`:memory:` + a multi-connection pool.
   `database: ":memory:"` with NO `pool_size` (Ecto default 10) starts
   cleanly, but each private in-memory connection is a SEPARATE database:
@@ -161,17 +116,6 @@ after the S0–S2 burn-down.
 
 ## Feature follow-ups (owed, not review findings)
 
-- [A4] Faithful table-rebuild constraint preservation (richer remedy for
-  F-B7-2, maintainer call). The shipped fix REFUSES a rebuild of a table that
-  declares foreign keys / CHECK / COLLATE / inline UNIQUE / generated columns
-  (safe, but limits the `:modify` feature to plainer tables). A fuller
-  implementation would preserve them: FKs are mechanical via `PRAGMA
-  foreign_key_list` (id/seq/table/from/to/on_update/on_delete/match — group by id
-  for composite keys); CHECK, COLLATE, column-UNIQUE, and generated columns need
-  the SQLite-canonical approach of editing the ORIGINAL CREATE TABLE text (the
-  12-step ALTER procedure) instead of reconstructing from `table_xinfo`. That
-  would let the refusal guard relax to only the constructs a rewrite still can't
-  handle.
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —
   unlocked by xqlite 0.9.0's busy split.
 - [A3] Optionally migrate raw `XqliteNIF.txn_state/connection_stats`
@@ -179,6 +123,59 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [A4] Faithful table-rebuild constraint preservation — CLOSED
+  (structural-preservation scope, maintainer ruling 2026-07-21). Replaced the
+  blanket refusal with faithful reconstruction of everything SQLite exposes
+  STRUCTURALLY: foreign keys via `PRAGMA foreign_key_list` (composite keys grouped
+  by id/ordered by seq, `ON DELETE`/`ON UPDATE` actions, implicit-PK references
+  when `to` is NULL, default NO ACTION/MATCH omitted) and UNIQUE constraints via
+  `PRAGMA index_list` origin `u` + `index_info`, both emitted as table-level
+  clauses in the rebuilt CREATE TABLE. A self-referencing FK is reconstructed
+  against the transient `__xqlite_new` table so the drop cannot cascade into the
+  freshly-copied rows (the rename fix-up restores the final target). The text-only
+  residue STAYS refused by design — CHECK/COLLATE/generated columns keep their
+  detections, and DEFERRABLE FKs + ON CONFLICT clauses were ADDED as refusal
+  triggers (a word-boundary scan of the stored CREATE TABLE text) because the
+  structural pragmas do not expose them; REFERENCES/UNIQUE were removed from the
+  refusal scan. Incoming cascade/set-action hazard RESOLVED BY REFUSAL (orchestrator
+  gate 2026-07-21, superseding the earlier doc-only disposition): a pre-flight
+  `refuse_incoming_actions_on_populated!` scans INCOMING FKs and refuses loudly when a
+  POPULATED other table references the rebuilt one with `ON DELETE CASCADE`/`SET
+  NULL`/`SET DEFAULT` — the drop's implicit DELETE would otherwise silently fire that
+  action on the referencing rows (`foreign_keys=OFF` is a no-op inside the migration
+  transaction; `defer_foreign_keys` defers only the check, not the action). Empty
+  referencing tables proceed (no-op on zero rows); self-refs excluded (transient-name
+  trick); RESTRICT/NO ACTION incoming refs already fail loudly on the drop.
+  RED→green: `table_rebuild_preservation_test.exs` (now 11 tests, real `Ecto.Migrator`
+  migrations against PoolRepo) covers single/composite/implicit-PK/incoming/self-ref
+  FKs, UNIQUE (single + composite, structured error + usable `to_constraints` name),
+  the foreign_keys-unchanged + mutual-ref-copy invariant, and the two populated-
+  referencing refusals (CASCADE + SET NULL — both RED "nothing was raised" against the
+  pre-refusal engine, green after, rows/values intact); `table_rebuild_test.exs`
+  refusal set updated (FK/UNIQUE removed, DEFERRABLE + ON CONFLICT added). Docs
+  (README rebuild sections + `XqliteEcto3` / `XqliteEcto3.Migration` moduledocs)
+  flipped to "FKs and UNIQUE survive; CHECK/COLLATE/generated/DEFERRABLE/ON CONFLICT
+  refuse". `mix verify` green. (Remedies 2026-07-21, B7)
+- 2026-07-21 [F-B8-3] (S3) Pooled-timeout connection recycling — CLOSED (doc
+  remedy, maintainer ruling 2026-07-21). A pooled query `:timeout` ALSO trips
+  DBConnection's own checkout deadline (same value), which disconnects+reconnects
+  the connection, so connection-local state (temp tables, session PRAGMAs, the
+  statement cache) does not survive a timeout and there is a reconnect cost —
+  standard DBConnection behavior for every adapter, not an adapter defect. Added an
+  honest line to the README timeout→cancel divergence section noting this and that
+  the graceful cancel's value is the blocked query returning at the deadline instead
+  of running to completion. No code change. (Remedies 2026-07-21, B8)
+- 2026-07-21 [F-B3-2] (S3) Cold-start WAL-flip boot-log burst — CLOSED (doc
+  remedy, maintainer ruling 2026-07-21). Skip-when-already-WAL changes nothing (the
+  fresh-file first boot must flip regardless; later boots are already no-op clean),
+  so the remedy is documentation only. Added a "First-boot WAL noise on a fresh
+  database" section to the README: the symptom (transient `failed to connect:
+  {:database_busy_or_locked, 5, …}` `[error]` burst when a boot migration holds the
+  write lock while the pool flips `journal_mode=wal` on a fresh file), why it is
+  harmless (self-healing, queries succeed, WAL persists so later boots are clean),
+  and the three mitigations (run migrations before starting the app pool; pre-create
+  the database with WAL set; raise the connect `busy_timeout`). No code change.
+  (Remedies 2026-07-21, B3)
 - 2026-07-21 [F-B2-2] (S2) The runtime JSON-path branch (`dynamic_json_path`)
   escaped nothing: it emitted `$."<raw value>"`, so a runtime JSON key value
   (a column/param, e.g. `d.meta[d.label]`) containing a backslash silently
