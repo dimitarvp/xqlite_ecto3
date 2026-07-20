@@ -81,6 +81,29 @@ AdapterCase suite; failed txn ops disconnect-and-reconnect (no wedged
 reuse). Storm probes (PRAGMA storm, busy storms) + shared-mode-across-
 processes still owed. NOT DRY. Re-wets on: any `child_spec`/pool-option
 change, a `connect/1` pragma-sequence change, a DBConnection bump.
+COVERING RE-RUN (Run 6, 2026-07-20 — dryness pass 2, the owed storm probes): ran
+the owed storm + shared-mode probes live. Connect-time PRAGMA storm — pool_size
+15 on a fresh non-WAL file, 300 concurrent inserts fired immediately → CLEAN
+(300/300 ok, 15/15 connect ok, 0 errors, ~37 ms; the connect-time `busy_timeout`
+set before the `journal_mode` write absorbs the WAL-header contention). Busy
+storm — pool_size 8, 200 concurrent write txns on ONE hot row → 200/200 ok, final
+counter EXACTLY 200 (no lost updates, serialized via WAL+busy_timeout), pool
+healthy; and a forced busy (200 ms timeout vs 1500 ms held lock) surfaces a
+STRUCTURED `{:database_busy_or_locked, ext 5}` with the pool still healthy/writable
+— nothing uglier. Sandbox shared mode across processes — `{:shared, self()}` AND
+`allow/3` both let a spawned Task share the owner's sandbox connection
+bidirectionally, with rollback isolation preserved (post-checkin count 0). Busy
+-POLICY API determination: adapter uses ONLY the `busy_timeout` PRAGMA
+(`driver.ex:63`), never `set_busy_policy`/`max_retries`/`max_elapsed_ms` — so
+xqlite main's busy per-event-elapsed change does NOT touch the adapter at 0.10.0
+(CLOSED). ONE new S3 → BACKLOG: **F-B3-2** — cold-start racing an externally-held
+write lock (migrations at boot on a fresh non-WAL file) emits `[error]`-level
+connect-failure logs (`{:database_busy_or_locked, 5, …}`), self-healing (queries
+succeed, WAL persists, later boots clean) but UNDOCUMENTED; the test suite already
+pre-sets WAL for exactly this. Wedged-txn-state symmetry re-confirmed from source
+(failed begin/commit/rollback → `{:disconnect,…}`, never reused). DRYNESS: a new
+CONFIRMED S3 surfaced, so NOT a clean covering run — **stays at 0 of 2, NOT DRY**.
+Re-wets ALSO on: any connect-time `journal_mode`/`busy_timeout` ordering change.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -130,6 +153,23 @@ which crashes Ecto's matcher (`String.ends_with?(nil, …)`) under
 `match: :suffix`/`:prefix`. NOT DRY. Reconnect-enforcement probe still
 owed. Re-wets on: any `to_constraints/2` clause change, a new xqlite
 constraint subtype, an Ecto constraint-matcher change.
+COVERING RE-RUN (Run 6, 2026-07-20 — dryness pass 2, the owed reconnect probe):
+PROVED FK enforcement on EVERY pool member and across reconnects. Every-member:
+pool_size 5, 200 concurrent FK-violating inserts → 200/200 structured
+`:constraint_foreign_key`, 5 distinct members observed serving, 0 orphans (a
+non-enforcing member would insert the orphan). Reconnect PROVEN not inferred:
+`Ecto.Adapters.SQL.disconnect_all(repo, 0)` forced a cycle witnessed by BOTH the
+`[:xqlite_ecto3, :disconnect]` AND `[:xqlite_ecto3, :connect, :stop]` telemetry
+(10 s ceiling, ≥10×); FK still rejected structurally with 0 orphans after two
+cycles. No pre-FK-ON serving window: `foreign_keys` set INSIDE the connect `with`
+chain (`driver.ex:65`), `connect/1` returns `{:ok,state}` only after the full
+chain — the first query on a fresh pool already enforces FK (runtime-confirmed).
+Committed the reconnect contract deterministically (`driver_connect_pragmas_test.exs`
++1: disconnect/2 then connect/1 → replacement conn still rejects the orphan +
+`foreign_keys==1`). Mapping surface re-read (no churn since Run 2); F-B5-1
+UNCHANGED (raw-insert probes didn't exercise the suffix-matcher path — no remedy
+sharpening). Zero new findings. DRYNESS: **first clean covering run (1 of 2), NOT
+DRY**, one more owed (Run 2 found F-B5-1). Re-wet triggers UNCHANGED.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL
@@ -150,6 +190,25 @@ subquery/CTE alias threading. NOT DRY. Deep NULL-in-join/aggregate,
 NOCASE/LIKE-ASCII, and window-frame semantics still owed. Re-wets on:
 any change to escaping helpers, `limit/2`, `quote_entity/1`, or an
 ecto_sql SQL.Connection default override.
+COVERING RE-RUN (Run 6, 2026-07-20 — dryness pass 2, the owed DEPTH pass): ran
+real queries through a live repo inspecting BOTH emitted SQL and returned rows
+against bundled SQLite 3.53.2. Every wrong-results seed CLEAN. NULL semantics —
+`count(col)` skips NULL, `sum`/`avg` over NULLs, `sum`/`count` over empty sets,
+GROUP BY (NULL its own group), DISTINCT (NULLs collapse), INNER/LEFT JOIN
+orphan, `IN [1,nil,2]`, `NOT IN [1,nil]`→`[]` (three-valued-logic trap, IDENTICAL
+to Postgres — not a divergence), `is_nil`→`IS NULL` (Ecto's `not_nil!` guard
+blocks `== nil` upstream, so no `= NULL` ever emits). LIKE ASCII-case-insensitive
++ non-ASCII NOT folded — EXPLICITLY within Ecto's `like/2` contract (docs:
+Postgres case-sensitive, others case-insensitive); `ilike/2` raises loud. NOCASE
+migration collation folds ASCII only (correct-by-translation, `collate:` is
+DB-specific). Window functions — running-sum/named-window/`row_number` + all
+three frame types (`ROWS`/`RANGE`/`GROUPS … EXCLUDE`) via the sanctioned
+`frame: fragment(…)` form all emit valid SQL and compute correctly. Grammar-gap
+seeds LIVE-EXECUTED — EXISTS single-paren correlated, UPDATE-FROM alias threading,
+ON CONFLICT partial-index + expression targets all correct. Churn re-verified live
+(escape_string single-`\`, `LIMIT -1 OFFSET`, quote_entity injection collapse).
+Zero new findings. DRYNESS: **first clean covering run (1 of 2), NOT DRY**, one
+more owed (Run 2 found three fixed bugs). Re-wet triggers UNCHANGED.
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which

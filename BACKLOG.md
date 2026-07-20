@@ -28,9 +28,19 @@ after the S0–S2 burn-down.
   is excluded; both quietly pass, so the README "suites run green" claim
   holds and the two `ECTO_INTEGRATION_TAGS.md` rows were STALE — corrected
   to "supported" + header refreshed (3.53.2, 16/18). (B2)
-- [B3] connect-time PRAGMA storm under pool cold-start;
-  wedged-txn-state symmetry. (The `:memory:` + pool_size guard probe
-  RAN in Run 2 and confirmed a defect — see F-B3-1 below.)
+- [B3] RESOLVED (Run 6). Connect-time PRAGMA storm characterized: the PURE
+  storm (pool cold-start with no competing lock) is CLEAN — 15 members on a
+  fresh non-WAL file all connect and flip `journal_mode=wal` concurrently, 300
+  concurrent inserts 300/300 ok, 0 connect errors, ~37 ms, pool healthy (the
+  connect-time `busy_timeout` set before the `journal_mode` write absorbs the
+  brief WAL-header contention). The sharp edge is a cold-start racing an
+  EXTERNALLY held write lock (migrations mid-flight on a fresh non-WAL file) →
+  transient `[error]` connect-failure logs, self-healing — see F-B3-2 below.
+  Wedged-txn-state symmetry re-confirmed from source: failed begin/commit/
+  rollback all return `{:disconnect, …}`, so a wedged transaction is torn down
+  and reconnected, never reused (driver.ex handle_begin/commit/rollback). The
+  `:memory:` + pool_size guard probe RAN in Run 2 and confirmed a defect — see
+  F-B3-1 below.
 - [B9] CONFIRMED gap (Run 4): no CI lane flips `:telemetry_enabled`, so
   CI builds/tests only the telemetry-ON config (`config/test.exs` pins it
   ON); the OFF path (production default) is untested in CI — it compiles
@@ -76,6 +86,28 @@ after the S0–S2 burn-down.
   `execute_with_cancel`. Interim: document that stream batches are
   uncancellable and to keep `max_rows` modest. (Run 3, B8)
 
+- [F-B3-2] (S3) Cold-start WAL-flip race emits `[error]`-level connect-failure
+  logs. On the FIRST cold-start of a fresh, never-WAL database, every pool
+  member's connect sequence runs `PRAGMA journal_mode = wal` (a write needing an
+  exclusive lock). If a write lock is concurrently held longer than the
+  connect-time `busy_timeout` (a migration running at app boot, common), each
+  member's flip fails and DBConnection logs `[error] XqliteEcto3.Driver (…)
+  failed to connect: {:database_busy_or_locked, 5, "database is locked"}`, then
+  retries with backoff. Repro (Run 6): fresh non-WAL file, one raw connection
+  holds `BEGIN IMMEDIATE` for 2000 ms, pool_size 6, `busy_timeout: 300` → a burst
+  of 6+ `[error]` connect-failure lines at boot; ALL queries still succeed once
+  the lock releases; pool ends healthy; WAL persists so later boots are clean.
+  SELF-HEALING and no query-path impact (query callers never see an error), but
+  the `[error]` burst can alarm operators / trip error-rate alerts and is
+  UNDOCUMENTED. The pure storm (no competing lock) does NOT reproduce it (15
+  members flip WAL concurrently with 0 errors). The test suite already pre-sets
+  WAL for exactly this reason (`test/test_helper.exs` comment). Options (maintainer
+  call): (a) document — run migrations before starting the app pool, or pre-set
+  `journal_mode=wal` once, or raise the connect `busy_timeout`; note the transient
+  connect noise is harmless; (b) skip the `journal_mode` write when the file is
+  already WAL (helps reconnects, not the first cold-start). Evidence:
+  scratchpad `b3_connect_storm.exs` / `b3_connect_vs_lock.exs` / `b3_boot_noise.exs`.
+  (Run 6, B3)
 - [F-B3-1] No guard on private-`:memory:` + a multi-connection pool.
   `database: ":memory:"` with NO `pool_size` (Ecto default 10) starts
   cleanly, but each private in-memory connection is a SEPARATE database:

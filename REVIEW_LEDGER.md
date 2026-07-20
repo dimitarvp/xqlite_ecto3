@@ -856,3 +856,202 @@ Zero new findings.
   X1/B1/X2 scope). `to_constraints/2` was re-read but not re-fuzzed against a
   new Ecto matcher version (no ecto_sql bump in the churn). The owed second
   covering pass on each axis remains for the next dryness lap.
+
+---
+
+## Run 6 — 2026-07-20 — dryness pass 2: B6 + B5 + B3
+
+- Commit at scan: `dec4469` (after adapter Run 5). Deps compiled at xqlite
+  0.10.0 (`mix.lock` pin + `deps/xqlite/mix.exs` both verified 0.10.0;
+  `XQLITE_PATH` unset, `deps/xqlite` is a real dir not a path symlink — the
+  probes characterize published 0.10.0, NOT `../xqlite` main). Single Opus
+  reviewer; live queries through real repos/driver against the BUNDLED SQLite
+  3.53.2, every runtime claim produced THIS session (scripts under scratchpad,
+  driven via `MIX_ENV=test mix run` / `mix test`).
+- Scope: the SECOND covering pass over B6 (query translation — the owed DEPTH
+  pass on wrong-results semantics), B5 (constraint mapping — the owed
+  reconnect-enforcement probe), B3 (sandbox + pooling — the owed storm probes).
+  Contracts read from `deps/` source: Ecto `like/2` doc (`ecto/lib/ecto/query/
+  api.ex:210-223`), `Ecto.Adapters.SQL.disconnect_all/3` + `DBConnection.
+  disconnect_all/3`, the driver connect `with` chain (`driver.ex:56-85`).
+
+### B6 — query translation (PRIMARY; the owed DEPTH pass)
+
+Ran real queries through a live repo inspecting BOTH emitted SQL (`Ecto.Adapters.
+SQL.to_sql/3`) and returned rows against bundled SQLite. Every wrong-results
+class probed; ALL correct-by-translation or Ecto-contract-honest. Zero findings.
+
+- **NULL semantics** (`b6_semantics.exs`, all input→expected=actual): `count(*)`
+  posts → 4; `count(views)` skips NULL → 2; `sum(views)` over NULLs → 30;
+  `avg(views)` → 15.0 (skips NULLs); `sum` over empty set → nil, `count` over
+  empty set → 0; GROUP BY author_id → `[{nil,1},{1,2},{2,1}]` (NULL its own
+  group); GROUP BY views → `[{nil,2},…]` (NULLs collapse to one group); DISTINCT
+  views → `[nil,10,20]` (NULLs collapse); INNER JOIN drops the NULL-author orphan;
+  LEFT JOIN keeps it `{4,nil}`; `author_id IN [1,nil,2]` → `[1,2,3]`; `author_id
+  NOT IN [1,nil]` → `[]` (classic three-valued-logic trap — but IDENTICAL to
+  Postgres, correct SQL not a divergence); `is_nil(views)` → `IS NULL` → `[2,4]`.
+  `p.author_id == ^nil` is blocked by Ecto's own `not_nil!/2` builder guard
+  UPSTREAM (raises `ArgumentError`), so the adapter never receives a `= NULL` to
+  emit — the `is_nil`→`IS NULL` path is the only route and it is correct.
+- **Case sensitivity**: `like(name, "zebra")` matched BOTH "ZEBRA" and "zebra"
+  (SQLite LIKE is ASCII-case-insensitive); `like(name, "äpfel")` matched ONLY
+  "äpfel" not "Äpfel" (ASCII-only, no Unicode fold). This diverges from Postgres
+  (LIKE case-SENSITIVE) but is EXPLICITLY within Ecto's `like/2` contract:
+  "PostgreSQL will do a case-sensitive operation, while the majority of other
+  databases will be case-insensitive" (`ecto/lib/ecto/query/api.ex:214-217`) —
+  correct-by-translation + Ecto-contract-honest. `ilike/2` raises loudly
+  (`Ecto.QueryError` "ilike is not supported by SQLite", `connection.ex:1618`) —
+  honest refusal, no silent LIKE substitution.
+- **NOCASE collation** (`b6_windows_grammar.exs`): the adapter surfaces
+  collations via a migration column's `collate:` option (`collate_expr/1`,
+  `connection.ex:1987-1991`, upcased). `TEXT COLLATE NOCASE` emitted; live:
+  `name == "abc"` → `[1,2]` (folds ASCII "ABC"=="abc"), `name == "ä"` → `[4]`
+  ONLY (does NOT fold "Ä"). ASCII-only NOCASE is SQLite's documented behavior;
+  the adapter emits exactly what the migration asks — correct-by-translation (no
+  Postgres equivalent expectation being violated; `collate:` is DB-specific).
+- **Window functions** (all emit valid SQL + compute correctly): inline `over(
+  sum, partition_by:, order_by:)` running sum → `[{1,10},{2,15},{3,20},{4,27}]`;
+  named window (`WINDOW "w" AS (…)`); `row_number() OVER (PARTITION BY … ORDER BY
+  … DESC)`; and ALL THREE frame types via the Ecto-sanctioned `frame:
+  fragment(…)` form — `ROWS`/`RANGE`/`GROUPS BETWEEN … EXCLUDE CURRENT ROW` all
+  emit correctly and the GROUPS+EXCLUDE result was hand-verified row-by-row.
+  Non-partition/order/frame window keys raise loudly (`connection.ex:1318`);
+  frame accepts only a fragment (Ecto's own contract). No unsupported frame form
+  emits silently.
+- **Grammar-gap seeds** (`b6_onconflict_update.exs`, live-executed): EXISTS
+  correlated subquery emits single-paren `exists(SELECT 1 …)` (valid SQLite, NOT
+  a double-paren break) and returns `[3,4]` correctly; `UPDATE "posts" AS p0 SET
+  … FROM "posts" AS p1 WHERE …` (SQLite 3.33+ UPDATE-FROM) threads aliases
+  correctly — update_all changed 2 rows to the expected values; ON CONFLICT with
+  a PARTIAL-INDEX target (`conflict_target: {:unsafe_fragment, "(k) WHERE active
+  = 1"}`) upserted correctly; ON CONFLICT with an EXPRESSION target
+  (`"(lower(email))"`, `on_conflict: :nothing`) deduplicated the case-variant
+  insert correctly.
+- **Churn re-verify (light, live)**: `escape_string/1` emits a literal backslash
+  single (`= 'a\b'`, no `\\` — F-B6-1 holds); `limit/2` emits `LIMIT -1 OFFSET 2`
+  for offset-without-limit → correct tail rows (F-B6-2 holds); `quote_entity/1`
+  collapses the injection `identifier(^~s|x" FROM posts;--|)` to one inert
+  identifier `"x"" FROM posts;--"` (F-B6-3 holds).
+
+### B5 — constraint mapping (the owed reconnect-enforcement probe)
+
+PRAGMA foreign_keys is per-connection and OFF by default; proved enforcement on
+EVERY pool member AND across reconnects. Zero findings.
+
+- **Every pool member** (`b5_every_member.exs`): pool_size 5, 200 concurrent
+  FK-violating inserts (`INSERT INTO children … parent_id 999`, parent absent).
+  Result: `%{fk_error: 200}` — ALL 200 returned the structured
+  `%XqliteEcto3.Error{type: :constraint_violation, details: %Constraint{subtype:
+  :constraint_foreign_key}}`; 5 distinct pool members observed serving (via
+  `handle_execute` telemetry `%{conn}`); 0 orphan rows in `children` (no member
+  let a violation through — a non-enforcing member would have inserted the orphan).
+- **Reconnect enforcement PROVEN, not inferred** (`b5_reconnect.exs`): baseline
+  FK violation on a fresh pool → structured FK error, 0 orphans; forced reconnect
+  via `Ecto.Adapters.SQL.disconnect_all(repo, 0)` while driving traffic; BOTH
+  `[:xqlite_ecto3, :disconnect]` AND `[:xqlite_ecto3, :connect, :stop]` telemetry
+  observed (the reconnect witness) with a 10 s wait ceiling (≥10× the sub-second
+  worst case); after reconnect the FK violation is STILL rejected structurally
+  with 0 orphans; a SECOND disconnect_all cycle repeated the same result (not a
+  one-off).
+- **Committed contract test** (`driver_connect_pragmas_test.exs` +1, deterministic,
+  async, no concurrency): the pool replaces a dropped connection by calling
+  `Driver.disconnect/2` then `Driver.connect/1`; the test drives exactly that pair
+  on a file DB — a fresh connection rejects an orphan insert structurally
+  (`:constraint_foreign_key`) and reports `foreign_keys == 1`; after
+  `Driver.disconnect/2` + a re-`connect/1`, the replacement connection STILL
+  reports `foreign_keys == 1` AND rejects the orphan insert (an FK error, not a
+  missing-table error, proves both schema persistence and live re-enforcement).
+- **No pre-FK-ON serving window** (source + runtime): `foreign_keys` is set at
+  `driver.ex:65` INSIDE the connect `with` chain; `connect/1` returns
+  `{:ok, state}` only after the FULL chain succeeds, and DBConnection does not
+  hand out a connection until `connect` returns `{:ok, …}` — so no query can run
+  before `foreign_keys=ON`. Runtime-corroborated: the VERY FIRST query on a
+  brand-new pool already enforces FK (b5_reconnect baseline).
+- **Mapping surface re-cover** (no churn since Run 2): `to_constraints/2` re-read
+  (`connection.ex:102-162`) — unique/PK → `<table>_<col>_index` convention,
+  check → `constraint_name`, not_null → `<table>.<col>`, FK-with-rich-payload →
+  synthesized `<table>_<col>_fkey` names; the existing `constraints_test.exs`
+  (unique/FK/check/not_null through real changesets vs Ecto's `constraints_to_
+  errors/3`) covers the end-to-end matcher — spot-confirmed the raw NIF FK shape
+  is `{:constraint_violation, :constraint_foreign_key, %{…}}` wrapping to the
+  `Constraint` struct. F-B5-1 (`[foreign_key: nil]` crashes Ecto's matcher under
+  `match: :suffix`/`:prefix`) UNCHANGED — my probes used raw inserts, not the
+  suffix-matcher path, so no new evidence sharpening its remedy (maintainer call).
+
+### B3 — sandbox + pooling under a single writer (the owed storm probes)
+
+- **Busy-policy API determination (maintainer-rulings behavioral check)**: the
+  adapter does NOT call xqlite's busy-POLICY API (`rg 'set_busy_policy|
+  busy_policy|max_retries|max_elapsed|register_busy' lib/` = ZERO) — it sets ONLY
+  the `busy_timeout` PRAGMA (`driver.ex:63`). Therefore xqlite main's busy
+  per-event-elapsed clock-reset change (unreleased, post-0.10.0) does NOT touch
+  the adapter at 0.10.0. Question CLOSED.
+- **Connect-time PRAGMA storm** (`b3_connect_storm.exs`): pool_size 15 on a fresh
+  non-WAL file, 300 concurrent inserts fired immediately. Expected: contention
+  on the concurrent `journal_mode=wal` flips. Actual: CLEAN — `%{ok: 300}`, 15
+  connect_start / 15 connect_ok / 0 connect_err / 0 connect_exc, final
+  journal_mode=wal, 300/300 rows, ~37 ms, pool healthy. The connect-time
+  `busy_timeout` (set at `driver.ex:63` BEFORE the `journal_mode` write at :64)
+  absorbs the brief WAL-header contention among pool members.
+- **Cold-start racing a held write lock → F-B3-2 (S3, BACKLOG)**
+  (`b3_connect_vs_lock.exs` / `b3_boot_noise.exs`): a fresh non-WAL file, one raw
+  connection holding `BEGIN IMMEDIATE`, then a pool cold-start whose members must
+  flip WAL. Expected vs actual: with `busy_timeout: 300` and the lock held 2000 ms,
+  every member's connect FAILS the WAL flip and DBConnection logs `[error]
+  XqliteEcto3.Driver (…) failed to connect: {:database_busy_or_locked, 5,
+  "database is locked"}` (6 members + several retries observed), then retries with
+  backoff; ALL queries still succeed once the lock releases (elapsed ≈ lock-hold
+  time), pool ends healthy, WAL persists (later boots clean). SELF-HEALING, no
+  query-path impact — but an `[error]` boot-log burst that is UNDOCUMENTED. This is
+  the exact race `test/test_helper.exs:170-177` pre-sets WAL to avoid. Filed S3
+  (ergonomics/docs; not S2 — correct structured classification, no wrong results,
+  no crash, recovers). NOT committed as a test (inherently timing/concurrency —
+  the async ban applies; scratchpad + this evidence instead).
+- **Busy storm under concurrent writers** (`b3_busy_storm.exs`): pool_size 8, 200
+  concurrent write transactions all on ONE hot row (WAL, busy_timeout 5000).
+  Expected: busy contention. Actual: CLEAN — `%{ok: 200}`, final counter n=200
+  (EXACTLY the successful-txn count → no lost updates, correctly serialized via
+  WAL single-writer + busy_timeout), ~106 ms, pool healthy. And when busy_timeout
+  IS exceeded (`b3_forced_busy.exs`, 200 ms timeout vs a 1500 ms held lock): the
+  write surfaces a STRUCTURED `%XqliteEcto3.Error{type: :database_busy_or_locked,
+  details: %{extended_code: 5}}` (SQLITE_BUSY), and the pool stays healthy and
+  writable afterward — nothing uglier than a structured retryable error.
+- **Sandbox shared mode across processes** (`b3_sandbox_shared.exs`): the suite
+  runs manual mode; probed the unprobed shared path. `{:shared, self()}` — a
+  spawned Task saw the parent's UNCOMMITTED row (`["from_parent"]`) and the parent
+  saw the Task's row (both) on the shared connection, count 2 during the txn, and
+  after `checkin` + a fresh checkout count 0 (rolled back — isolation held).
+  `allow/3` explicit allowance — allowed child saw the owner's row, owner saw the
+  child's row, and post-checkin count 0 (rolled back). Both cross-process paths
+  correct with rollback isolation preserved.
+- **Wedged-txn-state symmetry** (source): failed begin/commit/rollback all return
+  `{:disconnect, …}` (`driver.ex` handle_begin/commit/rollback) → wedged txn torn
+  down + reconnected, never reused. UNCHANGED from Run 2, re-confirmed.
+
+### Verdict + dryness
+
+- 0 new S0–S2. 1 new S3 → BACKLOG (F-B3-2, cold-start WAL-flip boot-log noise).
+  1 deterministic committed test added (reconnect FK enforcement,
+  `driver_connect_pragmas_test.exs` +1, GREEN). B6 CLEAN (depth pass, zero
+  findings). B5 CLEAN (reconnect enforcement PROVEN on every member + across
+  reconnects; mapping surface intact). B3 storm probes CLEAN except the S3 boot
+  noise. `mix verify` green at close.
+- Dryness: **B6 — first clean covering run (1 of 2), NOT DRY**, one more owed
+  (Run 2 found three fixed bugs). **B5 — first clean covering run (1 of 2), NOT
+  DRY**, one more owed (Run 2 found F-B5-1). **B3 — a new CONFIRMED S3 (F-B3-2)
+  surfaced, so NOT a clean covering run — stays at 0 of 2, NOT DRY.** Re-wetters
+  in REVIEW_AXES.md refreshed.
+- Completeness critic: F-B3-2 is filed not fixed (S3; the doc-vs-code remedy is a
+  maintainer call, and a deterministic committed test would fight the async ban).
+  B6 depth was exhaustive on the wrong-results seed list, but window-frame probing
+  used only the fragment form (Ecto's contract) — a future pass could confirm
+  Ecto rejects a non-fragment frame upstream (believed so, not lived). NOCASE/LIKE
+  ASCII-only is correct-by-translation but UNDOCUMENTED in the adapter's own docs
+  — an ergonomics note (not a finding) a docs pass could add. B5's every-member
+  proof used raw inserts (enforcement) not the `foreign_key_constraint/3` changeset
+  path per member (mapping) — the mapping-per-member combination is covered
+  transitively (all members share the same connect path) but not lived per member;
+  F-B5-1's suffix-matcher remedy got no new evidence. B3 did not probe owner-process
+  death mid-transaction under the sandbox (A7-adjacent, xqlite-side covered). The
+  owed second covering pass on B6/B5 and the still-owed first clean run on B3 remain
+  for the next dryness lap.
