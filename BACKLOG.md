@@ -9,12 +9,12 @@ after the S0–S2 burn-down.
 - [G1] 21 accidental-public SQL helpers in `Connection` → `defp`
   (verify the zero-external-caller claim per function first;
   includes the `insert_all/1,2` name-confusion hazard). (wave-1)
-- [G2] ECTO_INTEGRATION_TAGS.md reconciliation. DONE in Run 4: header
-  fixed (SQLite 3.53.2, 16/18) and the two vague rows thickened to
-  "supported" after the two-tag probe (P1). REMAINING: drop the orphaned
-  `:concurrent_poolrepo_transactions` row; rewrite the stale
-  `:foreign_key_constraint` row (rich FK diagnostics shipped, tag
-  un-excluded). (wave-1)
+- [G2] DONE (Run 4 + Run 8). Run 4: header fixed (SQLite 3.53.2, 16/18)
+  and the two vague rows thickened to "supported" after the two-tag probe
+  (P1). Run 8: dropped the orphaned `:concurrent_poolrepo_transactions`
+  row (not a real shared-suite tag anywhere in `deps/`); rewrote the
+  `:foreign_key_constraint` row excluded→supported (un-excluded, `--only
+  foreign_key_constraint` ⇒ 6 passed via rich FK diagnostics). (wave-1)
 - [G3] Elixir floor: `~> 1.15` claimed, CI floor 1.17 — add lanes
   or raise the floor (floor-raise = Dimi values call; identical gap
   in xqlite). (wave-1)
@@ -41,28 +41,17 @@ after the S0–S2 burn-down.
   and reconnected, never reused (driver.ex handle_begin/commit/rollback). The
   `:memory:` + pool_size guard probe RAN in Run 2 and confirmed a defect — see
   F-B3-1 below.
-- [B9] CONFIRMED gap (Run 4): no CI lane flips `:telemetry_enabled`, so
-  CI builds/tests only the telemetry-ON config (`config/test.exs` pins it
-  ON); the OFF path (production default) is untested in CI — it compiles
-  clean locally. FIX: add a CI lane (or a `MIX_ENV=dev mix compile
-  --warnings-as-errors` + a small OFF-flag test run) covering the OFF
-  build.
+- [B9] RESOLVED (Run 8). Added the `telemetry_disabled` CI lane
+  (`.github/workflows/ci.yml`, free-tier ubuntu-latest): it compiles the
+  adapter with the flag off under warnings-as-errors (`MIX_ENV=test mix
+  compile --force --warnings-as-errors`) and smoke-runs the no-op path
+  (`mix test test/xqlite_ecto3/telemetry_disabled_smoke_test.exs`). Config
+  mechanism: `config/test.exs` reads `XQLITE_ECTO3_TELEMETRY` (`off` flips
+  only the adapter flag; xqlite's own flag stays on). Both lane commands
+  proven locally at exit 0. (Run 4 confirmed the gap; Run 8 closed it.)
 
 ## Open (S3 — tracked, never dropped)
 
-- [F-B10-1] (S3) The `bench/` project does not compile/run. `bench/mix.exs`
-  pins `ecto_sql ~> 3.13.0` (stale lock 3.13.5) while the adapter now
-  requires `~> 3.14` and uses `Ecto.Migration.Table.:modifiers` (a 3.14
-  struct field), so `MIX_ENV=prod mix compile` in `bench/` fails at
-  `connection.ex:2112` — "unknown key :modifiers for struct
-  Ecto.Migration.Table." The mix.exs comment blaming ecto_sql 3.14's
-  `insert/8` is stale (the adapter migrated to `~> 3.14`). Methodology is
-  otherwise honest (pinned-identical pragmas, disclosed SQLite versions,
-  cancellation-as-demo, ledger-first, write+read scenarios) but NO figure
-  is reproducible from a clean checkout until this is fixed. FIX: bump the
-  bench to `ecto_sql ~> 3.14` + `ecto_sqlite3 ~> 0.24` and refresh
-  `bench/mix.lock` (needs Hex); drop the stale insert/8 comment. Blocks any
-  announcement perf claim. (Run 4, B10)
 - [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
   write — `busy_timeout` dominates. Two handles on one file: A holds
   `BEGIN IMMEDIATE`, B (`busy_timeout: 3000`) INSERTs with a 300 ms cancel
@@ -190,6 +179,33 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B2-2] (S2) The runtime JSON-path branch (`dynamic_json_path`)
+  escaped nothing: it emitted `$."<raw value>"`, so a runtime JSON key value
+  (a column/param, e.g. `d.meta[d.label]`) containing a backslash silently
+  extracted nil — SQLite treats `\` as a JSON5 escape inside the quoted label
+  (`$."back\slash"` → nil, vs the compile-time-escaped `$."back\\slash"` → the
+  value). Same mechanism-class as F-B2-1 (Run 4 fixed the literal branches and
+  believed the runtime branch already correct), a different code path Run 4's
+  critic owed. A runtime double-quote key was also nil (that case had been
+  documented-unsupported; the backslash case was undocumented + silently
+  wrong). Fixed by escaping the runtime value for the JSON5 quoted-label
+  grammar via nested `replace(replace(seg, '\', '\\'), '"', '\"')` (mirrors the
+  compile-time `escape_json_key`) — dot/backslash/quote runtime keys now all
+  resolve, and the fix closes the documented double-quote limitation (moduledoc
+  caveat dropped). RED→green in `json_extract_path_test.exs` (+2). (Run 8, B2)
+- 2026-07-21 [F-B10-1] (S3) The `bench/` project did not compile: `bench/mix.exs`
+  pinned `ecto_sql ~> 3.13.0` while the adapter requires `~> 3.14` (uses
+  `Ecto.Migration.Table.:modifiers`), so `mix compile` in `bench/` failed with
+  "unknown key :modifiers for struct Ecto.Migration.Table." Bumped the bench to
+  `ecto_sql ~> 3.14` + `ecto_sqlite3 ~> 0.24`, dropped the stale insert/8
+  comments, refreshed `bench/mix.lock` via the sanctioned HEX_HOME (ecto_sql
+  3.14.0 / ecto 3.14.1 / ecto_sqlite3 0.24.1 / exqlite 0.39.0 / decimal 3.1.1;
+  local path deps kept; top-level mix.lock untouched). `mix compile` in bench/
+  exit 0 (`xqlite_ecto3` compiles against ecto_sql 3.14) and a smoke run
+  (`BENCH_TIME=1 BENCH_WARMUP=0 BENCH_MEMORY_TIME=0 mix run bench.exs`) exit 0,
+  all scenarios + the cancellation demo producing output. Methodology honesty
+  unchanged (edits touched only mix.exs+lock). No figures recorded (ledger-first).
+  (Run 8, B10)
 - 2026-07-21 [F-B7-2] (S1) The opt-in table rebuild (`support_alter_via_table_rebuild:
   true`) reconstructed the new table from `PRAGMA table_xinfo`, which exposes only
   name/type/notnull/default/pk. Foreign keys, CHECK constraints, and COLLATE /

@@ -12,10 +12,9 @@ Bundled SQLite version: **3.53.2**. Shared files loaded: **16/18**.
 | `:assigns_id_type` | needs adapter work | user-assigned PKs work in SQLite; may need PK handling adjustments |
 | `:bitstring_type` | excluded | SQLite has no native bitstring type |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
-| `:concurrent_poolrepo_transactions` | excluded | SQLite single-writer: concurrent transactions from separate processes deadlock with pool_size 1 |
 | `:delete_with_join` | supported | conservative rewrite to `DELETE FROM t WHERE pk IN (SELECT …)`; raises `Ecto.QueryError` on shapes we can't safely transform |
 | `:duration_type` | excluded | SQLite has no native duration/interval type |
-| `:foreign_key_constraint` | excluded | SQLite FK violations report no constraint name |
+| `:foreign_key_constraint` | supported | not excluded and all 6 pass (`--only foreign_key_constraint` ⇒ 6 passed); rich FK diagnostics (opt-in `rich_fk_diagnostics: true`) synthesize the `<table>_<col>_fkey` name that `foreign_key_constraint/3` matches on |
 | `:insert_cell_wise_defaults` | excluded | SQLite multi-row VALUES requires all rows to have the same columns |
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
 | `:json_extract_path` | needs adapter work | `json_extract` returns 1/0 for booleans; adapter needs coercion layer |

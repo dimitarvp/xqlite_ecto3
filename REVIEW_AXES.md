@@ -64,6 +64,30 @@ real cause is TEXT UUID storage). NOT DRY (one covering pass). Re-wets on:
 any new exclusion, any `escape_json_key`/`json_extract_path`/
 `dynamic_json_path` change, an Ecto/ecto_sql minor bump that adds/renames
 shared cases, a `binary_id_storage` default change.
+COVERING RE-RUN (Run 8, 2026-07-21 — dryness pass 4): the owed characterization of the
+runtime-expression branch surfaced a NEW CONFIRMED finding. **F-B2-2 (S2, CONFIRMED +
+FIXED, RED→green).** Run 4 fixed the compile-time literal branches and believed the
+runtime `dynamic_json_path` branch already correct (it wraps in `."…"`), but that branch
+escapes NOTHING: it emits `$."<raw value>"`, so a runtime JSON key value containing a `\`
+silently extracts nil — SQLite treats `\` as a JSON5 escape inside the quoted label
+(bundled 3.53.2: `$."back\slash"` → nil vs the compile-time-escaped `$."back\\slash"` →
+"bv"). A runtime double-quote key was nil too (that case was DOCUMENTED-unsupported; the
+backslash case was UNDOCUMENTED + silently wrong — same mechanism-class as F-B2-1, a
+different code path). Proven end-to-end via the real adapter/repo
+(`json_extract_path_test.exs` +2). Fixed by escaping the runtime value for the JSON5
+quoted-label grammar with nested `replace(replace(seg,'\','\\'),'"','\"')`, mirroring
+`escape_json_key` — dot/backslash/quote runtime keys all resolve now (the fix also closes
+the previously-documented double-quote limitation; moduledoc caveat dropped). Exclusion
+drift CLEAN (19 exclusions = 14 tags + 5 locations, `git log 5b32d11..HEAD` on
+test_helper.exs/ECTO_INTEGRATION_TAGS.md shows only Run 4's own fix; the two stale-row
+tags re-isolated `values_list` 5 / `transaction_checkout_raises` 1, matching Run 4). No
+exclusion rationale is connection-lifecycle-sensitive (all rest on SQLite grammar/
+storage-class/architecture invariants; the one per-connection setting, `foreign_keys`,
+backs no exclusion) — reconnect re-check is a B2 no-op, recorded. G2 remainder CLOSED
+(dropped orphaned `:concurrent_poolrepo_transactions`, rewrote `:foreign_key_constraint`
+excluded→supported after `--only foreign_key_constraint` ⇒ 6 passed). DRYNESS: a NEW
+confirmed (F-B2-2) surfaced, so NOT a clean covering run — **B2 stays at 0 of 2 clean
+covering runs, NOT DRY**; the runtime-escape fix re-wets. Re-wet triggers UNCHANGED.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
@@ -349,6 +373,27 @@ lane flips the flag; OFF path compiles clean locally) → BACKLOG. NOT DRY.
 Re-wets on: any driver emission-site change, a new event, a moduledoc
 event-surface edit, a `:telemetry.span`-vs-`emit` swap, an OTel-mapping
 key change.
+COVERING RE-RUN (Run 8, 2026-07-21 — dryness pass 4 + CI-OFF gap CLOSED): event-surface
+re-drive CLEAN (zero new findings). `disconnect` reason re-verified live (== :normal);
+Run 7 added no events (`git log 5b32d11..HEAD` on driver.ex/fk_diagnostics.ex = only
+Run 4's fix; the `fk_diagnostics` span predates it, `794c121`). Spot-drove the full
+documented surface under the ON build BY MY OWN runs: `telemetry_test.exs` 12
+(connect/disconnect+reason/checkout/txn-trio+mode/execute/declare-fetch-deallocate
+key-split), `driver_statement_cache_test.exs` 14 (hit/miss/evicted + cached_count/sql),
+`fk_diagnostics_test.exs` 13 (span mode + violations_count/diagnostics_status),
+`telemetry_open_telemetry_test.exs` 5. OTel mapping BYTE-UNCHANGED since Run 4
+(`git log 5b32d11..HEAD` empty on its path). **[B9] CI GAP CLOSED**: new
+`telemetry_disabled` CI lane (free-tier ubuntu-latest) + env-var config mechanism in
+`config/test.exs` (`XQLITE_ECTO3_TELEMETRY=off` flips only the adapter flag) + a
+build-agnostic `telemetry_disabled_smoke_test.exs` (module-level `if @telemetry_enabled`
+to dodge the warnings-as-errors "always true" type warning). Both lane commands proven
+locally from a warm ON `_build`: `MIX_ENV=test mix compile --force --warnings-as-errors`
+exit 0, `mix test …smoke…` exit 0 (no-op span returns `%{rows: [[1]]}`; refute proves no
+adapter event fires). DRYNESS: **first clean covering run over the Run-4 emission churn
+(1 of 2), NOT DRY**; this run's OWN CI-lane + config-mechanism + smoke edits RE-WET the
+flag-config surface (the owed second pass re-covers the OFF/ON compile path). Re-wets
+ALSO on: any `config/test.exs` telemetry-flag mechanism change or a
+`telemetry_disabled` lane/smoke change.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean
@@ -363,6 +408,23 @@ fails on the unknown struct key. F-B10-1 (S3) → BACKLOG; figures are
 unreproducible until the dep bump. NOT DRY. Re-wets on: any `bench/`
 dep-version change, any adapter `ecto_sql` floor bump, a new bench
 scenario.
+COVERING RE-RUN (Run 8, 2026-07-21 — dryness pass 4 + F-B10-1 CLOSED): methodology
+re-verified CLEAN (zero new findings). **F-B10-1 CLOSED**: bumped `bench/mix.exs`
+`ecto_sql ~> 3.13.0`→`~> 3.14` and `ecto_sqlite3 ~> 0.22.0`→`~> 0.24`, dropped the
+stale insert/8 comments, refreshed `bench/mix.lock` via the sanctioned HEX_HOME
+(ecto_sql→3.14.0, ecto→3.14.1, ecto_sqlite3→0.24.1, exqlite→0.39.0, decimal→3.1.1; local
+path deps kept; TOP-LEVEL mix.lock untouched). `mix compile` in bench/ (prod,
+`MIX_OS_DEPS_COMPILE_PARTITION_COUNT=1`, `XQLITE_BUILD=true`) exit 0 — `xqlite_ecto3`
+(21 files) now compiles against ecto_sql 3.14 (the exact prior failure point gone) — and
+a smoke run at the smallest integer budget (`BENCH_TIME=1 BENCH_WARMUP=0
+BENCH_MEMORY_TIME=0 mix run bench.exs`) exit 0, all 8 scenarios + the cancellation demo
+producing output (versions disclosed xqlite 3.53.2 / exqlite 3.53.3; NO figures recorded
+— ledger-first). Methodology-honesty intact (edits touched only mix.exs+lock, not
+bench.exs/bench.ex): pragma parity, disclosed versions, cancellation-as-demo,
+ledger-first all unchanged. DRYNESS: methodology CLEAN (0 new findings), F-B10-1 CLOSED,
+**first clean covering run (1 of 2), NOT DRY**; the dep bump (its own re-wet trigger)
+re-wets B10 → the owed second pass re-covers the ecto_sql-3.14 / ecto_sqlite3-0.24 stack.
+Re-wet triggers UNCHANGED.
 
 ## Cross-repo axes (one system)
 

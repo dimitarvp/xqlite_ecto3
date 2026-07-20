@@ -1210,3 +1210,169 @@ EVERY pool member AND across reconnects. Zero findings.
   (NaN/Inf/subnormal covered by the example table, not the generator). The owed
   SECOND clean covering pass on B8/B4 and the still-owed first clean run on B7 remain
   for the next dryness lap.
+
+---
+
+## Run 8 — 2026-07-21 — dryness pass 4: B2 + B9 + B10
+
+- Commit at scan: `811d544` (after adapter Run 7). Deps compiled at xqlite 0.10.0
+  (`mix.lock` pin; `XQLITE_PATH` unset, top-level xqlite dep = published 0.10.0 hex).
+  Single Opus reviewer; every runtime claim produced THIS session (scripts under
+  scratchpad, driven via `mix run` / `mix test`). Two sanctioned gap-closures this
+  run (a telemetry-OFF CI lane + the bench dep bump) recorded below as WORK with
+  evidence, not findings.
+- Scope: the SECOND covering pass over B2 (exclusion-list audit), B9 (telemetry),
+  B10 (benchmarks). Re-covered the churn: the Run-4 JSON-path quoted-label fix
+  (`escape_json_key`/`json_extract_path`/`dynamic_json_path`), the Run-4 disconnect
+  `reason` fix, and the standing F-B10-1 (bench did not compile).
+
+### B2 — exclusion-list audit (one NEW CONFIRMED S2 fixed; drift clean; G2 closed)
+
+- **F-B2-2 (S2, CONFIRMED + FIXED — RED→green). The `dynamic_json_path` runtime-value
+  branch escaped nothing, so a runtime JSON key containing a `\` silently extracted
+  nil.** Run 4's critic owed a characterization of the runtime `.\"` || seg || `\"`
+  concatenation path (Run 4 fixed only the compile-time literal branches and BELIEVED
+  the runtime branch correct because it wraps in `."…"`). SQLite ground truth
+  (`b2_json_runtime.exs`, bundled 3.53.2): the runtime branch emits `$."<raw value>"`
+  with NO escaping — for the stored key `back\slash` (one backslash) the path
+  `$."back\slash"` returns **nil** (SQLite treats `\` as a JSON5 escape inside the
+  quoted label), while the compile-time branch (which doubles the backslash →
+  `$."back\\slash"`) returns the value `"bv"`. A runtime double-quote key was also
+  nil (that case was DOCUMENTED-unsupported in the moduledoc; the backslash case was
+  UNDOCUMENTED + silently wrong — same mechanism-class as F-B2-1, different code
+  path). Proven end-to-end through the real adapter/repo (`json_extract_path_test.exs`
+  +2: set `label` to `back\slash` / `quo"ted`, `select: d.meta[d.label]`) — RED both
+  nil. Fix: escape the runtime value for the JSON5 quoted-label grammar via nested
+  `replace(replace(<seg>, '\', '\\'), '"', '\"')` (double backslash first, then escape
+  the quote), mirroring the compile-time `escape_json_key`. `b2_json_fix.exs`
+  confirmed the escaped path resolves dot/backslash/quote/plain all correctly (the
+  fix also CLOSES the previously-documented double-quote limitation — moduledoc
+  comment updated to drop that caveat). GREEN: `json_extract_path_test.exs` 15/17 →
+  17 passed. Consequence class silent-wrong-results; reachability narrower than F-B2-1
+  (needs a runtime key segment AND a backslash in the value), rated S2 to match its
+  sibling.
+- **Exclusion drift — CLEAN.** `git log 5b32d11..HEAD -- test/test_helper.exs
+  ECTO_INTEGRATION_TAGS.md` shows ONLY Run 4's own fix commit (`1d775ef`), nothing
+  since — Runs 5–7 added tests but ZERO exclusions. Count re-confirmed: 14 tag
+  exclusions + 5 `{:location,…}` = **19** (matches Run 4). 16/18 shared files loaded
+  (all_test.exs: 7 ecto cases + 9 ecto_sql sql; lock.exs/query_many.exs skipped) —
+  matches the header. The two previously-stale rows re-isolated LIVE:
+  `--only values_list` ⇒ **5 passed**, `--only transaction_checkout_raises` ⇒ **1
+  passed** (identical to Run 4) — rows still accurate.
+- **Reconnect-time exclusion re-check — no exclusion rationale is connection-
+  lifecycle-sensitive.** Every exclusion rests on a SQLite grammar / storage-class /
+  architecture invariant (no native array/bitstring/duration type, no isolation
+  levels, no advisory locks, no schema/namespace, no ALTER COLUMN, no column-list ON
+  DELETE, `LIKE_DOESNT_MATCH_BLOBS`, ms-precision `strftime %f`, JSON-as-TEXT
+  schemaless, multi-row VALUES column uniformity) — none depends on per-connection
+  mutable state a reconnect could change. The one genuinely per-connection setting
+  (`foreign_keys` PRAGMA) backs NO exclusion (that tag is un-excluded) and is
+  re-proven per-connection incl. reconnects under B5 (Run 6). Determination recorded:
+  the reconnect re-check is a no-op for B2.
+- **G2 remainder CLOSED (mechanical doc).** `:concurrent_poolrepo_transactions`
+  confirmed orphaned (`rg` in `deps/` finds no such tag anywhere) → row DROPPED.
+  `:foreign_key_constraint` is a real tag (6 `@tag` sites in `repo.exs`), un-excluded,
+  and `--only foreign_key_constraint` ⇒ **6 passed** (rich FK diagnostics synthesize
+  the `<table>_<col>_fkey` name) → row rewritten `excluded`→`supported`. Closes
+  BACKLOG G2.
+
+### B9 — telemetry (event surface re-driven CLEAN; CI-OFF gap CLOSED)
+
+- **Churn re-verified live.** `disconnect/2` emits `%{conn, reason}` with
+  `reason == :normal` (Run 4's fix — `telemetry_test.exs` green). Run 7 added no
+  events: `git log 5b32d11..HEAD -- driver.ex fk_diagnostics.ex` = only `1d775ef`
+  (Run 4's disconnect fix); the `fk_diagnostics` span predates everything
+  (`794c121`, T3.4).
+- **Documented event surface re-driven under the ON build** (spot-verify, my own
+  runs): `telemetry_test.exs` 12 passed (connect start/stop + database/result_class,
+  disconnect+reason, checkout, txn trio begin/commit/rollback with `mode`
+  transaction+savepoint, handle_execute with sql + ok/error, declare/fetch/deallocate
+  with the documented `query`-vs-`cursor` split); `driver_statement_cache_test.exs`
+  14 passed (statement_cache miss/hit/miss/evicted with `cached_count` + `sql`);
+  `fk_diagnostics_test.exs` 13 passed (the `[:xqlite_ecto3, :fk_diagnostics, :*]` span
+  start `mode` + stop `violations_count`/`diagnostics_status`);
+  `telemetry_open_telemetry_test.exs` 5 passed. OTel mapping
+  (`telemetry/open_telemetry.ex`) BYTE-UNCHANGED since Run 4 (`git log 5b32d11..HEAD`
+  empty on its path) — spot-confirmed + green.
+- **[B9] CI gap CLOSED — new `telemetry_disabled` lane.** Config mechanism: the
+  adapter's compile-time flag in `config/test.exs` is now env-driven —
+  `config :xqlite_ecto3, :telemetry_enabled, System.get_env("XQLITE_ECTO3_TELEMETRY")
+  != "off"` (xqlite's own flag left ON, so no hex-dep `compile_env` mismatch; only the
+  adapter no-op path is exercised). New build-agnostic smoke file
+  `telemetry_disabled_smoke_test.exs` runs a `SELECT 1` through `Driver.handle_execute`
+  and asserts, per the compile-time flag (module-level `if @telemetry_enabled` — the
+  Telemetry module's own sanctioned pattern, so no type-checker "always true" warning
+  under warnings-as-errors): result `%{rows: [[1]]}` flows through the no-op span
+  (proving the disabled `span_with_stop_metadata` still unwraps `{value, metadata}`),
+  and `refute_received` on the adapter events (no-op `emit` fires nothing). New CI job
+  `telemetry_disabled` (free-tier ubuntu-latest, `needs: format_and_lint`, distinct
+  `v0-elixir-teloff-…` cache key, job-env `XQLITE_ECTO3_TELEMETRY: off`): step (a)
+  `MIX_ENV=test mix compile --force --warnings-as-errors`, step (b) `mix test
+  test/xqlite_ecto3/telemetry_disabled_smoke_test.exs`. **Both commands proven locally
+  from a warm ON `_build`**: compile exit 0 ("Generated xqlite_ecto3 app", no
+  warnings), smoke exit 0 (1 passed via the `refute` branch — confirming the adapter
+  recompiled OFF and no events fired); the same file also passes in the normal ON
+  suite (asserts the event fires). YAML validated (`yaml.safe_load`). Updated BACKLOG
+  [B9] → closed with the lane name.
+
+### B10 — benchmarks (F-B10-1 CLOSED; harness compiles + smoke-runs; methodology honest)
+
+- **F-B10-1 CLOSED — bench compiles + runs after the dep bump.** `bench/mix.exs`
+  bumped `ecto_sql "~> 3.13.0"`→`"~> 3.14"` and `ecto_sqlite3 "~> 0.22.0"`→`"~> 0.24"`;
+  the stale insert/8 comment blocks dropped; the local path deps (`xqlite_ecto3`,
+  `xqlite`) and the standalone-lock module comment kept. Lock refreshed via the
+  sanctioned HEX_HOME (unlocked ecto/ecto_sql/ecto_sqlite3/exqlite + decimal — 3.14
+  requires decimal ~> 3.0): ecto_sql 3.13.5→**3.14.0**, ecto 3.13.6→**3.14.1**,
+  ecto_sqlite3 0.22.0→**0.24.1**, exqlite 0.37.0→**0.39.0**, decimal 2.4.1→**3.1.1**;
+  rest unchanged. **Top-level `mix.lock` NOT touched** (`git status` clean on it);
+  bench/ diff = only mix.exs + mix.lock.
+- **Compile exit 0** (`MIX_ENV=prod MIX_OS_DEPS_COMPILE_PARTITION_COUNT=1
+  XQLITE_BUILD=true mix compile` in `bench/`): `xqlite_ecto3` (21 files) compiled
+  against ecto_sql 3.14 — the exact prior failure point (`connection.ex:2112` unknown
+  `:modifiers` key) is gone — plus exqlite 0.39.0 + ecto_sqlite3 0.24.1 + the xqlite
+  NIF (release). **Smoke run exit 0** at the smallest integer budget
+  (`BENCH_TIME=1 BENCH_WARMUP=0 BENCH_MEMORY_TIME=0 mix run bench.exs`): environment
+  printed (xqlite 3.53.2 / exqlite 3.53.3, disclosed-not-equalized), all 8 scenarios
+  produced benchee output, and the cancellation demo returned control in ~102 ms for a
+  100 ms timeout. Per ledger-first protocol NO figures recorded here (numbers only go
+  to the internal bench ledger from dedicated machines).
+- **Methodology honesty re-verified** (edits touched only mix.exs+lock, not
+  bench.exs/bench.ex): pragma-parity block intact (`@pragmas` journal_mode wal /
+  cache_size -64_000 / busy_timeout 5_000 applied to BOTH repos + `apply_pragma_
+  parity!` synchronous NORMAL + wal_autocheckpoint 1000), versions disclosed via
+  `versions/0`, cancellation labeled a capability demo, ledger-first note in
+  README/bench.exs. Closed BACKLOG [F-B10-1].
+
+### Verdict + dryness
+
+- 1 NEW S2 CONFIRMED+FIXED (F-B2-2, RED→green); 2 sanctioned gap-closures with
+  evidence ([B9] CI-OFF lane, [F-B10-1] bench dep bump); G2 doc remainder closed.
+  Zero new findings on B9 and B10. `mix verify` green at close (top-level).
+- Dryness: **B2 — a NEW confirmed (F-B2-2) surfaced, so NOT a clean covering run —
+  stays at 0 of 2, NOT DRY**; the runtime-escape fix re-wets B2 (re-wet list already
+  includes any `escape_json_key`/`json_extract_path`/`dynamic_json_path` change).
+  **B9 — event-surface re-drive CLEAN (0 new findings), first clean covering run over
+  the Run-4 churn (1 of 2), NOT DRY**; this run's OWN CI-lane + `config/test.exs`
+  env-var mechanism + smoke-test edits RE-WET the flag-config surface, so the owed
+  second pass must re-cover the OFF/ON compile path + smoke. **B10 — methodology
+  re-verified CLEAN (0 new findings), F-B10-1 CLOSED, first clean covering run (1 of
+  2), NOT DRY**; the dep bump (its own re-wet trigger) re-wets B10 → the owed second
+  pass re-covers the new ecto_sql-3.14 / ecto_sqlite3-0.24 stack.
+- Completeness critic: (1) F-B2-2's fix is a strict improvement (dot/backslash/quote
+  runtime keys now all resolve; the documented double-quote caveat is gone) — the only
+  residual JSON-path limitation is a runtime key value that is itself a control char
+  outside `\`/`"`, none observed problematic. (2) B9 residual: the `XqliteEcto3.
+  Telemetry` moduledoc "Event surface" list omits the `fk_diagnostics` span, but that
+  event IS fully documented (trigger + `mode`/`violations_count`/`diagnostics_status`
+  metadata) in the canonical `guides/wiring_telemetry.md` table and mapped generically
+  by the OTel translator — an opt-in feature event; a moduledoc/guide asymmetry, not a
+  contract gap, so NOT filed (minimal-diff; the user-facing guide is complete). (3)
+  The telemetry-OFF lane proves the no-op path COMPILES + a query flows through +
+  no adapter event fires; it does not exhaustively drive every OFF emission site (one
+  representative `handle_execute` span) — adequate for a smoke, deeper OFF coverage is
+  unwarranted (the macro no-op is uniform). (4) B10's smoke used the smallest integer
+  budget (BENCH_TIME=1; the knob is `String.to_integer`, so sub-second is impossible
+  without editing the harness) and did NOT record figures — reproducibility of any
+  published number still depends on a dedicated quiet machine per the bench README.
+  The owed SECOND clean covering pass on B9/B10 and the still-owed first clean run on
+  B2 remain for the next dryness lap.
