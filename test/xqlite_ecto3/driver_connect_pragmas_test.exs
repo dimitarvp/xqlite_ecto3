@@ -133,7 +133,7 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
 
       assert {:ok, %{rows: [[7]]}} = NIF.query(state.conn, "SELECT x FROM t", [])
 
-      assert {:error, {:read_only_database, _}} =
+      assert {:error, {:read_only_database, _code, _msg}} =
                NIF.execute(state.conn, "INSERT INTO t(x) VALUES (8)", [])
 
       assert pragma!(state.conn, "journal_mode") == "wal"
