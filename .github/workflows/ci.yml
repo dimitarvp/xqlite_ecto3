@@ -229,3 +229,44 @@ jobs:
 
       - name: Run tests
         run: mix xqlite_ecto3.test.seq
+
+  telemetry_disabled:
+    name: Telemetry disabled (no-op build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: format_and_lint
+    # Production default: telemetry compiles to no-ops. CI otherwise only
+    # ever builds the enabled config, so this lane covers the disabled path.
+    env:
+      XQLITE_ECTO3_TELEMETRY: "off"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.DEFAULT_ELIXIR }}
+          otp-version: ${{ env.DEFAULT_OTP }}
+
+      - name: Restore dependencies cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: v0-elixir-teloff-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            v0-elixir-teloff-${{ runner.os }}-otp-${{ steps.beam.outputs.otp-version }}-elixir-${{ steps.beam.outputs.elixir-version }}-mix-
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile with telemetry disabled (warnings as errors)
+        run: mix compile --force --warnings-as-errors
+        env:
+          MIX_ENV: test
+
+      - name: Smoke-test the no-op telemetry path
+        run: mix test test/xqlite_ecto3/telemetry_disabled_smoke_test.exs
