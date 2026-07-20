@@ -680,3 +680,179 @@ aggregate/stream). BUT:
   could add num_rows/`repo` enrichment (feature, not correctness) and the
   telemetry-OFF CI lane; B10 needs the dep bump before any figure is
   published.
+
+---
+
+## Run 5 — 2026-07-20 — dryness pass 1: X1 + B1 + X2
+
+- Commit at scan: `5a411ee` (after adapter Run 4). Deps compiled at xqlite
+  0.10.0 (`mix.lock` pin verified). Single Opus reviewer; direct `deps/`
+  source audit + live SQL-shape / re-raise / surface-delta evidence, every
+  runtime claim produced THIS session (scripts under scratchpad, driven via
+  `mix run` / `mix test`).
+- Scope: the SECOND covering pass over the three contract axes. Adversarial
+  priority on the churn `6d571e5..5a411ee` (the Runs 1–4 fixes) and the
+  FORWARD xqlite delta `v0.10.0..main` (7 commits: four maintainer-ruling
+  implementations + S3 fix pass round 3 + doc). Authority read from
+  `deps/xqlite/lib/xqlite.ex` `error_reason/0` @0.10.0 AS COMPILED,
+  `deps/db_connection` source, and `../xqlite` at HEAD for the forward delta.
+
+### X1 — API/error-shape contract (PRIMARY)
+
+Re-audited the ENTIRE `error_reason/0` union (48 shapes: 7 bare atoms + 41
+tuple variants) @0.10.0 against `wrap/1` + `to_constraints/2`. Standing
+surface CLEAN — every hot-path shape classified, the 0.10.0 3-tuple migration
+holds. Classification map re-derived: 7 bare atoms → atom clause; 8 tuple
+variants → dedicated clauses (constraint/sqlite_failure/sql_input/busy-set
+3-tuple/utf8); 17 binary-payload 2-tuples → generic `{tag, msg}` clause; and
+the **14 non-binary-payload shapes** (`:cannot_convert_to_sqlite_value`,
+`:cannot_execute_pragma`, `:cannot_open_database`, `:from_sql_conversion_failure`,
+`:integral_value_out_of_range`, `:invalid_authorizer_action`,
+`:invalid_column_index`, `:invalid_column_type`, `:invalid_on_error`,
+`:invalid_open_option`, `:invalid_pages_per_step`, `:invalid_parameter_count`,
+`:schema_parsing_error`, `:unsupported_data_type`) that fell to the inspect
+catch-all with `type: nil` (F-X1-2). Findings / decisions:
+
+- **F-X1-2 (S3, backlog) — DECIDED = FIXED (not ratified); RED→green.** The
+  house doctrine is CLAUDE.md-level: "errors must always carry the most
+  specific, structured information possible… no swallowing details into
+  generic wrappers… callers need maximum diagnostic information." Dropping a
+  KNOWN tag that lives right in `error_reason/0` to `type: nil` is exactly
+  that anti-pattern, and the reachable members surface at real Ecto
+  boundaries (`:cannot_open_database` at connect, `:integral_value_out_of_range`
+  on a bignum insert, `:cannot_execute_pragma` at connect). Ratification would
+  save a re-wet but lose machine-addressable classification — the doctrine
+  wins. Fix: three arity-bounded tag-preserving clauses (`{tag, _}` /
+  `{tag, _, _}` / `{tag, _, _, _}` with `is_atom(tag)`) inserted AFTER the
+  binary-payload `{tag, msg}` clause and BEFORE the atom/inspect fallbacks —
+  `type` = the tag, full shape preserved in the message via `inspect`,
+  `details` nil (no dedicated struct; consistent with the tag-only-error
+  convention). Bounded to arities 2–4 (the union's max) DELIBERATELY: a
+  genuinely-unknown 6-tuple still inspects with `type: nil` (the existing
+  catch-all test at `error_wrap_test.exs` holds). RED confirmed first (4 new
+  tests failed, and the Elixir 1.20 type checker flagged the
+  `dynamic(nil) == :cannot_open_database` disjointness — corroborating the
+  drop); GREEN after the fix. Tests: `error_wrap_test.exs` (+4 —
+  map-payload / atom-payload 2-tuple, int-payload 3-tuple, 4-tuple; each a
+  structured `.type` assertion, not message text). `lib/xqlite_ecto3/error.ex`.
+
+- **DecimalPrecisionError raise re-verified INDEPENDENTLY from db_connection
+  source (not the Remedy ledger's word).** A raise out of
+  `DBConnection.Query.encode/3` is caught by `encode/5`
+  (`deps/db_connection/lib/db_connection.ex:1457-1468`, `catch kind, reason`)
+  → `raised_close/7` (`:1570-1574`) runs `run_close` which calls
+  `cleanup(conn, :handle_close, …)` — it closes the PREPARED QUERY, **not the
+  connection** (no `disconnect` on this path) → returns the 4-tuple
+  `{:error, %Err{}, stack, meter}` → `log/4` (`:1698`) → `log_result/1`
+  (`:1732`) `:erlang.raise(:error, reason, stack)` — the SAME struct + original
+  stacktrace, UNCHANGED. Only `DBConnection.EncodeError` is special-cased
+  (`maybe_encode/4:1474` → re-prepare); `DecimalPrecisionError` is not, so both
+  encode entry points re-raise it unchanged and keep the connection. RUNTIME
+  confirmed end-to-end (`decimal_reraise_probe.exs`, minimal pool_size:1 repo +
+  a `[:xqlite_ecto3, :disconnect]` watcher): `Repo.insert` of
+  `Decimal.new("12345678901234567890.12345")` raised
+  `XqliteEcto3.DecimalPrecisionError` with `.value` == the offending Decimal,
+  `disconnect_fired = false`, and a subsequent `19.99` insert + `get!`
+  round-trip succeeded on the same pool.
+
+- **FORWARD blast check (xqlite v0.10.0..main) — CLEAN; the CI-break class did
+  NOT recur.** `error_reason/0` changed **ADDITIVELY only**:
+  +`:extension_loading_disabled` +`:invalid_conflict_strategy` (two BARE atoms).
+  Both are classified correctly by `wrap/1`'s bare-atom clause (tag preserved),
+  and both are UNREACHABLE from the adapter (no `load_extension` /
+  `changeset_apply` in the consumption surface). `native/…/error.rs` has ZERO
+  changes in the range. `nif.rs` = exactly 20 `#[rustler::nif]` →
+  `#[rustler::nif(schedule = "DirtyIo")]` attribute flips (bodies byte-identical
+  — scheduler-thread routing, invisible to the adapter). The one non-cosmetic
+  Rust result-path change (`XqliteQueryResult`'s `columns` now encoded via the
+  fallible `encode_column_names`/`encode_text` for graceful OOM, F-A12-3) keeps
+  a **byte-identical success shape** (same `atoms::columns()` key, same list of
+  binaries; only the OOM path degrades panic→`{:internal_encoding_error, …}`,
+  an atom already in the 0.10.0 union). No `error_reason/0` tuple-arity,
+  result-map key, or sentinel atom moved.
+
+### B1 — behaviour conformance from source
+
+The churn re-wet B1 (SQL.Connection override internals + DBConnection-facing
+behavior). Re-verified the churn-touched overrides' SEMANTIC return shapes LIVE
+(arity/`@impl` is compile-guaranteed by w-a-e — the value-add is shape):
+
+- **Direct-call SQL census (`b1_sql_probe.exs`, no repo) 6/6 PASS:** `limit/2`
+  `%{limit: nil, offset: nil}` → `[]` and `%{limit: nil, offset: present}` →
+  `" LIMIT -1"` (valid iodata; `%Ecto.Query{}` always carries both fields);
+  `quote_entity/1` doubles an embedded `"` in BOTH a table and a column
+  identifier (`ev"il`/`a"b` → `"ev""il"`/`"a""b"`); `escape_string/1` keeps a
+  backslash single (`C:\x` → `'C:\x'`, no `\\`); `reference_on_delete/1`
+  `{:nilify, cols}` raises `ArgumentError` (loud refusal) while `:nilify_all`
+  still emits `ON DELETE SET NULL`.
+- **Churn-cluster test re-runs 171/171 PASS** (json_extract quoted-label,
+  disconnect `reason`, cached-stmt `changes`-delta, decimal encode-raise, types
+  round-trip, migration, query features).
+- **disconnect/2**: returns `:ok`, now binds `err` and emits
+  `%{conn, reason: err}` — conformant DBConnection callback shape (return `:ok`).
+- **encode-raise path**: connection KEPT + exception UNCHANGED, confirmed from
+  db_connection source (cited under X1 above) and runtime.
+- **finish_cached_stmt**: returns `{:ok, %{columns, rows, num_rows, changes}}`
+  with `changes` gated on the `total_changes` delta — verified via
+  `driver_statement_cache_test.exs`.
+
+Zero new findings. B1-1 (S3, `dump_cmd/3` unreachable-raise nit) UNCHANGED in
+backlog.
+
+### X2 — cross-repo blast radius
+
+Re-enumerated the xqlite consumption surface at HEAD (reproducible `rg` over all
+`lib/**/*.ex`, `XqliteNIF|NIF` unified + deduped): **38 XqliteNIF-family + 7
+Xqlite.\*** distinct functions. (Run 1 reported 36+5 by a different count method;
+the SAME method at Run 1's base `6d571e5` gives 37+7 — the count difference is
+methodology, not surface drift.) **Churn-attributable surface delta = exactly one
+new site: `XqliteNIF.total_changes/1`** (via `conn_total_changes/1`, the F-X2-1
+fix — absent at `6d571e5`, present at `5a411ee`; 0 removed; Xqlite.\* unchanged).
+Already covered by Run 1's blast-radius table (`changes`/`total_changes` row:
+relies on `{:ok, non_neg_integer}`, LOUD-ish, falls to `0` on error — the new
+`conn_total_changes` does exactly that).
+
+**Forward-delta walk through the blast-radius table (v0.10.0..main), row by row:**
+
+| blast-radius row | shape | touched by v0.10.0..main? |
+|---|---|---|
+| `query_with_changes[_cancellable]` `{columns,rows,num_rows,changes}` | result map | NO — nif.rs attribute-only; `columns` encoder graceful-OOM but success byte-identical |
+| `stmt_multi_step_cancellable` `{rows, done}` | result map | NO |
+| `stmt_prepare` `:multiple_statements` / `{:cannot_execute,_}` | sentinels | NO |
+| `stream_fetch` `{rows}` \| `:done` | result/sentinel | NO |
+| `transaction_status` / `txn_state` `{:ok,bool}` / `{:ok,:none\|:read\|:write}` | shapes | NO |
+| `query` `{rows}` | result map | NO |
+| `changes` / `total_changes` `{:ok,non_neg_integer}` | shape | NO |
+| begin/commit/rollback/savepoint/… `:ok \| {:error,_}` | shape | NO |
+| `set_pragma`/`open`/`open_readonly` `{:ok,_} \| {:error,_}` | shape | NO |
+| all error reasons → `error_reason/0` | union | **YES, additive only** (+2 bare atoms, both unreachable from surface, both atom-clause-classified) |
+
+Verdict: the only row that moved is "all error reasons," and only additively.
+No result-map key, sentinel atom, or shape a `with`/`case` relies on changed.
+Zero new findings.
+
+### Verdict + dryness
+
+- 1 S3 backlog item RESOLVED as FIXED (F-X1-2, RED→green). 0 new S0–S2. 0 new
+  S3. X1 standing surface CLEAN, B1 CLEAN, X2 CLEAN. Forward blast CLEAN across
+  all three (additive-only union growth; no shape regression). `mix verify`
+  green at close.
+- Dryness: NONE go DRY. **X1 NOT DRY** — the F-X1-2 resolution CHURNED `wrap/1`
+  (a listed re-wetter), so a covering pass over the three new clauses is owed
+  (the standing audit itself was clean). **B1 NOT DRY** — first clean covering
+  run over the Runs-2–4 override/DBConnection churn (1 of 2), one more owed.
+  **X2 NOT DRY** — first clean covering run over the F-X2-1 `total_changes`
+  churn (1 of 2), one more owed. Re-wetters recorded in REVIEW_AXES.md.
+- Completeness critic: the F-X1-2 fix keeps `details: nil` for the 14 shapes
+  (tag + inspected message only) — a future pass could add dedicated structs
+  for the reachable ones (`:cannot_open_database`, `:integral_value_out_of_range`)
+  if a consumer needs field-level access, but that is enrichment, not a
+  correctness gap. The forward delta was checked for SHAPE movement only; the
+  four maintainer rulings (busy per-event elapsed, reader-NIF DirtyIo, TEXT-OOM
+  graceful, changeset `:replace` keep-abort) are BEHAVIORAL and were confirmed
+  not to touch any adapter-consumed contract — but their BEHAVIORAL effects
+  (e.g. busy timing under the adapter's `busy_timeout`, DirtyIo pool occupancy
+  under adapter read volume) are a B3/B8 concern, not re-audited here (out of
+  X1/B1/X2 scope). `to_constraints/2` was re-read but not re-fuzzed against a
+  new Ecto matcher version (no ecto_sql bump in the churn). The owed second
+  covering pass on each axis remains for the next dryness lap.

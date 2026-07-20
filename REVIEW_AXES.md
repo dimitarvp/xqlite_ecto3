@@ -21,6 +21,23 @@ bar one nit (B1-1: `dump_cmd/3` raises but is unreachable). NOT DRY
 (one covering pass). Re-wets on: any new `@behaviour`, any override
 of a SQL-adapter default, an Ecto/ecto_sql minor bump, a DBConnection
 callback-contract change.
+COVERING RE-RUN (Run 5, 2026-07-20 — dryness pass 1): the churn (Runs 2–4 fixes)
+re-wet B1 — it changed SQL.Connection override internals (limit/2, quote_entity/1,
+escape_string/1, json_extract_path) and DBConnection-facing behavior (disconnect/2
+now emits reason; encode_param can raise DecimalPrecisionError inside
+`DBConnection.Query.encode/3`; finish_cached_stmt result shaping). Re-verified the
+churn-touched overrides' SEMANTIC return shapes LIVE this run: direct-call SQL
+census 6/6 (limit nil+offset→`" LIMIT -1"`, plain→`[]`; quote_entity doubles `"`;
+escape_string keeps `\` single; reference_on_delete `{:nilify,cols}` raises loud,
+`:nilify_all` still emits the clause) + churn-cluster test re-runs 171/171
+(json_extract quoted-label, disconnect `reason`, cached-stmt `changes`-delta,
+decimal encode-raise). The encode-raise path re-confirmed from db_connection
+SOURCE: a raise out of `Query.encode` is caught in `encode/5` (`db_connection.ex:1457`),
+the connection is KEPT (`raised_close`→`run_close` closes only the query via
+`:handle_close`; only `DBConnection.EncodeError` diverts to re-prepare), and the
+exception surfaces UNCHANGED via `:erlang.raise` at `log_result` (`:1732`). Zero
+new findings. DRYNESS: **NOT DRY** — first clean covering run over the Runs-2–4
+churn (1 of 2), one more owed. Re-wet triggers UNCHANGED.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.
@@ -225,6 +242,27 @@ non-binary-payload shapes fall to inspect catch-all). NOT DRY. Re-wets
 on: ANY `error_reason/0` typespec change in xqlite (this is the axis
 that broke CI), any new `Error.wrap/1` clause, any Ecto constraint-
 type addition.
+COVERING RE-RUN (Run 5, 2026-07-20 — dryness pass 1): re-audited the FULL
+`error_reason/0` union (48 shapes) @ deps/xqlite 0.10.0 AS COMPILED against
+`wrap/1` + `to_constraints/2` — standing surface CLEAN, zero new findings.
+F-X1-2 DECIDED = FIXED not ratified (house-doctrine ruling): added three
+arity-bounded (2-/3-/4-tuple) tag-preserving `wrap/1` clauses so the 14
+non-binary-payload shapes keep their tag as `type` (RED→green,
+`error_wrap_test.exs` +4). The DecimalPrecisionError raise out of
+`DBConnection.Query.encode/3` re-verified from db_connection SOURCE (encode/5
+`db_connection.ex:1457` → `raised_close:1570` closes the QUERY via `:handle_close`,
+not the connection → 4-tuple → `log:1698` → `log_result:1732` `:erlang.raise`
+unchanged) AND runtime-confirmed (beyond-precision Decimal raised unchanged,
+`disconnect_fired=false`, same pool served the next insert+select). FORWARD blast
+(xqlite v0.10.0..main, 7 commits): `error_reason/0` changed ADDITIVELY only
+(+`:extension_loading_disabled` +`:invalid_conflict_strategy`, both bare atoms
+classified by wrap/1's atom clause, both UNREACHABLE from the adapter surface);
+`error.rs` ZERO change; nif.rs = 20 DirtyIo attribute-only flips; the
+`XqliteQueryResult` `columns` encoding went graceful-OOM but success shape is
+byte-identical. NO X1-contract shape moved — the 2-vs-3-tuple CI-break class did
+NOT recur. DRYNESS: the standing audit was clean, but resolving F-X1-2 CHURNED
+`wrap/1` (a listed re-wetter) → **NOT DRY**, one covering pass owed over the new
+clauses. Re-wet triggers UNCHANGED.
 
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
@@ -238,6 +276,24 @@ F-X2-1 (S2, FIXED) — the statement-cache path re-derived
 result-map key rename in xqlite (esp. `query_with_changes`), any new
 `XqliteNIF.*`/`Xqlite.*` call site, any sentinel-atom rename
 (`:done`, `:multiple_statements`).
+COVERING RE-RUN (Run 5, 2026-07-20 — dryness pass 1): the F-X2-1 fix re-wet X2
+(the driver `total_changes` threading = a new call site). Re-enumerated the surface
+at HEAD 5a411ee (reproducible rg over all `lib/**/*.ex`, `XqliteNIF|NIF` unified):
+**38 XqliteNIF-family + 7 Xqlite.\*** (Run 1's 36+5 used a different count method;
+same method at Run 1's base 6d571e5 = 37+7). Churn-attributable delta = exactly
+**+1 site: `XqliteNIF.total_changes/1`** (via `conn_total_changes/1`, absent at base;
+0 removed; Xqlite.\* unchanged) — already covered by the blast-radius table's
+`changes`/`total_changes` row (relies on `{:ok, non_neg_integer}`, falls to 0 on
+error — the new site does exactly that). Walked the FORWARD xqlite delta
+(v0.10.0..main) through the table ROW BY ROW: every result-map row
+(query_with_changes/stmt_multi_step/query/stream_fetch/txn_state), every sentinel
+(`:done`/`:multiple_statements`/`:cannot_execute`), and every txn/pragma/open row
+UNTOUCHED (nif.rs = 20 DirtyIo attribute-only flips, bodies byte-identical;
+`error.rs` zero change; `XqliteQueryResult.columns` graceful-OOM but success shape
+byte-identical). Only the "all error reasons" row moved, ADDITIVELY (+2 bare atoms,
+both unreachable from the surface). Zero new findings. DRYNESS: **NOT DRY** — first
+clean covering run over the F-X2-1 churn (1 of 2), one more owed. Re-wet triggers
+UNCHANGED.
 
 ## Release-readiness (adapter-specific additions)
 

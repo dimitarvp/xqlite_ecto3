@@ -101,19 +101,6 @@ after the S0–S2 burn-down.
   "x")` raises). Latent (narrow trigger); consider returning `[]` (raw
   error) or synthesizing the `<source>_<field>_fkey` name from
   `options[:source]`. (Run 2, B5)
-- [X1-2] `Error.wrap/1`'s generic `{tag, msg}` clause requires
-  `is_binary(msg)`, so ~14 documented `error_reason/0` shapes with a
-  map/int/atom/tuple payload fall to the `inspect` catch-all and lose
-  their `type` tag (`:integral_value_out_of_range`,
-  `:cannot_convert_to_sqlite_value`, `:cannot_execute_pragma`,
-  `:invalid_parameter_count`, `:invalid_column_type`,
-  `:from_sql_conversion_failure`, `:cannot_open_database`,
-  `:invalid_open_option`, `:invalid_pages_per_step`,
-  `:invalid_authorizer_action`, `:invalid_column_index`,
-  `:unsupported_data_type`, `:schema_parsing_error`,
-  `:invalid_on_error`). Still valid exceptions, never misclassified —
-  unclassified. Completeness. A 2nd X1 pass decides: add clauses or
-  ratify inspect-fallback as intended for exotic shapes. (Run 1)
 - [B1-1] `dump_cmd/3` is a required `Ecto.Adapter.Structure` callback
   (no `@optional_callbacks`) but the adapter `raise`s. Unreachable via
   mix tasks (`mix ecto.dump` uses `structure_dump/2`), so harmless —
@@ -138,6 +125,24 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-20 [X1-2] (S3) `Error.wrap/1`'s generic `{tag, msg}` clause required
+  `is_binary(msg)`, so ~14 `error_reason/0` shapes with a map/int/atom/tuple
+  payload fell to the `inspect` catch-all and lost their `type` tag (e.g.
+  `{:integral_value_out_of_range, i, i}`, `{:invalid_parameter_count, map}`,
+  `{:cannot_open_database, s, i, s}`). RESOLVED by the dryness-pass ruling: FIXED,
+  not ratified. House doctrine (CLAUDE.md-level) — "errors must always carry the
+  most specific, structured information possible; no swallowing details into
+  generic wrappers" — tilts against dropping a KNOWN tag that lives right in the
+  union. Added three arity-bounded tag-preserving clauses (2-/3-/4-tuple with an
+  atom head) before the atom/inspect fallbacks: `type` is set to the tag, the full
+  shape is preserved in the message via `inspect`, `details` stays nil (no
+  dedicated struct — consistent with the tag-only-error convention). Bounded to
+  arities 2–4 (the union's max) so a genuinely-unknown 6-tuple still inspects with
+  `type: nil` (existing catch-all test holds). RED→green in `error_wrap_test.exs`
+  (+4: map/atom 2-tuple, int 3-tuple, 4-tuple — structured `.type` assertions).
+  The reachable members (`:cannot_open_database` at connect,
+  `:integral_value_out_of_range` on bignum insert, `:cannot_execute_pragma` at
+  connect) now surface a machine-addressable tag. (Run 5, X1)
 - 2026-07-20 [F-B4-1] (S1) A `:decimal` column maps to `DECIMAL` (NUMERIC
   affinity); the encode boundary bound `Decimal.to_string(d, :normal)` as
   TEXT and SQLite coerced it to float64 at write, silently rounding decimals
