@@ -146,6 +146,59 @@ defmodule XqliteEcto3.CancellationTest do
     end
   end
 
+  describe "timeout through a real DBConnection pool" do
+    setup do
+      db =
+        Path.join(
+          System.tmp_dir!(),
+          "xqlite_ecto3_cancel_pool_#{:erlang.unique_integer([:positive])}.db"
+        )
+
+      {:ok, pool} =
+        DBConnection.start_link(Driver,
+          database: db,
+          pool_size: 1,
+          journal_mode: :memory,
+          busy_timeout: 1_000
+        )
+
+      on_exit(fn -> File.rm(db) end)
+      {:ok, pool: pool}
+    end
+
+    defp pool_exec(pool, sql, opts) do
+      DBConnection.prepare_execute(
+        pool,
+        %XqliteEcto3.Query{statement: sql, ref: make_ref()},
+        [],
+        opts
+      )
+    end
+
+    # The pool applies its own checkout deadline from the same :timeout, so a
+    # timed-out query surfaces a structured ConnectionError promptly and the pool
+    # keeps serving. (DBConnection recycles the connection at the deadline — as
+    # with any DBConnection adapter — which the direct-driver tests above cannot
+    # observe; this pins the pool-level contract, not connection identity.)
+    @tag capture_log: true
+    test "cancels promptly with a structured error and the pool keeps serving", %{
+      pool: pool,
+      slow_sql: sql
+    } do
+      started = System.monotonic_time(:millisecond)
+      result = pool_exec(pool, sql, timeout: 100)
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      assert {:error, %DBConnection.ConnectionError{}} = result
+
+      assert elapsed < 2_000,
+             "pooled timeout took #{elapsed}ms; uncancelled the query runs ~3500ms"
+
+      # Self-heals: a subsequent query on the same pool succeeds.
+      assert {:ok, _q, %{rows: [[1]]}} = pool_exec(pool, "SELECT 1", timeout: 5_000)
+    end
+  end
+
   describe "direct NIF cancellation" do
     test "NIF supports cancel tokens and reports :operation_cancelled", %{
       state: state,
