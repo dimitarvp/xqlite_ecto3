@@ -13,9 +13,14 @@ coverage state.
 ### B1. Behaviour conformance from source
 Ecto.Adapter / .Queryable / .Schema / .Transaction / .Migration /
 .Structure + DBConnection callbacks verified against `deps/` SOURCE,
-never docs-from-memory. Coverage: wave-1 verified the 17 real
-`Ecto.Adapters.SQL.Connection` callbacks; the full behaviour diff
-(Adapter/Transaction/Migration/Structure + DBConnection) is owed.
+never docs-from-memory. Coverage: Run 1 covered the full behaviour
+diff (Adapter/Schema/Queryable/Transaction/Storage/Structure/
+Migration + the 17 SQL.Connection cbs) — arity guaranteed by the
+warnings-as-errors compile, override return-shapes checked, CLEAN
+bar one nit (B1-1: `dump_cmd/3` raises but is unreachable). NOT DRY
+(one covering pass). Re-wets on: any new `@behaviour`, any override
+of a SQL-adapter default, an Ecto/ecto_sql minor bump, a DBConnection
+callback-contract change.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.
@@ -103,12 +108,27 @@ Pin with contract tests IN THIS REPO: every xqlite error shape the
 adapter matches on; every xqlite function+arity it calls. Version
 lockstep policy (`~>` bounds) + a compatibility row in both READMEs;
 release trains (which xqlite versions does an adapter change need?).
-Coverage: NOT BUILT — a standing charter deliverable.
+Coverage: Run 1 audited the entire `error_reason/0` union (48 shapes)
+@0.10.0 against `Error.wrap/1` + `to_constraints/2`. Hot path CLEAN
+(0.10.0 3-tuple migration complete). Found F-X1-1 (S3, FIXED —
+`:sqlite_failure` nil-message dropped) + F-X1-2 (S3, BACKLOG — ~14
+non-binary-payload shapes fall to inspect catch-all). NOT DRY. Re-wets
+on: ANY `error_reason/0` typespec change in xqlite (this is the axis
+that broke CI), any new `Error.wrap/1` clause, any Ecto constraint-
+type addition.
 
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
-before it lands, every time. Coverage: operative practice (the
-0.9.0 wrapper sweep did exactly this); not yet mechanized.
+before it lands, every time. Coverage: Run 1 enumerated the full
+surface (36 `XqliteNIF.*` + 5 `Xqlite.*`) and produced the durable
+blast-radius table (REVIEW_LEDGER Run 1) ranking each site by
+silent-vs-loud break mode. The map already earned its keep: it caught
+F-X2-1 (S2, FIXED) — the statement-cache path re-derived
+`query_with_changes`'s sticky-changes discipline and got it wrong
+(DDL/PRAGMA leaked prior DML's `num_rows`). NOT DRY. Re-wets on: any
+result-map key rename in xqlite (esp. `query_with_changes`), any new
+`XqliteNIF.*`/`Xqlite.*` call site, any sentinel-atom rename
+(`:done`, `:multiple_statements`).
 
 ## Release-readiness (adapter-specific additions)
 

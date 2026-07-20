@@ -32,6 +32,25 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
+- [X1-2] `Error.wrap/1`'s generic `{tag, msg}` clause requires
+  `is_binary(msg)`, so ~14 documented `error_reason/0` shapes with a
+  map/int/atom/tuple payload fall to the `inspect` catch-all and lose
+  their `type` tag (`:integral_value_out_of_range`,
+  `:cannot_convert_to_sqlite_value`, `:cannot_execute_pragma`,
+  `:invalid_parameter_count`, `:invalid_column_type`,
+  `:from_sql_conversion_failure`, `:cannot_open_database`,
+  `:invalid_open_option`, `:invalid_pages_per_step`,
+  `:invalid_authorizer_action`, `:invalid_column_index`,
+  `:unsupported_data_type`, `:schema_parsing_error`,
+  `:invalid_on_error`). Still valid exceptions, never misclassified —
+  unclassified. Completeness. A 2nd X1 pass decides: add clauses or
+  ratify inspect-fallback as intended for exotic shapes. (Run 1)
+- [B1-1] `dump_cmd/3` is a required `Ecto.Adapter.Structure` callback
+  (no `@optional_callbacks`) but the adapter `raise`s. Unreachable via
+  mix tasks (`mix ecto.dump` uses `structure_dump/2`), so harmless —
+  but consider a structured `{:error, ...}` or a moduledoc note. Same
+  entry: `storage_up/1` MatchErrors on `XqliteNIF.open` failure
+  instead of returning `{:error, term}` (near-impossible path). (Run 1)
 - [S3] docs `groups_for_modules` lists 3 `@moduledoc false` modules
   (dead config). (wave-1)
 - [S3] Untracked `.expert/` root clutter — gitignore or remove
@@ -50,5 +69,12 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-20 [F-X2-1] (S2) statement-cache path leaked sticky
+  `sqlite3_changes()` as `num_rows` for columnless non-DML (DDL/
+  PRAGMA) statements — fixed via `total_changes`-delta gating in the
+  driver, RED→green in `driver_statement_cache_test.exs`. (Run 1)
+- 2026-07-20 [F-X1-1] (S3) `wrap/1` `:sqlite_failure` clause dropped
+  the type-permitted nil-message variant — fixed, RED→green in
+  `error_wrap_test.exs`. (Run 1)
 - 2026-07-17 xqlite dep 0.8.0 → 0.9.0 (lock bump, hex-mode verify).
 - 2026-07-17 erl_crash.dump: autopsied, dev-noise, stays gitignored.
