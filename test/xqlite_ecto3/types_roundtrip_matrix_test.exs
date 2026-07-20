@@ -12,6 +12,7 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
   loud rejection.
   """
   use XqliteEcto3.AdapterCase, async: true
+  use ExUnitProperties
 
   defmodule Rec do
     use Ecto.Schema
@@ -159,6 +160,42 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
         end
 
       assert Decimal.equal?(err.value, dec)
+    end
+
+    # Fuzz the ~15–17 significant-digit boundary where the accept/reject verdict
+    # flips. The invariant is total: for ANY finite Decimal, an insert either
+    # stores a value equal to it or raises the precision error — there is no
+    # third "stored but silently different" outcome. A guard false-accept (a
+    # value the guard passes but the DECIMAL column rounds) would fail the
+    # equality assertion; a guard false-reject would fail nothing here but is
+    # covered by the exact-round-trip examples above.
+    property "every finite Decimal either round-trips exactly or is refused, never silently mismatched" do
+      check all(dec <- finite_decimal()) do
+        if XqliteEcto3.DecimalPrecision.representable?(dec) do
+          loaded = roundtrip(:dec_field, dec)
+
+          assert Decimal.equal?(loaded, dec),
+                 "representable Decimal did not round-trip: " <>
+                   "#{Decimal.to_string(dec, :normal)} stored as #{inspect(loaded)}"
+        else
+          assert_raise XqliteEcto3.DecimalPrecisionError, fn -> roundtrip(:dec_field, dec) end
+        end
+      end
+    end
+  end
+
+  # sign * coefficient * 10^exponent, with the coefficient's digit count swept
+  # across 1..25 so the stream straddles float64's ~15–17 significant-digit
+  # exactness threshold in both directions.
+  defp finite_decimal do
+    gen all(
+          sign <- StreamData.member_of([1, -1]),
+          ndigits <- StreamData.integer(1..25),
+          coefficient <-
+            StreamData.integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
+          exponent <- StreamData.integer(-20..20)
+        ) do
+      Decimal.new(sign, coefficient, exponent)
     end
   end
 end
