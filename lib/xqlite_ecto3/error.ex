@@ -205,6 +205,22 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: msg, type: tag}
   end
 
+  # A tagged reason whose payload is not a plain message (integers, atoms,
+  # maps, nested tuples) still carries a meaningful tag — keep it as `type`
+  # so callers can classify it, with the full shape preserved in the message.
+  # Bounded to the arities the reason union actually uses (2–4 elements).
+  def wrap({tag, _} = reason) when is_atom(tag) do
+    %__MODULE__{message: inspect(reason), type: tag}
+  end
+
+  def wrap({tag, _, _} = reason) when is_atom(tag) do
+    %__MODULE__{message: inspect(reason), type: tag}
+  end
+
+  def wrap({tag, _, _, _} = reason) when is_atom(tag) do
+    %__MODULE__{message: inspect(reason), type: tag}
+  end
+
   def wrap(reason) when is_atom(reason) do
     %__MODULE__{message: Atom.to_string(reason), type: reason}
   end

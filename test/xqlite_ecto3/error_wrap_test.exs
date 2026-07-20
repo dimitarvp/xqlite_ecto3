@@ -176,6 +176,36 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
   end
 
+  describe "wrap/1 on tagged tuples with a non-binary payload" do
+    test "two-element tuple with a map payload keeps its tag as type" do
+      e = Error.wrap({:invalid_parameter_count, %{provided: 1, expected: 2}})
+      assert e.type == :invalid_parameter_count
+      assert is_binary(e.message)
+      assert e.details == nil
+    end
+
+    test "two-element tuple with an atom payload keeps its tag as type" do
+      e = Error.wrap({:unsupported_data_type, :some_weird_type})
+      assert e.type == :unsupported_data_type
+      assert is_binary(e.message)
+      assert e.details == nil
+    end
+
+    test "three-element tuple with integer payloads keeps its tag as type" do
+      e = Error.wrap({:integral_value_out_of_range, 64, 12_345_678_901_234_567_890})
+      assert e.type == :integral_value_out_of_range
+      assert is_binary(e.message)
+      assert e.details == nil
+    end
+
+    test "four-element tuple keeps its tag as type" do
+      e = Error.wrap({:cannot_open_database, "/bad/path", 14, "unable to open database file"})
+      assert e.type == :cannot_open_database
+      assert is_binary(e.message)
+      assert e.details == nil
+    end
+  end
+
   describe "wrap/1 catch-all" do
     test "inspects arbitrary reasons without crashing" do
       e = Error.wrap(%{some: "weird shape"})
