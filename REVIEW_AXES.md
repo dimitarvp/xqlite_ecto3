@@ -32,8 +32,21 @@ probes: **the two-tag status probe** (`:transaction_checkout_raises`,
 either quietly passing or the suite isn't green); ledger
 reconciliation (orphaned `:concurrent_poolrepo_transactions`; stale
 `:foreign_key_constraint` row — feature shipped; stale headers).
-Coverage: strong primary ledger; ECTO_INTEGRATION_TAGS.md drifted
-(wave-1); README "suites run green" claim unverified for two tags.
+Coverage: Run 4 did the full disposition — enumerated all 19 exclusions,
+ran every non-obvious one un-excluded to classify by ground truth
+(18/19 legit-limitation, all failing exactly as claimed; 0 stale
+exclusions). The two-tag probe RESOLVED: `:values_list` (5 passed, incl.
+`delete_all`) and `:transaction_checkout_raises` (1 passed) both quietly
+pass — their `ECTO_INTEGRATION_TAGS.md` rows were STALE (corrected +
+header refreshed). Found F-B2-1 (S2, FIXED) behind the type.exs:362
+exclusion — compile-time `json_extract_path` emitted bare `$.<key>` not
+quoted-label `$."<key>"`, so keys with `.`/`"`/`\` silently returned nil;
+after the fix that exclusion fails only at its documented boolean line.
+Corrected logging.exs:74's factually-wrong rationale (handler DOES fire;
+real cause is TEXT UUID storage). NOT DRY (one covering pass). Re-wets on:
+any new exclusion, any `escape_json_key`/`json_extract_path`/
+`dynamic_json_path` change, an Ecto/ecto_sql minor bump that adds/renames
+shared cases, a `binary_id_storage` default change.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
@@ -168,13 +181,34 @@ both (probe: does it?); standard ecto telemetry contract
 (event names/measurements/metadata) verified against Ecto.Repo's
 own docs/source; extras (txn_state, connection_stats,
 statement-cache hit/miss/evicted, OTel mapping) each need a
-consumer-side assertion. Coverage: events + OTel mapping tested;
-statement-cache events pinned; both-configs-in-CI unverified.
+consumer-side assertion. Coverage: Run 4 drove EVERY documented event
+live under the telemetry-ON build and captured actual measurements +
+metadata. Fixed an S2-class contract mismatch: `disconnect` dropped the
+documented `reason` key (callback arg was ignored) — now emitted; and
+aligned the moduledoc to the observed emission (removed a never-emitted
+`repo` on connect and the impossible `num_rows` *measurement* — span stop
+measurements are fixed to monotonic_time+duration; split declare's
+`query`/`sql` from fetch/deallocate's `cursor`; `mode` is on all txn
+callbacks, not begin-only). OTel mapping re-verified correct + traceable;
+statement-cache events confirmed. Both-configs-in-CI gap CONFIRMED (no
+lane flips the flag; OFF path compiles clean locally) → BACKLOG. NOT DRY.
+Re-wets on: any driver emission-site change, a new event, a moduledoc
+event-surface edit, a `:telemetry.span`-vs-`emit` swap, an OTel-mapping
+key change.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean
-checkout first. Coverage: bench/ exists; ledger-first policy;
-no clean-checkout reproduction yet.
+checkout first. Coverage: Run 4 audited the surface. Methodology is
+HONEST — pinned-identical pragmas (WAL/synchronous NORMAL/64 MB
+cache/5 s busy/autocheckpoint 1000), versions disclosed-not-equalized,
+cancellation labeled a demo, ledger-first (no committed figures),
+scenarios span writes AND reads. BUT the harness does NOT compile:
+`bench/mix.exs` pins `ecto_sql ~> 3.13.0` (stale lock) while the adapter
+now requires `~> 3.14` (uses `Ecto.Migration.Table.:modifiers`) → compile
+fails on the unknown struct key. F-B10-1 (S3) → BACKLOG; figures are
+unreproducible until the dep bump. NOT DRY. Re-wets on: any `bench/`
+dep-version change, any adapter `ecto_sql` floor bump, a new bench
+scenario.
 
 ## Cross-repo axes (one system)
 

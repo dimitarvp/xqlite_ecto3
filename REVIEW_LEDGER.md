@@ -513,3 +513,170 @@ RED→green (via real `Repo.insert`, not just the encode helper):
 full seq suite — "All tests passed!"). B4 re-wet by this change (see
 REVIEW_AXES.md); the doc-vs-behaviour claim that decimals "silently lose
 precision" is now false — they are refused.
+
+---
+
+## Run 4 — 2026-07-20 — first-pass completion: B2 + B9 + B10
+
+- Commit at scan: `5b32d11` (after the F-B4-1 remedy). Deps compiled at
+  xqlite 0.10.0. Single Opus reviewer; direct source audit + live
+  un-excluded-test RED→green, live telemetry-event capture, and a bench
+  compile smoke — every runtime claim below was produced THIS session
+  (scripts under scratchpad, driven via `mix test` / `MIX_ENV=test mix run`).
+- Scope: exclusion-list audit (B2, prioritized), telemetry (B9),
+  benchmarks (B10). This run COMPLETES first-pass coverage of all 12
+  adapter axes (B1–B10 + X1–X2).
+
+### B2 — exclusion-list audit (PRIMARY)
+
+Enumerated every `test_helper.exs` exclusion (14 tags + 5 `{:location,…}`
+= 19 entries) and the two undocumented-but-unexcluded probe tags. Ran the
+suspect entries un-excluded to classify by ground truth, not source
+reasoning alone.
+
+**Two-tag status probe (BACKLOG P1 — RESOLVED).** Both tags have NO
+exclusion, so they run in the green suite; verified they PASS:
+- `:values_list` — `mix test all_test.exs --only values_list` ⇒ **5 passed**
+  (incl. `delete_all`, which the DELETE+JOIN rewrite now handles).
+- `:transaction_checkout_raises` — `--only transaction_checkout_raises`
+  ⇒ **1 passed**.
+  `ECTO_INTEGRATION_TAGS.md`'s rows (`:values_list` "partial / delete_all
+  fails"; `:transaction_checkout_raises` "needs adapter work") are STALE —
+  both quietly pass. README "suites run green" holds. Rows corrected +
+  header refreshed (SQLite 3.51.3→3.53.2, 15/18→16/18 files) — closes P1
+  and the drift half of BACKLOG G2.
+
+**Exclusion disposition (ran each suspect un-excluded — all FAILED as a
+legit limitation, confirming the exclusion; two carried a defect behind
+them):**
+
+| exclusion | un-excluded result | class | note |
+|---|---|---|---|
+| `:insert_cell_wise_defaults` | repo.exs:864 FAIL | legit | multi-row VALUES pads omitted cols with NULL, not the schema default — SQLite can't per-row DEFAULT |
+| `:map_type_schemaless` | type.exs:468 FAIL | legit | schemaless read returns raw JSON TEXT (no decoder) |
+| alter.exs:44 | FAIL | legit | schemaless read of NUMERIC returns INTEGER, not `%Decimal{}` |
+| type.exs:362 | FAIL | legit + **masked bug** | documented boolean-typing limit is real (line 384), but the test failed EARLIER at line 383 on a JSON key with embedded quotes → uncovered F-B2-1 (below) |
+| logging.exs:74 | FAIL | legit + **wrong rationale** | see below |
+| array_type, transaction_isolation, like_match_blob, lock_for_migrations, prefix, alter_primary_key, alter_foreign_key, on_delete_*_column_list, bitstring_type, duration_type, microsecond_precision, transaction.exs:161, migration.exs:664 | (reasoned from source) | legit | genuine SQLite/architecture limits, rationales accurate |
+
+Tally: **all 19 exclusions are legit-limitation** (each stays; every
+un-excluded one failed exactly as its rationale claims). Of those, ONE
+(type.exs:362) additionally masked a fixable defect → **masked-bug-fixed
+1** (F-B2-1; the exclusion stays, rationale now accurate) and ONE
+(logging.exs:74) carried a **wrong rationale** (corrected).
+**stale-reenabled 0** — no *exclusion* was stale; the two stale items were
+*doc rows* (`:values_list`, `:transaction_checkout_raises`), now fixed. No
+exclusion hid a crash.
+
+- **logging.exs:74 "cast params" — rationale was FACTUALLY WRONG (fixed).**
+  Documented as "telemetry handler uses Process.put which doesn't cross the
+  sandbox proxy boundary." Un-excluded and observed: the handler DID fire
+  (the in-handler assertion at line 86 ran and failed). Real cause: the
+  adapter stores UUIDs as TEXT by default (`binary_id_storage: :string`),
+  so a `Ecto.UUID` field binds the 36-char string; the test asserts
+  `metadata.params == Ecto.UUID.dump!/1` (the 16-byte binary, Postgres's
+  storage). Legit-by-design exclusion, but the rationale mislead — rewrote
+  it to the true reason. `metadata.params` faithfully reports the bound
+  string, so this is honest telemetry, not a bug.
+
+- **F-B2-1 (S2, CONFIRMED + FIXED — RED→green).** The compile-time
+  `json_extract_path` builder emitted the BARE path `$.<key>` instead of
+  the quoted-label form `$."<key>"`. SQLite treats `.` and `"` as
+  structural in a bare label, so a JSON object key containing a **dot**
+  (common: `"foo.bar"`, `"user.email"`), a **double quote**, or a
+  **backslash** silently extracted as `nil` even though the key exists —
+  silent wrong results (same class as F-B6-1/F-B6-3). Proven live: the
+  adapter emitted `json_extract(j0."meta", '$.foo.bar')` for
+  `d.meta["foo.bar"]` ⇒ SQLite reads two nested steps ⇒ `nil`; the correct
+  `$."foo.bar"` ⇒ the value. The escaping helper (`escape_json_key/1`,
+  backslash+quote) was already right — only the outer `"…"` wrapper was
+  missing, and the runtime *expression* branch already used it (`.\"` ||
+  seg || `\"`), so the literal branches were simply inconsistent. Fix:
+  wrap the escaped key in `"…"` at both literal sites (`expr/3`
+  compile-time path + `dynamic_json_path/3` literal segment). Verified a
+  strict improvement across key shapes (dot/quote/backslash all extract;
+  plain/dotted/nested/absent unchanged). After the fix the shared
+  type.exs:362 test fails ONLY at line 384 (the documented boolean-typing
+  limit), so that exclusion's rationale is now accurate too. Tests:
+  `json_extract_path_test.exs` (+5, RED→green: dotted, double-quote,
+  backslash, nested-dotted, WHERE-position).
+
+### B9 — telemetry (S2 contract mismatch fixed + doc alignment)
+
+Drove EVERY documented event through the driver under the telemetry-ON
+build (test env) and captured the actual measurements + metadata keys
+(`MIX_ENV=test mix run`). All documented events fire. Statement-cache
+hit/miss/evicted verified (`%{monotonic_time, cached_count}` / `%{sql}` —
+matches docs). OTel mapping (`OpenTelemetry.attributes/3`) audited:
+correct + traceable (reads sql/query/database/result_class/error_reason);
+unaffected by the fixes. Observed-vs-documented mismatches, all resolved:
+
+- **disconnect dropped `reason` (CODE fix, RED→green).** Docs promise
+  `%{conn, reason}`; the callback `disconnect(_err, state)` ignored `_err`
+  and emitted only `%{conn}`. Now binds `err` and emits `reason: err` (the
+  arg was right there). Test: `telemetry_test.exs` asserts
+  `metadata.reason == :normal`.
+- **moduledoc over-promised keys that never fire (DOC fix to match the
+  observed emission — authoritative = what fires; changing emitted shapes
+  risks existing subscribers):**
+  - connect metadata listed `repo` — never emitted (start_md is
+    `%{database}`).
+  - `num_rows (on :stop)` listed as a MEASUREMENT for
+    execute/declare/fetch/deallocate — impossible via `:telemetry.span`
+    (stop measurements are fixed to `monotonic_time`+`duration`); it is
+    emitted nowhere.
+  - declare metadata listed `cursor` (declare emits `query`+`sql`, no
+    cursor); fetch/deallocate listed `query` (they emit only `cursor`) —
+    split into two accurate groups.
+  - `mode (begin only)` — `mode` is on begin/commit/rollback alike.
+  - `sql` (emitted, useful) was undocumented — added.
+  Tests pin the corrected cursor contract (`fetch_md.cursor`,
+  `refute Map.has_key?(fetch_md, :query)`).
+- **Both-configs-in-CI (BACKLOG [B9] probe — CONFIRMED gap).** No CI lane
+  flips `:telemetry_enabled`; `config/test.exs` pins it ON, so CI never
+  builds/tests the telemetry-OFF path (the production default). Verified
+  the OFF path compiles clean locally (`MIX_ENV=dev mix compile --force
+  --warnings-as-errors` ⇒ exit 0, my `err` binding is used by the no-op
+  macro). → BACKLOG (add a CI lane or a compile smoke with the flag off).
+
+### B10 — benchmarks (exist; methodology honest; DO NOT RUN — finding)
+
+`bench/` is a standalone benchee project vs `ecto_sqlite3`. Methodology is
+HONEST: identical schema + pinned-identical pragmas (WAL, synchronous
+NORMAL, 64 MB cache, 5 s busy timeout, autocheckpoint 1000), file-backed,
+`pool_size: 1`, logging off, both SQLite versions printed
+(disclosed-not-equalized), cancellation labeled a capability demo (not a
+comparison), ledger-first (no public figures committed), and scenarios
+cover writes AND reads (single/bulk insert, upsert, point/range/join/
+aggregate/stream). BUT:
+
+- **F-B10-1 (S3, BACKLOG). The bench does not compile/run.** `bench/mix.exs`
+  pins `ecto_sql ~> 3.13.0` (stale lock 3.13.5) while the adapter now
+  requires `~> 3.14` and uses `Ecto.Migration.Table.:modifiers` (a 3.14
+  struct field). `MIX_ENV=prod mix compile` in `bench/` fails at
+  `connection.ex:2112` — "unknown key :modifiers for struct
+  Ecto.Migration.Table." The mix.exs comment blaming ecto_sql 3.14's
+  `insert/8` is stale (the adapter migrated to `~> 3.14`). Any perf number
+  is currently UNREPRODUCIBLE from a clean checkout. Fix = bump the bench
+  to `ecto_sql ~> 3.14` + `ecto_sqlite3 ~> 0.24` and refresh the lock
+  (needs Hex). → BACKLOG.
+
+### Verdict + dryness
+
+- 1 S2 CONFIRMED+FIXED (F-B2-1, RED→green), 1 S2-class observability
+  contract mismatch FIXED (B9: disconnect `reason` code fix + moduledoc
+  aligned to observed emission), 1 rationale corrected (logging.exs:74),
+  P1 resolved + doc rows/header reconciled, 1 S3 → BACKLOG (F-B10-1), 1 CI
+  gap confirmed → BACKLOG ([B9]). `mix verify` green at close.
+- Dryness: B2/B9/B10 now each have ONE covering pass — NOT DRY, one more
+  owed each. Confirmed findings surfaced on B2 and B9, so none can be
+  marked dry. Re-wetters recorded in REVIEW_AXES.md.
+- **Completeness critic — first-pass coverage of ALL 12 adapter axes is
+  COMPLETE**: X1/B1/X2 (Run 1), B6/B5/B3 (Run 2), B8/B4/B7 (Run 3),
+  B2/B9/B10 (Run 4). Every axis has ≥1 covering pass; none is DRY (each
+  owes a second pass per the constitution). Owed depth for the covered
+  three: B2 could add reconnect-time exclusion re-checks + a
+  `dynamic_json_path` expression-branch double-quote characterization; B9
+  could add num_rows/`repo` enrichment (feature, not correctness) and the
+  telemetry-OFF CI lane; B10 needs the dep bump before any figure is
+  published.

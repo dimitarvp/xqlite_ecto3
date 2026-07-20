@@ -9,11 +9,12 @@ after the S0–S2 burn-down.
 - [G1] 21 accidental-public SQL helpers in `Connection` → `defp`
   (verify the zero-external-caller claim per function first;
   includes the `insert_all/1,2` name-confusion hazard). (wave-1)
-- [G2] ECTO_INTEGRATION_TAGS.md reconciliation: drop the orphaned
+- [G2] ECTO_INTEGRATION_TAGS.md reconciliation. DONE in Run 4: header
+  fixed (SQLite 3.53.2, 16/18) and the two vague rows thickened to
+  "supported" after the two-tag probe (P1). REMAINING: drop the orphaned
   `:concurrent_poolrepo_transactions` row; rewrite the stale
-  `:foreign_key_constraint` row; fix headers (SQLite 3.51.3 →
-  3.53.2; 15/18 → 16/18); thicken the two vague rows after the
-  two-tag probe. (wave-1)
+  `:foreign_key_constraint` row (rich FK diagnostics shipped, tag
+  un-excluded). (wave-1)
 - [G3] Elixir floor: `~> 1.15` claimed, CI floor 1.17 — add lanes
   or raise the floor (floor-raise = Dimi values call; identical gap
   in xqlite). (wave-1)
@@ -22,17 +23,36 @@ after the S0–S2 burn-down.
 
 ## Probes (orchestrator-run)
 
-- [P1] Two-tag status probe: run the suite isolating
-  `:transaction_checkout_raises` and `:values_list` — resolves the
-  ledger-vs-README contradiction; failures get classified per the
-  bar. (B2)
+- [P1] RESOLVED (Run 4). Isolated both tags: `:values_list` ⇒ 5 passed
+  (incl. `delete_all`), `:transaction_checkout_raises` ⇒ 1 passed. Neither
+  is excluded; both quietly pass, so the README "suites run green" claim
+  holds and the two `ECTO_INTEGRATION_TAGS.md` rows were STALE — corrected
+  to "supported" + header refreshed (3.53.2, 16/18). (B2)
 - [B3] connect-time PRAGMA storm under pool cold-start;
   wedged-txn-state symmetry. (The `:memory:` + pool_size guard probe
   RAN in Run 2 and confirmed a defect — see F-B3-1 below.)
-- [B9] Verify CI builds AND tests both telemetry compile configs.
+- [B9] CONFIRMED gap (Run 4): no CI lane flips `:telemetry_enabled`, so
+  CI builds/tests only the telemetry-ON config (`config/test.exs` pins it
+  ON); the OFF path (production default) is untested in CI — it compiles
+  clean locally. FIX: add a CI lane (or a `MIX_ENV=dev mix compile
+  --warnings-as-errors` + a small OFF-flag test run) covering the OFF
+  build.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B10-1] (S3) The `bench/` project does not compile/run. `bench/mix.exs`
+  pins `ecto_sql ~> 3.13.0` (stale lock 3.13.5) while the adapter now
+  requires `~> 3.14` and uses `Ecto.Migration.Table.:modifiers` (a 3.14
+  struct field), so `MIX_ENV=prod mix compile` in `bench/` fails at
+  `connection.ex:2112` — "unknown key :modifiers for struct
+  Ecto.Migration.Table." The mix.exs comment blaming ecto_sql 3.14's
+  `insert/8` is stale (the adapter migrated to `~> 3.14`). Methodology is
+  otherwise honest (pinned-identical pragmas, disclosed SQLite versions,
+  cancellation-as-demo, ledger-first, write+read scenarios) but NO figure
+  is reproducible from a clean checkout until this is fixed. FIX: bump the
+  bench to `ecto_sql ~> 3.14` + `ecto_sqlite3 ~> 0.24` and refresh
+  `bench/mix.lock` (needs Hex); drop the stale insert/8 comment. Blocks any
+  announcement perf claim. (Run 4, B10)
 - [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
   write — `busy_timeout` dominates. Two handles on one file: A holds
   `BEGIN IMMEDIATE`, B (`busy_timeout: 3000`) INSERTs with a 300 ms cancel
