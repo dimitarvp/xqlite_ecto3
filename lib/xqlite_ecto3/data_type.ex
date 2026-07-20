@@ -1,8 +1,12 @@
 defmodule XqliteEcto3.DataType do
   @moduledoc false
 
-  # SQLite column type mapping. SQLite ignores type sizes/precision
-  # (except DECIMAL), so most types map to simple keywords.
+  # SQLite column type mapping. SQLite has no exact-decimal storage class:
+  # a DECIMAL column carries NUMERIC affinity, so numeric values are coerced
+  # to INTEGER or REAL (float64) at write time and decimals beyond ~15
+  # significant digits silently lose precision (see the adapter moduledoc).
+  # Declared sizes/precision are otherwise ignored, so most types map to
+  # simple keywords.
 
   @spec column_type(atom() | {:array, term()} | {:map, term()}, term()) :: String.t()
   def column_type(:id, _opts), do: "INTEGER"

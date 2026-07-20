@@ -116,6 +116,33 @@ defmodule XqliteEcto3 do
   two of four variants that don't hit this case (arrays/objects, embeds)
   run cleanly.
 
+  ## Decimal precision (the >15-significant-digit trap)
+
+  SQLite has **no exact-decimal storage class.** The `:decimal` migration
+  type maps to a `DECIMAL` column, which carries NUMERIC affinity: SQLite
+  coerces a numeric value to INTEGER or REAL (IEEE-754 float64) at write
+  time. Only the first ~15 significant decimal digits survive a REAL
+  round-trip, so a high-precision `Decimal` is **silently truncated**:
+
+      # stored via a :decimal column, read back:
+      Decimal.new("12345678901234567890.12345")  # in
+      Decimal.new("12345678901234568000")        # out — precision lost
+
+  Typical money (two decimal places up to ~13 integer digits — i.e. within
+  15 significant digits) round-trips exactly, so most applications are
+  unaffected. If you need more than 15 significant digits (large sums,
+  18-decimal crypto amounts, scientific data):
+
+    * store an **integer count of the smallest unit** (e.g. cents, wei) in
+      an `:integer` / `:id` column and scale in your domain code, or
+    * store the canonical string in a `:string` column yourself — exact,
+      but SQL range comparisons then sort lexically, not numerically, so
+      only do equality/prefix lookups on it.
+
+  This is a fundamental SQLite limitation shared by every SQLite adapter;
+  there is no column type that preserves both arbitrary precision *and*
+  numeric comparison. The adapter does not silently pick one for you.
+
   ## Nested transactions and raw SAVEPOINT SQL
 
   Ecto's `Repo.transaction/2` nests via savepoints internally — the driver
