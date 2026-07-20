@@ -52,6 +52,21 @@ defmodule XqliteEcto3.QueryEncodingTest do
     test "non-scientific notation via :normal" do
       assert encode([Decimal.new("1.0e10")]) == ["10000000000"]
     end
+
+    test "large money within 15 significant digits still encodes" do
+      assert encode([Decimal.new("9999999999999.99")]) == ["9999999999999.99"]
+    end
+
+    test "refuses a value beyond float64 precision instead of silently rounding" do
+      dec = Decimal.new("12345678901234567890.12345")
+
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          encode([dec])
+        end
+
+      assert Decimal.equal?(err.value, dec)
+    end
   end
 
   describe "encode map and list as JSON" do

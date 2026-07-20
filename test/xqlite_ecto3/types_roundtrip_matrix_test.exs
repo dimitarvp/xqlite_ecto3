@@ -4,11 +4,12 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
   exercised through the real repo. (`stream_data` is not a dependency, so
   this is exhaustive example-based rather than generative.)
 
-  The decimal block pins a documented SQLite limitation (F-B4-1): a
-  `:decimal` migration column has NUMERIC affinity, so values beyond ~15
-  significant digits are coerced to float64 and lose precision. If the
-  storage strategy ever changes, the high-precision pin flips and forces a
-  ledger revisit.
+  The decimal block covers SQLite's lack of an exact-decimal storage class:
+  a `:decimal` migration column has NUMERIC affinity, so values beyond
+  float64's exact precision (~15 significant digits) cannot be stored
+  losslessly. The adapter refuses those at the binding boundary rather than
+  rounding them, so the block asserts both the exact round-trips and the
+  loud rejection.
   """
   use XqliteEcto3.AdapterCase, async: true
 
@@ -125,7 +126,7 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     end
   end
 
-  describe "decimal precision (F-B4-1 pin — documented SQLite limitation)" do
+  describe "decimal precision" do
     # Common money and anything within ~15 significant digits round-trips
     # exactly through the DECIMAL column.
     for {label, str} <- [
@@ -144,14 +145,20 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
       assert roundtrip(:dec_field, nil) == nil
     end
 
-    # PIN OF KNOWN LIMITATION, not desired behaviour: >15 significant digits
-    # are coerced to float64 by NUMERIC affinity and lose precision. If this
-    # ever starts round-tripping, the storage strategy changed — update the
-    # review ledger (F-B4-1) before flipping this assertion.
-    test "beyond ~15 significant digits, precision is silently lost" do
+    # Beyond float64's exact precision the value cannot be stored without
+    # rounding. The adapter refuses it at the binding boundary rather than
+    # writing a silently-wrong number — before this refusal existed, the same
+    # insert stored a rounded value (~1.2345678901234568e19) and the mismatch
+    # went unnoticed.
+    test "beyond ~15 significant digits, the write is refused, not rounded" do
       dec = Decimal.new("12345678901234567890.12345")
-      loaded = roundtrip(:dec_field, dec)
-      refute Decimal.equal?(loaded, dec)
+
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          roundtrip(:dec_field, dec)
+        end
+
+      assert Decimal.equal?(err.value, dec)
     end
   end
 end

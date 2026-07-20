@@ -121,17 +121,26 @@ defmodule XqliteEcto3 do
   SQLite has **no exact-decimal storage class.** The `:decimal` migration
   type maps to a `DECIMAL` column, which carries NUMERIC affinity: SQLite
   coerces a numeric value to INTEGER or REAL (IEEE-754 float64) at write
-  time. Only the first ~15 significant decimal digits survive a REAL
-  round-trip, so a high-precision `Decimal` is **silently truncated**:
+  time. Only values that survive a float64 round-trip — roughly the first
+  ~15 significant decimal digits — can be stored exactly.
 
-      # stored via a :decimal column, read back:
-      Decimal.new("12345678901234567890.12345")  # in
-      Decimal.new("12345678901234568000")        # out — precision lost
+  Rather than **silently round** a value beyond that precision, the adapter
+  **refuses it at the binding boundary.** A `Decimal` that would not survive
+  the float64 round-trip raises `XqliteEcto3.DecimalPrecisionError` (the
+  offending value is on its `:value` field) instead of being written as a
+  quietly-wrong number:
 
-  Typical money (two decimal places up to ~13 integer digits — i.e. within
-  15 significant digits) round-trips exactly, so most applications are
-  unaffected. If you need more than 15 significant digits (large sums,
-  18-decimal crypto amounts, scientific data):
+      # a :decimal column, storing more than float64 can hold exactly:
+      Repo.insert(%Ledger{amount: Decimal.new("12345678901234567890.12345")})
+      # ** (XqliteEcto3.DecimalPrecisionError) decimal 12345678901234567890.12345
+      #    exceeds SQLite's exact numeric precision ...
+
+  Numeric storage is kept deliberately, so ordering and range queries on the
+  column still work. Typical money (two decimal places up to ~13 integer
+  digits — i.e. within 15 significant digits) round-trips exactly and stores
+  without complaint, so most applications never see the error. If you need
+  more than 15 significant digits (large sums, 18-decimal crypto amounts,
+  scientific data), pick an exact representation up front:
 
     * store an **integer count of the smallest unit** (e.g. cents, wei) in
       an `:integer` / `:id` column and scale in your domain code, or
@@ -141,7 +150,8 @@ defmodule XqliteEcto3 do
 
   This is a fundamental SQLite limitation shared by every SQLite adapter;
   there is no column type that preserves both arbitrary precision *and*
-  numeric comparison. The adapter does not silently pick one for you.
+  numeric comparison. The adapter refuses the lossy write rather than
+  silently pick one for you.
 
   ## Nested transactions and raw SAVEPOINT SQL
 

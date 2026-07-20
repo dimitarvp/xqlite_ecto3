@@ -3,8 +3,9 @@ defmodule XqliteEcto3.DataType do
 
   # SQLite column type mapping. SQLite has no exact-decimal storage class:
   # a DECIMAL column carries NUMERIC affinity, so numeric values are coerced
-  # to INTEGER or REAL (float64) at write time and decimals beyond ~15
-  # significant digits silently lose precision (see the adapter moduledoc).
+  # to INTEGER or REAL (float64) at write time. Decimals beyond float64's
+  # exact precision (~15 significant digits) are refused at the binding
+  # boundary rather than silently rounded (see the adapter moduledoc).
   # Declared sizes/precision are otherwise ignored, so most types map to
   # simple keywords.
 
