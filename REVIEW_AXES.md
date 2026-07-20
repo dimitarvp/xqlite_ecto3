@@ -137,6 +137,24 @@ money/ordering still work (see REVIEW_LEDGER Remedy 2026-07-20 for the
 guard-vs-SQLite verification table). Needs a fresh covering pass on the
 new guard's boundary (the guard table exists in `decimal_precision_test.exs`;
 a next pass could add `stream_data` fuzzing around the ~15-sig threshold).
+COVERING RE-RUN (Run 7, 2026-07-21 — dryness pass 3, covering the decimal-remedy
+churn): the `stream_data` fuzz shipped. Added `{:stream_data, "~> 1.1", only:
+[:test]}` (fetched via the sanctioned HEX_HOME; xqlite dep stays 0.10.0 hex) and a
+property in `types_roundtrip_matrix_test.exs`: for arbitrary finite Decimals
+(sign × coefficient[1..25 digits] × 10^[-20..20], straddling the ~15–17-sig
+threshold), an insert through a REAL DECIMAL column either round-trips exactly
+(guard accept) or raises `DecimalPrecisionError` (guard reject) — never a silent
+mismatch. GREEN across 10 seeds (~1000 distinct values against the bundled C SQLite)
+— no guard false-accept found. GUARD-vs-SQLITE cross-check re-verified BY MY OWN
+runs (subagent history inadmissible): 6 values (19.99 / 9999999999999.99 /
+3.141592653589793 accept; 12345678901234567890.12345 / 0.12345678901234567 /
+18446744073709551615 reject) each cross-checked guard verdict ⟺ repo round-trip ⟺
+raw-SQL SQLite typeof/value — all CONSISTENT. One-way pins re-confirmed
+(Instant ns-truncation, TimestampTZ zone-collapse to Etc/UTC, atom-keys→string all
+green). Zero new findings. DRYNESS: Run 3 found F-B4-1 (confirmed S1, since
+remedied); this is the **first clean covering run over the remedy churn, 1 of 2, NOT
+DRY**, one more owed. Re-wet triggers UNCHANGED (any `column_type(:decimal/:float)`,
+loaders/dumpers, custom type, or `encode_param` change).
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
@@ -227,6 +245,32 @@ Ecto shapes) SILENTLY dropped the whole ON DELETE clause — now a loud
 `execute_ddl` clause, or `column_change` change; an Ecto migration
 grammar addition. Owed: `modifiers_expr` + ADD-COLUMN-with-REFERENCES
 runtime rejection lived (raise on inspection, not yet run).
+COVERING RE-RUN (Run 7, 2026-07-21 — dryness pass 3, living the rebuild dance): the
+REBUILD DANCE (never exercised end-to-end before) surfaced a NEW CONFIRMED finding.
+**F-B7-2 (S1, CONFIRMED + FIXED, RED→green).** The opt-in rebuild reconstructs the
+new table from `PRAGMA table_xinfo` (name/type/notnull/default/pk only), so a
+`:modify` SILENTLY DROPPED foreign keys, CHECK constraints, COLLATE / inline-UNIQUE
+clauses, and generated columns. Proven live through `Ecto.Migrator` with idiomatic
+`references/1` + `check:` (FK `child_parent_id_fkey` and CHECK `qty_pos` gone after
+`modify :name`; orphan + CHECK-violating inserts then accepted; `foreign_key_check`
+vacuously clean) and via a generated-column probe (STORED col frozen to a plain
+column, VIRTUAL col vanished). Fixed to REFUSE loudly before any destructive step
+(mirrors F-B7-1): `refuse_unpreservable_constraints!/3` scans the stored CREATE
+TABLE SQL for REFERENCES/CHECK/COLLATE/UNIQUE and `table_xinfo` for generated
+columns, over-approximating so the only failure mode is a safe refusal. Docs (README
+rebuild section + `Migration` moduledoc) corrected. `table_rebuild_test.exs` +5.
+The REST of the dance is CORRECT (all lived): rows preserved (count + spot values),
+standalone index preserved + functional (unique violation), trigger preserved +
+FIRING, AUTOINCREMENT sequence not reset (post-rebuild insert gets a higher rowid),
+downgrade works (explicit up/down + `change/0` with `from:`) or refuses loudly
+(`change/0` without `from:` → `Ecto.MigrationError`). OWED refusals lived:
+`modifiers_expr` non-string → loud `ArgumentError`; ADD-COLUMN-with-REFERENCES →
+nullable SUCCEEDS with the FK genuinely enforced (Run 3's "runtime rejection"
+anticipation was wrong), NOT NULL → loud structured `XqliteEcto3.Error`. F-B7-1 fix
+re-covered (`migration_test.exs` green). DRYNESS: a NEW confirmed (F-B7-2) surfaced,
+so NOT a clean covering run — **stays at 0 of 2, NOT DRY**; the rebuild-guard fix
+re-wets. Re-wets ALSO on: any `rebuild_table` / `refuse_unpreservable_constraints!`
+/ `plan_new_schema` / `fetch_full_column_info!` change.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
@@ -250,6 +294,40 @@ busy-wait); F-B8-2 (S3) the streaming path (`handle_declare`/
 completion. NOT DRY. Re-wets on: any `run_statement`/`execute_with_cancel`/
 `spawn_canceller` change, a DBConnection deadline-contract change, an
 xqlite cancel-token or stream-fetch change.
+COVERING RE-RUN (Run 7, 2026-07-21 — dryness pass 3): re-covered the core through
+the driver churn (total_changes threading in finish_cached_stmt; disconnect reason)
+and closed two owed items. CORE re-verified live: cached-path AND one-shot-path
+timeouts still cancel promptly (~101 ms for a 100 ms token on a ~3500 ms query),
+return structured `%DBConnection.ConnectionError{}`, pool reusable — `cancellation_
+test.exs` green. ENCODE-RAISE × cancel machinery CLEAN: a `DecimalPrecisionError`
+out of `DBConnection.Query.encode` (before `handle_execute`) creates NO cancel
+token, spawns NO canceller (process count delta 0), leaves NO stray mailbox message,
+the connection is unaffected, and the cancel path works promptly right after — the
+raise precedes any token creation, so nothing to leak. OWED POOL-DEADLINE ITEM
+resolved: through a REAL DBConnection pool a `:timeout` fires BOTH the graceful
+cancel (caller gets the structured "query timed out") AND DBConnection's own
+checkout deadline (same value), which disconnects+reconnects the connection
+(connection-local TEMP table gone; `disconnect`+`connect:stop` both fire). SAFE +
+self-healing + STANDARD DBConnection behavior (every adapter recycles on the
+operation deadline) — not an adapter defect; the graceful cancel's pool-level value
+is freeing the blocked dirty NIF promptly so the recycle happens at the deadline,
+not at query completion. Pinned the pool-level contract deterministically
+(`cancellation_test.exs` +1, dedicated pool, generous margins) + filed F-B8-3 (S3,
+DOCS-only: pooled timeout recycles the connection / resets the statement cache).
+DIRTYIO DETERMINATION: at deps/xqlite 0.10.0 the adapter's hot paths are ALREADY
+predominantly DirtyIo; only 7 adapter-called NIFs are on the normal scheduler
+(stmt_column_names, total_changes, changes, txn_state, create_cancel_token,
+cancel_operation, register_progress_hook). xqlite main's unreleased 20-NIF flip
+touches 5 of those (all but the two cancel-token NIFs), flipping them normal→DirtyIo
+— ATTRIBUTE-ONLY (bodies byte-identical, verified per-function), so
+correctness-transparent (result shapes unchanged, no adapter contract depends on
+scheduler class). Unlike Run 6's clean busy-policy CLOSE, the flip DOES touch
+adapter-called functions, so the disposition is: safe/non-breaking at the dep bump;
+re-probe dirty-IO-pool occupancy under high read concurrency WHEN the dep is bumped.
+Zero new S0–S2 on B8. DRYNESS: Run 3 found F-B8-1/2 (confirmed S3s), so this is the
+**first clean covering run over B8, 1 of 2, NOT DRY**, one more owed. Re-wets ALSO
+on: an xqlite scheduler-class change to an adapter-called NIF (a dep bump past
+0.10.0 flips the 5 above).
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

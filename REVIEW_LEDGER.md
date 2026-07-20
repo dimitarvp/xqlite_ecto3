@@ -1055,3 +1055,158 @@ EVERY pool member AND across reconnects. Zero findings.
   death mid-transaction under the sandbox (A7-adjacent, xqlite-side covered). The
   owed second covering pass on B6/B5 and the still-owed first clean run on B3 remain
   for the next dryness lap.
+
+---
+
+## Run 7 — 2026-07-21 — dryness pass 3: B8 + B4 + B7
+
+- Commit at scan: `828bb95` (after adapter Run 6). Deps compiled at xqlite 0.10.0
+  (`mix.lock` pin verified; `XQLITE_PATH` unset, `deps/xqlite` a real dir — the
+  probes characterize published 0.10.0, its vendored `native/…/nif.rs` read for the
+  DirtyIo determination, NOT `../xqlite` main). Single Opus reviewer; every runtime
+  claim produced THIS session (scripts under scratchpad, driven via `mix run` /
+  `mix test`). Added `{:stream_data, "~> 1.1", only: [:test]}` (fetched via the
+  sanctioned HEX_HOME; the xqlite dep stays the published 0.10.0 hex package).
+- Scope: the SECOND covering pass over B8 (timeout→cancel, flagship), B4 (type
+  round-trips as properties), B7 (migration ergonomics). Re-covered the churn: the
+  F-B7-1 fix, the decimal remedy (`DecimalPrecision` guard + `encode_param` raise),
+  and driver churn (total_changes threading, disconnect reason). Contracts read from
+  `deps/` source: `db_connection.ex` `handle_common_result` (`{:error,…}` keeps the
+  connection; only `{:disconnect,…}` tears it down — `:1397-1416`), and the rebuild
+  engine in `lib/xqlite_ecto3.ex`.
+
+### B8 — timeout→cancel divergence (FLAGSHIP; CORE CLEAN, pool-deadline characterized)
+
+- **Core re-verified live through the churn.** `cancellation_test.exs` green;
+  cached-path AND one-shot-path timeouts cancel promptly (~101 ms for a 100 ms token
+  on a ~3500 ms query), return `%DBConnection.ConnectionError{}`, pool reusable. The
+  `total_changes` threading in `finish_cached_stmt` and the `disconnect` reason did
+  not perturb cancel promptness or reuse.
+- **Encode-raise × cancel machinery — CLEAN (my specific angle).**
+  `b8_encode_raise_probe.exs`, real pool_size:1 repo: a beyond-precision
+  `Decimal.new("12345678901234567890.12345")` insert raised `DecimalPrecisionError`
+  (value on `.value`); process-count delta = **0** (no canceller spawned), mailbox =
+  `:none` (no stray `{:cancel_query,_}`/`{ref,:ready}`), the subsequent valid insert
+  round-tripped on the same pool, and a post-raise cancellable timeout still fired
+  in 101 ms. The raise is in `DBConnection.Query.encode`, BEFORE `handle_execute`
+  creates any token — so there is nothing to leak.
+- **Owed pool-deadline item RESOLVED → F-B8-3 (S3, DOCS-only; not an adapter
+  defect).** Through a REAL DBConnection pool (`b8_pool_telemetry_probe.exs`), a
+  `:timeout` fires BOTH the graceful cancel (caller gets `{:error, ConnectionError
+  "query timed out"}`) AND DBConnection's own checkout deadline (same value), which
+  DISCONNECTS+reconnects the connection: a connection-local TEMP table created
+  before the 100 ms-timeout query was GONE afterward, and `[:xqlite_ecto3,
+  :disconnect]` (reason: "client … timed out because it queued and checked out the
+  connection for longer than 100ms") + `[:xqlite_ecto3, :connect, :stop]` both
+  fired. SAFE + self-healing + STANDARD DBConnection behavior (every adapter recycles
+  on the operation deadline). The graceful cancel's pool-level value is freeing the
+  blocked dirty NIF PROMPTLY (at the deadline, ~100 ms, vs ~3500 ms natural
+  completion) so the recycle happens then. The direct-driver `cancellation_test`
+  cannot observe this (bypasses the pool). Pinned the pool-level contract
+  deterministically: `cancellation_test.exs` +1 ("timeout through a real
+  DBConnection pool" — dedicated pool, structured error + prompt < 2000 ms +
+  self-heal, `@tag capture_log`). Filed F-B8-3 → BACKLOG (a doc line: a pooled
+  timeout recycles the connection / resets the statement cache).
+- **DirtyIo determination.** At deps/xqlite 0.10.0 the adapter's hot paths are
+  ALREADY predominantly DirtyIo (71/96 NIFs DirtyIo); only 7 adapter-called NIFs are
+  on the normal scheduler: `stmt_column_names`, `total_changes`, `changes`,
+  `txn_state`, `create_cancel_token`, `cancel_operation`, `register_progress_hook`.
+  xqlite main's unreleased 20-NIF flip touches **5 of those 7** (all but the two
+  cancel-token NIFs), flipping them normal→DirtyIo — verified ATTRIBUTE-ONLY per
+  function (`git diff v0.10.0..HEAD`: only `#[rustler::nif]` →
+  `#[rustler::nif(schedule = "DirtyIo")]`, bodies byte-identical), so
+  correctness-transparent (result shapes unchanged; no adapter `with`/`case` depends
+  on scheduler class). Unlike Run 6's clean busy-policy CLOSE (adapter never calls
+  that API), the flip DOES touch adapter-called functions, so the disposition is:
+  safe/non-breaking at 0.10.0 and at the bump; RE-PROBE dirty-IO-pool occupancy
+  under high read concurrency WHEN the dep is bumped past 0.10.0.
+
+### B4 — type round-trips as properties (CLEAN; stream_data shipped)
+
+- **Guard boundary fuzzed (stream_data).** `types_roundtrip_matrix_test.exs` +1
+  property: for arbitrary finite Decimals (sign × coefficient[1..25 digits] ×
+  10^[-20..20], straddling the ~15–17-significant-digit threshold), an insert
+  through a REAL DECIMAL column either round-trips exactly (guard accept) or raises
+  `DecimalPrecisionError` (guard reject) — never a silent mismatch. GREEN across 10
+  seeds (~1000 distinct values vs bundled C SQLite 3.53.2); no guard false-accept.
+- **Guard-vs-SQLite cross-check re-verified BY MY OWN runs** (`b4_crosscheck_
+  probe.exs`; subagent history inadmissible): accept `19.99` / `9999999999999.99` /
+  `3.141592653589793` and reject `12345678901234567890.12345` /
+  `0.12345678901234567` / `18446744073709551615` — each cross-checked guard verdict
+  ⟺ repo round-trip ⟺ raw-SQL SQLite `typeof`/value; all CONSISTENT (accept ⟺ stored
+  exactly; reject ⟺ repo raises ⟺ SQLite would round, e.g. `0.12345678901234567` →
+  `0.12345678901234566`).
+- **One-way pins re-confirmed** (Instant ns-truncation, TimestampTZ zone-collapse to
+  Etc/UTC, atom-keys→string — the custom-type + matrix suites green). Zero findings.
+
+### B7 — migration ergonomics (living the rebuild dance; one CONFIRMED S1 fixed)
+
+- **F-B7-2 (S1, CONFIRMED + FIXED, RED→green).** The opt-in rebuild
+  (`support_alter_via_table_rebuild: true`) reconstructs the new table from `PRAGMA
+  table_xinfo` (name/type/notnull/default/pk only), so a `:modify` SILENTLY DROPPED
+  foreign keys, CHECK constraints, COLLATE / inline-UNIQUE clauses, and generated
+  columns. Proven live through `Ecto.Migrator` with idiomatic `references/1` +
+  `check:` (`b7_migrator_probe.exs`): after `modify :name`, the rebuilt schema was
+  `("id" …, "name" …, "parent_id" INTEGER, "qty" INTEGER)` — FK `child_parent_id_
+  fkey` and CHECK `qty_pos` GONE; a subsequent orphan insert (parent_id 999) and a
+  CHECK-violating insert (qty -5) were both ACCEPTED; `foreign_key_check` was
+  vacuously clean because the FK no longer existed. Generated columns also broke
+  (`b7_generated_probe.exs`): a STORED generated column froze into a plain column,
+  a VIRTUAL one vanished (`no such column`). Consequence-class S0 (wrong-results/
+  integrity loss); mechanism = silent schema transformation (S1). Fixed to REFUSE
+  loudly BEFORE any destructive step (mirrors F-B7-1): `rebuild_table` now calls
+  `refuse_unpreservable_constraints!/3`, which raises `ArgumentError` (table left
+  intact) when the table declares REFERENCES/CHECK/COLLATE/UNIQUE (scanned from the
+  stored CREATE TABLE SQL) or has generated columns (`table_xinfo.hidden IN (2,3)`).
+  Detection over-approximates, so the only failure mode is a safe refusal, never a
+  silent drop; standalone indexes/triggers/AUTOINCREMENT stay preserved. Docs (README
+  rebuild section + `Migration` moduledoc — both had claimed the dance preserved
+  everything / recreated FKs) corrected. RED→green in `table_rebuild_test.exs` (+5).
+  Richer remedy (faithful reconstruction) → BACKLOG A4.
+- **The REST of the dance is CORRECT — all lived** (`b7_rebuild_probe.exs`): rows
+  preserved (count + spot values), standalone index preserved + FUNCTIONAL (unique
+  violation still raised), trigger preserved + FIRING (note bumped), AUTOINCREMENT
+  sequence not reset (post-rebuild insert got a higher rowid than the pre-rebuild
+  max). Downgrade (`b7_downgrade_probe.exs`): explicit up/down rebuilds both
+  directions (rows preserved, types restored); `change/0` with `from:` auto-reverses;
+  `change/0` without `from:` refuses loudly (`Ecto.MigrationError`). Inbound-FK
+  parent rebuild works inside a migration transaction (defer_foreign_keys persists);
+  outside a transaction the DROP loudly fails (autocommit resets the pragma) — real
+  migrations always wrap, so no silent path.
+- **Owed refusals lived** (`b7_refusals_probe.exs`): `modifiers_expr` non-string
+  (`[:temporary]`, `:temporary`) → loud `ArgumentError`. ADD-COLUMN-with-REFERENCES:
+  nullable SUCCEEDS with the FK genuinely enforced (schema carries the CONSTRAINT,
+  orphan rejected, valid accepted) — Run 3's "runtime rejection" anticipation was
+  WRONG; NOT NULL → loud structured `XqliteEcto3.Error` ("Cannot add a NOT NULL
+  column with default value NULL"). F-B7-1 fix re-covered (`migration_test.exs`
+  green).
+
+### Verdict + dryness
+
+- 1 S1 CONFIRMED+FIXED (F-B7-2, RED→green), 1 S3 → BACKLOG (F-B8-3, docs-only). B8
+  core CLEAN + encode-raise CLEAN + pool-deadline safe-standard-behavior; B4 CLEAN;
+  B7 CLEAN bar the one silent rebuild miscompile now fixed. `mix verify` green at
+  close.
+- Dryness: **B8 — first clean covering run (1 of 2), NOT DRY** (Run 3 found F-B8-1/2;
+  F-B8-3 is docs-only-standard-behavior, not an adapter defect — does not reset).
+  **B4 — first clean covering run over the remedy churn (1 of 2), NOT DRY** (Run 3
+  found F-B4-1). **B7 — a NEW confirmed (F-B7-2) surfaced, so NOT a clean covering
+  run — stays at 0 of 2, NOT DRY**; the rebuild-guard fix re-wets. Re-wetters in
+  REVIEW_AXES.md refreshed (B8 also re-wets on an xqlite scheduler-class change to an
+  adapter-called NIF; B7 also on any `rebuild_table`/`refuse_unpreservable_
+  constraints!`/`plan_new_schema` change).
+- Completeness critic: F-B7-2's fix is the SAFE loud refusal, not faithful
+  preservation — a table with an FK/CHECK/COLLATE/UNIQUE/generated column can no
+  longer be `:modify`-rebuilt at all (must go through `execute/1`), which limits the
+  feature; faithful reconstruction (BACKLOG A4) is the maintainer's richer-remedy
+  call. The refusal detection over-approximates the SQL scan (a stray "CHECK"/
+  "UNIQUE"/"REFERENCES"/"COLLATE" word in a string default or comment triggers a
+  safe-but-spurious refusal) — deliberate (safety over precision). B8's pool-deadline
+  reconnect was characterized but NOT turned into a "connection preserved" assertion
+  (it is NOT preserved — the committed test pins the pool-level contract, not
+  connection identity); the F-B8-3 doc line is unwritten (maintainer's docs call).
+  The DirtyIo re-probe is owed WHEN the xqlite dep is bumped past 0.10.0 (5
+  adapter-called reads flip to DirtyIo). B4's property fuzzes finite Decimals only
+  (NaN/Inf/subnormal covered by the example table, not the generator). The owed
+  SECOND clean covering pass on B8/B4 and the still-owed first clean run on B7 remain
+  for the next dryness lap.

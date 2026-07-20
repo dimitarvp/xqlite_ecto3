@@ -85,6 +85,28 @@ after the S0–S2 burn-down.
   `stream_fetch_cancellable` first, then wire a per-fetch token like
   `execute_with_cancel`. Interim: document that stream batches are
   uncancellable and to keep `max_rows` modest. (Run 3, B8)
+- [F-B8-3] (S3, DOCS — standard DBConnection behavior, not an adapter defect)
+  Through a real DBConnection pool/repo, a query `:timeout` fires BOTH the
+  adapter's graceful cancel (returns `{:error, %DBConnection.ConnectionError{}}`
+  "query timed out" to the caller) AND DBConnection's own checkout deadline (the
+  SAME `:timeout` value), and the latter DISCONNECTS+reconnects the connection
+  ("client … timed out because it queued and checked out the connection for longer
+  than 100ms"). Proven live (Run 7): a connection-local TEMP table created before a
+  100 ms-timeout slow query is GONE afterward, and `[:xqlite_ecto3, :disconnect]` +
+  `[:xqlite_ecto3, :connect, :stop]` both fire. This is SAFE and self-healing (the
+  caller gets a clean structured timeout; the pool serves the next query) and is how
+  EVERY DBConnection adapter behaves on the operation deadline — not an xqlite_ecto3
+  defect. The graceful cancel's real pool-level value is making the blocked dirty
+  NIF RETURN promptly (at the deadline, ~100 ms) so the recycle happens then rather
+  than at natural query completion (~3500 ms). Consequence worth a doc line: a
+  pooled query timeout recycles the connection (statement cache reset + reconnect
+  cost), so connection-local state (temp tables, session PRAGMAs) does not survive a
+  timeout. The direct-driver `cancellation_test` cannot observe this (it bypasses
+  the pool); Run 7 pinned the pool-level contract deterministically in
+  `cancellation_test.exs` ("timeout through a real DBConnection pool"). Options:
+  add a line to the B8 timeout-divergence docs; no code change (the adapter cannot
+  prevent DBConnection from recycling a connection whose checkout exceeded the
+  client deadline). (Run 7, B8)
 
 - [F-B3-2] (S3) Cold-start WAL-flip race emits `[error]`-level connect-failure
   logs. On the FIRST cold-start of a fresh, never-WAL database, every pool
@@ -150,6 +172,17 @@ after the S0–S2 burn-down.
 
 ## Feature follow-ups (owed, not review findings)
 
+- [A4] Faithful table-rebuild constraint preservation (richer remedy for
+  F-B7-2, maintainer call). The shipped fix REFUSES a rebuild of a table that
+  declares foreign keys / CHECK / COLLATE / inline UNIQUE / generated columns
+  (safe, but limits the `:modify` feature to plainer tables). A fuller
+  implementation would preserve them: FKs are mechanical via `PRAGMA
+  foreign_key_list` (id/seq/table/from/to/on_update/on_delete/match — group by id
+  for composite keys); CHECK, COLLATE, column-UNIQUE, and generated columns need
+  the SQLite-canonical approach of editing the ORIGINAL CREATE TABLE text (the
+  12-step ALTER procedure) instead of reconstructing from `table_xinfo`. That
+  would let the refusal guard relax to only the constructs a rewrite still can't
+  handle.
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —
   unlocked by xqlite 0.9.0's busy split.
 - [A3] Optionally migrate raw `XqliteNIF.txn_state/connection_stats`
@@ -157,6 +190,31 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B7-2] (S1) The opt-in table rebuild (`support_alter_via_table_rebuild:
+  true`) reconstructed the new table from `PRAGMA table_xinfo`, which exposes only
+  name/type/notnull/default/pk. Foreign keys, CHECK constraints, and COLLATE /
+  inline-UNIQUE clauses live only in the original CREATE TABLE text, so a `:modify`
+  on a table declaring any of them SILENTLY DROPPED the constraint — a MODIFY became
+  a silent loss of referential/domain integrity. Proven live through `Ecto.Migrator`
+  with idiomatic `references/1` + `check:`: after `modify :name`, the FK
+  `child_parent_id_fkey` and CHECK `qty_pos` were gone from the rebuilt schema, and
+  a subsequent orphan insert (parent_id 999) and a CHECK-violating insert (qty -5)
+  were both ACCEPTED; `PRAGMA foreign_key_check` was vacuously clean because the FK
+  no longer existed. Fixed to REFUSE loudly (mirrors F-B7-1): `rebuild_table` now
+  calls `refuse_unpreservable_constraints!/3`, which raises `ArgumentError` (before
+  any destructive step, table left intact) when the table declares REFERENCES /
+  CHECK / COLLATE / inline UNIQUE (scanned from the stored CREATE TABLE SQL) or has
+  generated columns (`table_xinfo.hidden IN (2,3)` — the `col TYPE AS (expr)`
+  shorthand has no scannable keyword, and a rebuild would drop a virtual generated
+  column and freeze a stored one into a plain column — both confirmed live), and
+  points the user at a manual `execute/1` rebuild. Detection over-approximates, so
+  the only failure mode is a safe refusal, never a silent drop; standalone indexes/
+  triggers/AUTOINCREMENT are still preserved (the existing rebuild tests stay
+  green). Docs (README rebuild section + `Migration` moduledoc) corrected — they
+  had claimed the dance preserved everything / recreated FKs. RED→green in
+  `table_rebuild_test.exs` (+5). A richer remedy (faithful FK reconstruction via
+  `pragma_foreign_key_list`, CHECK/COLLATE/generated via CREATE-TABLE rewrite) is a
+  maintainer call — see Feature follow-ups. (Run 7, B7)
 - 2026-07-20 [X1-2] (S3) `Error.wrap/1`'s generic `{tag, msg}` clause required
   `is_binary(msg)`, so ~14 `error_reason/0` shapes with a map/int/atom/tuple
   payload fell to the `inspect` catch-all and lost their `type` tag (e.g.
