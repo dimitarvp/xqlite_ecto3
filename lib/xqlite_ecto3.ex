@@ -675,6 +675,8 @@ defmodule XqliteEcto3 do
               "and rewrites every row."
     end
 
+    refuse_unpreservable_constraints!(meta, table, opts)
+
     existing_columns = fetch_full_column_info!(meta, table, opts)
     indexes = fetch_user_indexes!(meta, table, opts)
     triggers = fetch_table_triggers!(meta, table, opts)
@@ -716,6 +718,81 @@ defmodule XqliteEcto3 do
                 inspect(violations) <>
                 ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
                 "dependent tables that reference this one."
+    end
+  end
+
+  # The rebuild reconstructs the new table from PRAGMA table_xinfo, which
+  # exposes only name/type/notnull/default/pk. Foreign keys, CHECK constraints,
+  # COLLATE / inline-UNIQUE clauses, and generated columns cannot be carried
+  # across — a column-info rebuild would silently drop or freeze them, turning a
+  # MODIFY into a silent loss of referential/domain integrity. Refuse loudly
+  # instead. Detection over-approximates (constraints via a scan of the stored
+  # CREATE TABLE SQL, generated columns via table_xinfo), so the only failure
+  # mode is a safe refusal, never a silent drop. Separate CREATE INDEX
+  # statements are untouched by this and are re-created by the rebuild, so a
+  # table whose only uniqueness is a standalone index rebuilds fine.
+  defp refuse_unpreservable_constraints!(meta, table, opts) do
+    case unpreservable_kind(meta, table, opts) do
+      nil ->
+        :ok
+
+      kind ->
+        raise ArgumentError,
+              "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: the table declares " <>
+                "#{kind} that a column-info rebuild cannot preserve (SQLite exposes them only " <>
+                "in the original CREATE TABLE text), so rebuilding would silently drop them. " <>
+                "Perform this change by hand with execute/1, recreating the full table — " <>
+                "columns, constraints, indexes, and triggers — so nothing is lost."
+    end
+  end
+
+  # Generated columns are not in the CREATE TABLE keyword set the scan below
+  # catches (the `col TYPE AS (expr)` shorthand carries no distinctive keyword),
+  # so detect them from table_xinfo, where they are hidden = 2 (virtual) or 3
+  # (stored). A rebuild would drop a virtual one and freeze a stored one into a
+  # plain column.
+  defp unpreservable_kind(meta, table, opts) do
+    if has_generated_columns?(meta, table, opts) do
+      "generated columns"
+    else
+      scan_create_sql_for_unpreservable(meta, table, opts)
+    end
+  end
+
+  defp has_generated_columns?(meta, table, opts) do
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT 1 FROM pragma_table_xinfo(?1) WHERE hidden IN (2, 3) LIMIT 1",
+        [to_string(table.name)],
+        opts
+      )
+
+    rows != []
+  end
+
+  defp scan_create_sql_for_unpreservable(meta, table, opts) do
+    result =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+        [to_string(table.name)],
+        opts
+      )
+
+    case result do
+      %{rows: [[create_sql]]} when is_binary(create_sql) -> unpreservable_constraint(create_sql)
+      _ -> nil
+    end
+  end
+
+  defp unpreservable_constraint(create_sql) do
+    cond do
+      Regex.match?(~r/\bREFERENCES\b/i, create_sql) -> "foreign-key constraints"
+      Regex.match?(~r/\bCHECK\b/i, create_sql) -> "CHECK constraints"
+      Regex.match?(~r/\bCOLLATE\b/i, create_sql) -> "COLLATE clauses"
+      Regex.match?(~r/\bUNIQUE\b/i, create_sql) -> "inline UNIQUE constraints"
+      true -> nil
     end
   end
 

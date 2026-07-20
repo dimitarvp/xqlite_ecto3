@@ -18,10 +18,13 @@ defmodule XqliteEcto3.Migration do
 
   CHECK constraints can only be attached at `CREATE TABLE` time in SQLite.
   Adding a CHECK to an existing column requires a full table rebuild
-  (create temp, copy rows, drop, rename, recreate indexes / FKs / triggers).
-  `xqlite_ecto3` plans a behind-a-flag rebuild implementation; until that
-  ships, post-create CHECK addition has to go through `execute/1`
-  with raw SQL.
+  (create temp, copy rows, drop, rename, recreate indexes / triggers).
+  `xqlite_ecto3` ships an opt-in rebuild behind `support_alter_via_table_rebuild:
+  true`, but it reconstructs columns from `PRAGMA table_xinfo`, which does not
+  carry foreign keys, CHECK constraints, or COLLATE clauses — so a rebuild of a
+  table declaring any of those refuses loudly rather than dropping them. Adding a
+  CHECK to an existing column therefore still goes through `execute/1` with raw
+  SQL.
   """
 
   @doc """

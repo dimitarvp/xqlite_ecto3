@@ -298,7 +298,7 @@ alter table(:users) do
 end
 ```
 
-All changes in one `alter` block batch into a single rebuild — not N rebuilds for N columns. Indexes, triggers, and AUTOINCREMENT sequences are preserved through the dance.
+All changes in one `alter` block batch into a single rebuild — not N rebuilds for N columns. Indexes, triggers, and AUTOINCREMENT sequences are preserved through the dance. The rebuild reconstructs columns from `PRAGMA table_xinfo`, which cannot carry foreign keys, `CHECK` constraints, `COLLATE`/inline-`UNIQUE` clauses, or generated columns; rather than silently drop them, a rebuild of a table that declares any of those **refuses loudly** — do that column change by hand with `execute/1`, recreating the full table so nothing is lost.
 
 ### DELETE with JOIN
 
@@ -397,7 +397,7 @@ If sustained write volume outgrows all of this, that is SQLite's honest ceiling 
 
 ### Migration rebuild is opt-in
 
-SQLite cannot `ALTER TABLE MODIFY COLUMN`. The canonical workaround is a 12-step rebuild: `PRAGMA defer_foreign_keys`, create new table, `INSERT ... SELECT`, drop old, rename, re-create every index/trigger/view, restore `AUTOINCREMENT` sequence, `PRAGMA foreign_key_check`. This is expensive on large tables (full rewrite + re-index). We do not do it unless you explicitly set `support_alter_via_table_rebuild: true`. If the flag is off and your migration contains a `:modify`, we raise with a clear pointer to the flag — no silent "can't do that, skipping".
+SQLite cannot `ALTER TABLE MODIFY COLUMN`. The canonical workaround is a 12-step rebuild: `PRAGMA defer_foreign_keys`, create new table, `INSERT ... SELECT`, drop old, rename, re-create every index/trigger/view, restore `AUTOINCREMENT` sequence, `PRAGMA foreign_key_check`. This is expensive on large tables (full rewrite + re-index). We do not do it unless you explicitly set `support_alter_via_table_rebuild: true`. If the flag is off and your migration contains a `:modify`, we raise with a clear pointer to the flag — no silent "can't do that, skipping". Our rebuild reconstructs columns from `PRAGMA table_xinfo` and re-creates standalone indexes and triggers, but that column-info cannot carry foreign keys, `CHECK` constraints, `COLLATE`/inline-`UNIQUE` clauses, or generated columns. So with the flag ON, a `:modify` on a table that declares any of those also raises loudly rather than silently dropping the constraint — recreate that table by hand with `execute/1` where you control the full schema.
 
 ### DELETE with JOIN refuses best-effort
 

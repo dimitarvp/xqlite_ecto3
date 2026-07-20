@@ -31,6 +31,101 @@ defmodule XqliteEcto3.TableRebuildTest do
     end
   end
 
+  describe "refuses to silently drop constraints it cannot reconstruct" do
+    # The rebuild reconstructs columns from PRAGMA table_xinfo, which exposes
+    # only name/type/notnull/default/pk. Foreign keys, CHECK constraints, and
+    # COLLATE/inline-UNIQUE clauses live only in the original CREATE TABLE text,
+    # so a column-info rebuild would silently drop them — turning a MODIFY into
+    # a silent loss of referential/domain integrity. The rebuild must refuse
+    # loudly and leave the table untouched, never quietly strip the constraint.
+
+    test "refuses when the table has a foreign key, leaving it intact" do
+      create("CREATE TABLE rb_fk_parent(id INTEGER PRIMARY KEY, tag TEXT)")
+
+      create(
+        "CREATE TABLE rb_fk_child(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "parent_id INTEGER REFERENCES rb_fk_parent(id))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_fk_parent(id, tag) VALUES (1, 'p')")
+      TestRepo.query!("INSERT INTO rb_fk_child(name, parent_id) VALUES ('a', 1)")
+
+      assert_raise ArgumentError, ~r/foreign-key/, fn ->
+        run_alter(:rb_fk_child, [{:modify, :name, :string, [null: true]}])
+      end
+
+      # The FK must still be present and enforced — the refusal happened before
+      # any destructive rebuild step.
+      %{rows: fk_list} = TestRepo.query!("PRAGMA foreign_key_list('rb_fk_child')")
+      refute fk_list == []
+
+      orphan =
+        assert_raise XqliteEcto3.Error, fn ->
+          TestRepo.query!("INSERT INTO rb_fk_child(name, parent_id) VALUES ('orphan', 999)")
+        end
+
+      assert orphan.type == :constraint_violation
+    end
+
+    test "refuses when the table has a CHECK constraint, leaving it intact" do
+      create("CREATE TABLE rb_chk(id INTEGER PRIMARY KEY, qty INTEGER CHECK (qty >= 0))")
+      TestRepo.query!("INSERT INTO rb_chk(qty) VALUES (5)")
+
+      assert_raise ArgumentError, ~r/CHECK/, fn ->
+        run_alter(:rb_chk, [{:modify, :qty, :integer, [null: true]}])
+      end
+
+      # CHECK still enforced.
+      assert_raise XqliteEcto3.Error, fn ->
+        TestRepo.query!("INSERT INTO rb_chk(qty) VALUES (-5)")
+      end
+    end
+
+    test "refuses when the table has a COLLATE clause" do
+      create("CREATE TABLE rb_coll(id INTEGER PRIMARY KEY, code TEXT COLLATE NOCASE)")
+      TestRepo.query!("INSERT INTO rb_coll(code) VALUES ('ABC')")
+
+      assert_raise ArgumentError, ~r/COLLATE/, fn ->
+        run_alter(:rb_coll, [{:modify, :code, :string, [null: true]}])
+      end
+
+      # NOCASE still folds case.
+      %{rows: rows} = TestRepo.query!("SELECT id FROM rb_coll WHERE code = 'abc'")
+      assert rows == [[1]]
+    end
+
+    test "refuses when the table has an inline UNIQUE constraint" do
+      create("CREATE TABLE rb_uniq(id INTEGER PRIMARY KEY, sku TEXT UNIQUE)")
+
+      assert_raise ArgumentError, ~r/UNIQUE/, fn ->
+        run_alter(:rb_uniq, [{:modify, :sku, :string, [null: true]}])
+      end
+    end
+
+    test "refuses when the table has generated columns, leaving them intact" do
+      create("""
+      CREATE TABLE rb_gen(
+        id INTEGER PRIMARY KEY, base INTEGER, plain TEXT,
+        doubled INTEGER GENERATED ALWAYS AS (base * 2) STORED,
+        tripled INTEGER GENERATED ALWAYS AS (base * 3) VIRTUAL
+      )
+      """)
+
+      TestRepo.query!("INSERT INTO rb_gen(id, base, plain) VALUES (1, 10, 'x')")
+
+      assert_raise ArgumentError, ~r/generated/, fn ->
+        run_alter(:rb_gen, [{:modify, :plain, :string, [null: true]}])
+      end
+
+      # Both generated columns are still present and still computing.
+      %{rows: [[doubled, tripled]]} =
+        TestRepo.query!("SELECT doubled, tripled FROM rb_gen WHERE id = 1")
+
+      assert doubled == 20
+      assert tripled == 30
+    end
+  end
+
   describe "modify column" do
     test "rebuilds table and preserves existing rows" do
       create("CREATE TABLE rb_preserve(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
