@@ -22,18 +22,12 @@ defmodule XqliteBench.MixProject do
   defp deps do
     [
       {:benchee, "~> 1.3"},
-      # 3.13 pinned: ecto_sql 3.14 changed the Connection.insert
-      # callback to /8, which xqlite_ecto3 does not implement yet —
-      # discovered by this bench project's fresh lockfile (the
-      # adapter's own lock hides it). Tracked as a separate fix.
-      {:ecto_sql, "~> 3.13.0"},
+      {:ecto_sql, "~> 3.14"},
       {:xqlite_ecto3, path: "..", override: true},
       {:xqlite, path: "../../xqlite", override: true},
       # needed because XQLITE_BUILD=true forces the local source build
       {:rustler, "~> 0.38.0", runtime: false},
-      # 0.22.x is the ecto_sql-3.13 era of ecto_sqlite3 (0.24+ requires
-      # ecto_sql 3.14 — they already migrated to the insert/8 callback).
-      {:ecto_sqlite3, "~> 0.22.0"}
+      {:ecto_sqlite3, "~> 0.24"}
     ]
   end
 end
