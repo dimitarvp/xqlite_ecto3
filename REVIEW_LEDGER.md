@@ -283,3 +283,160 @@ async suite for baseline sandbox correctness.
   remain unrun. F-B5-1 and F-B3-1 were filed not fixed — both are
   genuine maintainer design calls (return shape / guard shape), not
   oversights.
+
+---
+
+## Run 3 — 2026-07-20 — third covering pass: B8 + B4 + B7
+
+- Commit at scan: `6e0919c` (after adapter Run 2). Deps compiled at
+  xqlite 0.10.0. Single Opus reviewer; direct source audit + live
+  timed-operation / round-trip / generated-DDL evidence against bundled
+  SQLite 3.53.2. All runtime claims below were produced THIS session
+  (scripts under scratchpad, driven via `mix run` and `mix test`).
+- Scope: timeout→cancel divergence (B8, flagship), type round-trips as
+  properties (B4), migration ergonomics (B7). Contracts read from
+  `deps/` source: DBConnection `handle_common_result` (`{:error,…}` keeps
+  the connection, `{:disconnect,…}` tears it down — `db_connection.ex`
+  1397-1416), `Holder.holder_apply`/`start_deadline` (callback runs in
+  the client process; the pool arms a `now+timeout` deadline —
+  `holder.ex` 377-457), and Ecto's `check_on_delete!`/`check_on_update!`
+  valid shapes (`ecto_sql/lib/ecto/migration.ex` 1589-1612).
+
+### B8 — timeout→cancel divergence (FLAGSHIP; core CLEAN)
+
+Exercised the FULL path through both the direct driver and a real
+`DBConnection.start_link` pool. The query-path (`handle_execute`) design
+is correct and robust:
+
+- Real-pool evidence: `DBConnection.execute(pool, slow_recursive_cte, [],
+  timeout: 150)` → `{:error, %DBConnection.ConnectionError{message:
+  "query timed out"}}` in **159 ms** (prompt cancel — the query would run
+  ~3500 ms uncancelled), then 3 successive `SELECT` on the same pool all
+  returned rows. So (a) race: prompt, no torn state; (c) connection stays
+  usable; (d) structured `ConnectionError` Ecto surfaces as a timeout.
+- (b) Fresh cancel token per operation — `create_cancel_token()` is
+  called inline in `execute_with_cancel/4` and `step_to_completion/4`,
+  never stored. Proved the EFFECT: after a cached-path AND a one-shot-path
+  timeout, a generous-timeout `SELECT 1` completes (a spent token cannot
+  bleed into the next op); the cached slow statement is `pristine_stmt`'d
+  and re-runs cleanly.
+- (e) Transaction interaction: `handle_begin` → in-txn timeout →
+  `txn_state` stays `{:ok, :write}` and `transaction_status: :transaction`
+  (cancel aborts the statement, not the transaction) → `handle_rollback`
+  `:ok` → connection reusable. A real write updated inside the txn
+  (`v→999`) was correctly undone by rollback after the timeout (`v` back
+  to `100`). No stray mailbox messages post-cancel.
+- Codified as the owed post-cancel state matrix in `cancellation_test.exs`
+  (+4 deterministic tests). Two DIVERGENCES found — both bounded, neither
+  memory-unsafe/corrupting, both rooted in xqlite/SQLite mechanics the
+  adapter layer can't fix alone → BACKLOG (S3):
+  - **F-B8-1 (S3).** Operation `:timeout` does NOT interrupt a
+    lock-contended write — `busy_timeout` dominates. Two handles on one
+    file: handle A holds `BEGIN IMMEDIATE`; handle B (`busy_timeout:
+    3000`) INSERTs with a 300 ms cancel token → returned
+    `{:error, {:database_busy_or_locked, 5, "database is locked"}}` after
+    **3005 ms**, not 300 ms. SQLite's progress handler (which polls the
+    token) is not invoked while blocked in the busy-wait, so the cancel
+    fires only once stepping resumes. Bounded by `busy_timeout` (adapter
+    default 5000 ms) — the promptness guarantee covers CPU-bound execution
+    but not lock waits. Could be argued S2 (headline-behaviour divergence);
+    filed S3 as bounded + doc-remedy. → BACKLOG + doc.
+  - **F-B8-2 (S3).** The streaming path ignores `:timeout`.
+    `handle_declare`/`handle_fetch` create no cancel token, and xqlite
+    0.10.0 exposes no cancellable `stream_fetch` (only `stream_fetch/2`).
+    `Repo.stream(slow_cte, …)` under `run(timeout: 200)` ran the whole CTE
+    to completion (**3503 ms**, returned `[[10000000]]`); DBConnection's
+    deadline logged a disconnect at 200 ms but could not interrupt the
+    blocked dirty NIF. Cross-repo: a fix needs an xqlite
+    `stream_fetch_cancellable` first (X2 blast-radius note). → BACKLOG + doc.
+
+### B4 — type round-trips as properties (CLEAN except decimal)
+
+Built dump→store→load matrices (scratchpad `b4_*.exs`) plus a real-repo
+deliverable (`types_roundtrip_matrix_test.exs`, +29 assertions).
+Verified identity for: `:integer` (i64 min/max/0/neg/nil), `:string`
+(empty/unicode/quotes+backslash/newlines/nil), `:binary`
+(empty/raw/invalid-utf8/nul), `:boolean` (true/false/nil), `:map`
+(string-keyed/empty/float+nil), `{:array, :integer}`, and every custom
+type — `Instant` (usec DateTime exact; int-ns loads usec-truncated by
+design), `Duration` (int exact), `Types.Array` (`:integer`/`:float`/`:any`
+nested), `TimestampTZ` (instant preserved, zone collapses to UTC as
+documented), `Types.UUID` (string + 16-byte binary both → 36-char string).
+`:float` NUMERIC affinity stores `1.0` as INTEGER `1`, but Ecto's `:float`
+loader coerces `load(:float, 1) == {:ok, 1.0}` — round-trips. Atom-keyed
+maps come back string-keyed (JSON/Ecto contract) — PINNED, not a bug. One
+finding:
+
+- **F-B4-1 (S1-severity, silent data transformation; BACKLOG + doc
+  shipped).** A `:decimal` migration column maps to `DECIMAL` (NUMERIC
+  affinity). The dumper binds `Decimal.to_string(d, :normal)` as TEXT, and
+  NUMERIC affinity coerces it to float64 at write — decimals beyond ~15
+  significant digits are SILENTLY truncated. Live:
+  `12345678901234567890.12345` → stored REAL `1.2345678901234567e19` →
+  loads `1.2345678901234568e19` (`typeof=real`, NOT equal);
+  `123456789.123456789` → `…5679` (last digits changed);
+  `99999999999999999999` → `1e20`. Common money round-trips exactly
+  (`19.99`, `9999999999999.99`, `0.000000000000000001` all `ok`). NO clean
+  code fix exists — proven: a TEXT-affinity column preserves precision but
+  makes bare range queries LEXICAL (`WHERE price > '100'` returned all of
+  `["150.00","99.99","9.99","1000.00","5.00"]` — `"99.99" > "100"` is true
+  lexically), trading silent precision-loss for silent wrong-results.
+  SQLite has no exact-decimal type; the remedy (keep+document, opt-in TEXT
+  storage à la `binary_id_storage`, or loud-reject at encode) is a
+  maintainer design call, mirroring F-B3-1/F-B5-1's disposition. The
+  pre-existing `types_test.exs` MASKED this by hand-creating a `TEXT`
+  decimal column, not the `DECIMAL` a real migration emits. Shipped now:
+  a loud "Decimal precision" moduledoc section + corrected the misleading
+  `data_type.ex` "(except DECIMAL)" comment + a pin test
+  (`types_roundtrip_matrix_test.exs`). → BACKLOG (maintainer ruling owed;
+  surface in the announcement-honesty ledger).
+
+### B7 — migration ergonomics (loud-refusal sweep; one silent miscompile)
+
+Generated DDL for the full construct set via
+`XqliteEcto3.Connection.execute_ddl/1` (scratchpad `b7_ddl.exs`).
+CORRECT SQLite emitted for: FK references with `ON DELETE/ON UPDATE`
+(whole-key actions), `:check` constraints, `DROP COLUMN`, partial/unique
+indexes, composite PK/FK. Every genuinely-unsupported construct refuses
+LOUDLY (`ArgumentError`, clear message): ADD/DROP CONSTRAINT, index
+`concurrently`/`using`/`include`/`nulls_distinct`/`only`, keyword
+`:options`/`execute`, and `ALTER COLUMN` (`:modify` routes to the rebuild
+engine when `support_alter_via_table_rebuild: true`, else a clear raise).
+One CONFIRMED bug, fixed RED→green this run:
+
+- **F-B7-1 (S2, CONFIRMED + FIXED).** `reference_on_delete/1` handled only
+  the whole-key atoms and fell through to `[]` for everything else — so
+  Ecto's valid column-list forms `on_delete: {:nilify, cols}` and
+  `{:default, cols}` (validated in Ecto's `check_on_delete!`) SILENTLY
+  DROPPED the entire `ON DELETE` clause: `CONSTRAINT … REFERENCES
+  "parents"("id")` with no action, discarding the referential behaviour
+  the migration asked for. SQLite has no column-list `ON DELETE` syntax
+  (the action always covers the whole key), so the correct move is to
+  refuse loudly. Fix: a guard clause raising `ArgumentError` pointing at
+  `:nilify_all` / `:default_all`. (`on_update` tuples are rejected upstream
+  by Ecto's `check_on_update!`, so only `on_delete` was reachable.) Tests:
+  `migration_test.exs` "reference ON DELETE" (+4: whole-key controls pass,
+  both column-list forms now raise). The shared suite already excludes
+  `:on_delete_nilify_column_list`/`:on_delete_default_column_list`.
+
+### Verdict + dryness
+
+- 1 S2 CONFIRMED+FIXED (F-B7-1, RED→green), 1 S1-severity documented +
+  filed with a maintainer ruling owed (F-B4-1), 2 S3 → BACKLOG (F-B8-1,
+  F-B8-2). B8 flagship CORE CLEAN, B4 CLEAN bar decimal, B7 CLEAN bar the
+  one silent miscompile. `mix verify` green at close.
+- Dryness: B8/B4/B7 now each have ONE covering pass — NOT DRY, one more
+  owed each. A confirmed finding surfaced on B7 and B4, so none can be
+  marked dry. Re-wetters recorded in REVIEW_AXES.md.
+- Completeness critic: **F-B4-1 needs a maintainer ruling** — doc-only
+  may be acceptable (it is a universal SQLite limitation now clearly
+  documented and matching the adapter's other documented type caveats),
+  or the maintainer may want opt-in TEXT storage / loud-reject; that call
+  gates whether it clears the S0–S2 first-publish bar. `stream_data` was
+  NOT a dependency (task assumption wrong) — the B4 matrix is exhaustive
+  example-based, not generative; a future pass could add the dep and
+  fuzz. B8 owes: the pool-deadline-vs-graceful-cancel interaction was
+  characterized (pool stays healthy) but not turned into a test (timing);
+  the two divergences (F-B8-1/2) are documented not fixed. B7 owes a
+  sweep of `modifiers_expr` and ADD-COLUMN-with-REFERENCES runtime
+  rejection (both raise/error loudly on inspection, not yet lived).

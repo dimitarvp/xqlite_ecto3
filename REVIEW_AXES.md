@@ -60,8 +60,21 @@ BLOB/TEXT interop + joins; JSON fidelity incl. key-type round-trip +
 double-encode pin (object lands, not escaped string); usec
 truncation; offset-preserving DateTime inherited semantics (format
 drift between stored form and bound-param comparisons —
-wrong-results class). Coverage: types/ suites exist (5 files);
-no property matrix.
+wrong-results class). Coverage: Run 3 built dump→store→load matrices
+for every primitive + custom type through the real repo
+(`types_roundtrip_matrix_test.exs`) — all round-trip (`:float` NUMERIC
+affinity stores `1.0` as INTEGER but Ecto's loader re-floats it; atom-key
+maps come back string-keyed, PINNED). Found F-B4-1 (S1-severity, silent
+data transformation): a `:decimal` migration column (DECIMAL/NUMERIC
+affinity) coerces the TEXT param to float64, so decimals beyond ~15
+significant digits SILENTLY truncate. No clean fix — TEXT storage
+preserves precision but makes bare range queries lexical (proven live);
+common money round-trips. Shipped a loud moduledoc + comment fix + pin
+test; remedy (opt-in TEXT / loud-reject / doc-only) is a maintainer call
+→ BACKLOG. The old `types_test.exs` masked it with a hand-rolled TEXT
+decimal column. NOT DRY. Re-wets on: any `column_type(:decimal/:float)`
+change, a loaders/dumpers clause change, a new custom type, a
+`Query.encode_param` change.
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
@@ -104,16 +117,41 @@ No reference implementation exists = extra scrutiny. Probes: which
 DDL ops supported vs refused, and are refusals LOUD (error) never
 silent no-ops — sweep every path; DDL-in-transaction semantics;
 rebuild-dance correctness (AUTOINCREMENT seq, indexes, triggers,
-FK check); downgrade paths. Coverage: rebuild engine + helpers
-tested; loud-refusal sweep not run.
+FK check); downgrade paths. Coverage: Run 3 ran the loud-refusal sweep —
+generated DDL for the full construct set. Correct SQLite for FK
+references (whole-key ON DELETE/UPDATE), `:check`, DROP COLUMN,
+partial/unique indexes, composite PK/FK; every unsupported construct
+(ADD/DROP CONSTRAINT, index concurrently/using/include/nulls_distinct/
+only, keyword options/execute, ALTER COLUMN) refuses LOUDLY. Found +
+fixed F-B7-1 (S2): `on_delete: {:nilify, cols}`/`{:default, cols}` (valid
+Ecto shapes) SILENTLY dropped the whole ON DELETE clause — now a loud
+`ArgumentError`. NOT DRY. Re-wets on: any `reference_on_delete/1`,
+`execute_ddl` clause, or `column_change` change; an Ecto migration
+grammar addition. Owed: `modifiers_expr` + ADD-COLUMN-with-REFERENCES
+runtime rejection lived (raise on inspection, not yet run).
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
 here = the query dies. Deliberate divergence. Probes: post-cancel
 connection state (txn aborted? poisoned or reusable? DBConnection
 disconnect fired?); divergence documented LOUDLY (adopter retry
-logic written for postgres semantics may misbehave). Coverage:
-cancel threading tested; post-cancel state matrix owed.
+logic written for postgres semantics may misbehave). Coverage: Run 3
+exercised the full path through a real `DBConnection` pool AND the direct
+driver. CORE CLEAN: query-path timeout cancels promptly (159 ms for a
+150 ms timeout on a ~3.5 s query), returns structured
+`%DBConnection.ConnectionError{message: "query timed out"}`, pool stays
+reusable; fresh cancel token per op (no spent-token bleed — proven on
+cached + one-shot paths); in-txn timeout leaves the txn open + rollback
+undoes writes; no mailbox leak. Codified as the post-cancel state matrix
+(`cancellation_test.exs` +4). TWO divergences → BACKLOG: F-B8-1 (S3) op
+`:timeout` doesn't interrupt a lock-contended write — busy_timeout
+dominates (3005 ms for a 300 ms token; progress handler idle during
+busy-wait); F-B8-2 (S3) the streaming path (`handle_declare`/
+`handle_fetch`) has no cancel token (xqlite has no cancellable
+`stream_fetch`), so `Repo.stream(…, timeout:)` runs a slow batch to
+completion. NOT DRY. Re-wets on: any `run_statement`/`execute_with_cancel`/
+`spawn_canceller` change, a DBConnection deadline-contract change, an
+xqlite cancel-token or stream-fetch change.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

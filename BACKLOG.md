@@ -31,7 +31,53 @@ after the S0–S2 burn-down.
   RAN in Run 2 and confirmed a defect — see F-B3-1 below.)
 - [B9] Verify CI builds AND tests both telemetry compile configs.
 
+## Open (higher severity — maintainer ruling owed)
+
+- [F-B4-1] (S1-severity — silent data transformation; publish gate,
+  maintainer ruling owed). A `:decimal` migration column maps to `DECIMAL`
+  (NUMERIC affinity); the dumper binds `Decimal.to_string(d, :normal)` as
+  TEXT and SQLite coerces it to float64 at write, so decimals beyond ~15
+  significant digits are SILENTLY truncated (live: `12345678901234567890
+  .12345` → REAL `1.2345678901234567e19`, loads back unequal;
+  `123456789.123456789` → `…5679`). Common money (≤15 sig digits) round-
+  trips exactly. There is NO clean code fix: a TEXT-affinity column
+  preserves precision but makes bare range queries LEXICAL (`WHERE price >
+  '100'` matched `"99.99"`) — trading silent precision-loss for silent
+  wrong-results (proven live). SQLite has no exact-decimal type. Shipped
+  this run: a loud "Decimal precision" moduledoc section, a corrected
+  `data_type.ex` comment, and a pin test (`types_roundtrip_matrix_test
+  .exs`). REMEDY IS A MAINTAINER CALL: (a) doc-only (it is a universal
+  SQLite limitation now documented alongside the adapter's other type
+  caveats — arguably an accepted cost for the announcement-honesty
+  ledger), (b) opt-in TEXT storage à la `binary_id_storage`, or (c)
+  loud-reject at encode when a Decimal exceeds the float-safe range. The
+  old `types_test.exs` masked this with a hand-rolled TEXT decimal column.
+  (Run 3, B4)
+
 ## Open (S3 — tracked, never dropped)
+
+- [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
+  write — `busy_timeout` dominates. Two handles on one file: A holds
+  `BEGIN IMMEDIATE`, B (`busy_timeout: 3000`) INSERTs with a 300 ms cancel
+  token → `{:error, {:database_busy_or_locked, 5, …}}` after **3005 ms**,
+  not 300 ms. SQLite's progress handler (which polls the cancel token) is
+  not called while blocked in the busy-wait, so the token fires only once
+  stepping resumes. Bounded by `busy_timeout` (adapter default 5000 ms) —
+  the flagship promptness guarantee covers CPU-bound execution, not lock
+  waits. Could be argued S2 (headline-behaviour divergence); filed S3 as
+  bounded + doc-remedy. Options: document prominently; lower the default
+  `busy_timeout`; or (xqlite change) a busy handler that polls the token.
+  (Run 3, B8)
+- [F-B8-2] (S3) The streaming path ignores `:timeout`.
+  `handle_declare`/`handle_fetch` create no cancel token, and xqlite 0.10.0
+  exposes no cancellable `stream_fetch` (only `stream_fetch/2`). A
+  `Repo.stream(slow_query, …)` under `run(timeout: 200)` ran the whole
+  recursive CTE to completion (**3503 ms**, returned `[[10000000]]`);
+  DBConnection's deadline logged a disconnect at 200 ms but could not
+  interrupt the blocked dirty NIF. Cross-repo (X2): a fix needs an xqlite
+  `stream_fetch_cancellable` first, then wire a per-fetch token like
+  `execute_with_cancel`. Interim: document that stream batches are
+  uncancellable and to keep `max_rows` modest. (Run 3, B8)
 
 - [F-B3-1] No guard on private-`:memory:` + a multi-connection pool.
   `database: ":memory:"` with NO `pool_size` (Ecto default 10) starts
@@ -95,6 +141,14 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-20 [F-B7-1] (S2) `reference_on_delete/1` handled only the
+  whole-key atoms and fell through to `[]` for Ecto's valid column-list
+  forms `on_delete: {:nilify, cols}` / `{:default, cols}`, SILENTLY
+  dropping the entire `ON DELETE` clause (`CONSTRAINT … REFERENCES
+  "parents"("id")` with no action). SQLite has no column-list ON DELETE
+  syntax; fixed to raise a loud `ArgumentError` pointing at `:nilify_all`
+  / `:default_all`. (`on_update` tuples are Ecto-rejected upstream.)
+  RED→green in `migration_test.exs` "reference ON DELETE". (Run 3, B7)
 - 2026-07-20 [F-B6-1] (S1) `escape_string/1` doubled backslashes for
   inline SQL string literals (`WHERE`/`LIKE` literals, DDL string
   defaults). SQLite treats `\` as an ordinary character, so `'a\\b'` is a
