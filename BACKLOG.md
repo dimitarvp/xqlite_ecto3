@@ -31,29 +31,6 @@ after the S0–S2 burn-down.
   RAN in Run 2 and confirmed a defect — see F-B3-1 below.)
 - [B9] Verify CI builds AND tests both telemetry compile configs.
 
-## Open (higher severity — maintainer ruling owed)
-
-- [F-B4-1] (S1-severity — silent data transformation; publish gate,
-  maintainer ruling owed). A `:decimal` migration column maps to `DECIMAL`
-  (NUMERIC affinity); the dumper binds `Decimal.to_string(d, :normal)` as
-  TEXT and SQLite coerces it to float64 at write, so decimals beyond ~15
-  significant digits are SILENTLY truncated (live: `12345678901234567890
-  .12345` → REAL `1.2345678901234567e19`, loads back unequal;
-  `123456789.123456789` → `…5679`). Common money (≤15 sig digits) round-
-  trips exactly. There is NO clean code fix: a TEXT-affinity column
-  preserves precision but makes bare range queries LEXICAL (`WHERE price >
-  '100'` matched `"99.99"`) — trading silent precision-loss for silent
-  wrong-results (proven live). SQLite has no exact-decimal type. Shipped
-  this run: a loud "Decimal precision" moduledoc section, a corrected
-  `data_type.ex` comment, and a pin test (`types_roundtrip_matrix_test
-  .exs`). REMEDY IS A MAINTAINER CALL: (a) doc-only (it is a universal
-  SQLite limitation now documented alongside the adapter's other type
-  caveats — arguably an accepted cost for the announcement-honesty
-  ledger), (b) opt-in TEXT storage à la `binary_id_storage`, or (c)
-  loud-reject at encode when a Decimal exceeds the float-safe range. The
-  old `types_test.exs` masked this with a hand-rolled TEXT decimal column.
-  (Run 3, B4)
-
 ## Open (S3 — tracked, never dropped)
 
 - [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
@@ -141,6 +118,25 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-20 [F-B4-1] (S1) A `:decimal` column maps to `DECIMAL` (NUMERIC
+  affinity); the encode boundary bound `Decimal.to_string(d, :normal)` as
+  TEXT and SQLite coerced it to float64 at write, silently rounding decimals
+  beyond float64's exact precision (`12345678901234567890.12345` → REAL
+  `1.2345678901234567e19`, loads back unequal). Maintainer ruling (Dimi,
+  2026-07-20): LOUD REJECT beyond precision, keep numeric storage so
+  ordering/range queries still work. Added
+  `XqliteEcto3.DecimalPrecision.representable?/1` (Decimal → float64 →
+  shortest round-trip string → Decimal, compared normalized) guarding
+  `encode_param/1`; a non-round-tripping Decimal now raises structured
+  `XqliteEcto3.DecimalPrecisionError` (carries `:value`) instead of storing a
+  rounded number. Typical money (≤15 sig digits, incl. `9999999999999.99`)
+  and float-exact large ints still store fine — the guard's accept/reject
+  verdict was cross-checked against a real SQLite DECIMAL round-trip and
+  agreed for every probed value. Docs flipped from "silently truncated" to
+  loud-reject in the moduledoc + `data_type.ex`; the pin test flipped from
+  `refute Decimal.equal?` to `assert_raise`. RED→green in
+  `types_roundtrip_matrix_test.exs` + `query_encoding_test.exs`; guard table
+  in `decimal_precision_test.exs`. (Run 3, B4)
 - 2026-07-20 [F-B7-1] (S2) `reference_on_delete/1` handled only the
   whole-key atoms and fell through to `[]` for Ecto's valid column-list
   forms `on_delete: {:nilify, cols}` / `{:default, cols}`, SILENTLY

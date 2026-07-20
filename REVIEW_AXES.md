@@ -75,6 +75,15 @@ test; remedy (opt-in TEXT / loud-reject / doc-only) is a maintainer call
 decimal column. NOT DRY. Re-wets on: any `column_type(:decimal/:float)`
 change, a loaders/dumpers clause change, a new custom type, a
 `Query.encode_param` change.
+RE-WET 2026-07-20 by the F-B4-1 remedy: the maintainer ruling (LOUD REJECT
+beyond precision) added `XqliteEcto3.DecimalPrecision.representable?/1` and
+a raise in `Query.encode_param` (a listed re-wetter). The "silently
+truncate" behaviour above is now REMEDIED — a beyond-float64 `Decimal`
+raises `XqliteEcto3.DecimalPrecisionError` instead; numeric storage kept, so
+money/ordering still work (see REVIEW_LEDGER Remedy 2026-07-20 for the
+guard-vs-SQLite verification table). Needs a fresh covering pass on the
+new guard's boundary (the guard table exists in `decimal_precision_test.exs`;
+a next pass could add `stream_data` fuzzing around the ~15-sig threshold).
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA

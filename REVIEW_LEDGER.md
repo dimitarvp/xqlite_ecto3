@@ -440,3 +440,76 @@ One CONFIRMED bug, fixed RED→green this run:
   the two divergences (F-B8-1/2) are documented not fixed. B7 owes a
   sweep of `modifiers_expr` and ADD-COLUMN-with-REFERENCES runtime
   rejection (both raise/error loudly on inspection, not yet lived).
+
+## Remedy — 2026-07-20 — F-B4-1 loud-reject (maintainer ruling)
+
+Ruling (Dimi, 2026-07-20): LOUD REJECT beyond precision. Keep numeric
+storage so ordering/range queries still work, but when a `:decimal` value
+would NOT survive the float64 round-trip, refuse it with a structured error
+at the boundary rather than silently rounding it.
+
+Implemented:
+
+- `XqliteEcto3.DecimalPrecision.representable?/1` — the guard. Rule:
+  `Decimal → float64 (Decimal.to_float) → shortest round-trip string
+  (Float.to_string) → Decimal`, compared with the original via
+  `Decimal.equal?(normalize, normalize)`. Non-finite (`inf`/`NaN`) and
+  out-of-float64-range magnitudes are refused up front (comparing against
+  the same DBL_MAX/DBL_MIN bounds `to_float` enforces), so the guard never
+  raises — no `rescue`.
+- Guard wired into `XqliteEcto3.Query`'s `encode_param/1` (the universal
+  parameter-binding boundary — every bound `%Decimal{}` passes through it,
+  regardless of the field's declared type). A non-representable value raises
+  `XqliteEcto3.DecimalPrecisionError` (dedicated exception carrying the
+  offending `:value`, mirroring `UnsupportedTypeError`). Raising is forced
+  by the boundary: `DBConnection.Query.encode/3`'s contract returns the
+  encoded list — it cannot return `{:error, …}`; DBConnection re-raises the
+  exception unchanged (verified: `db_connection.ex` `raised_close` preserves
+  `kind/reason/stack`; only `DBConnection.EncodeError` is special-cased).
+- Docs flipped from "silently truncated" limitation to loud-reject in the
+  `XqliteEcto3` moduledoc + the `DataType` comment.
+
+Precision-guard verification (each value: guard verdict cross-checked
+against a REAL SQLite `DECIMAL`-column round-trip via the xqlite NIF — the
+two agreed for every value):
+
+| input                          | float64 → shortest str     | guard  | SQLite exact? |
+|--------------------------------|----------------------------|--------|---------------|
+| `0`                            | `0.0`                      | ACCEPT | yes           |
+| `0.1`                          | `0.1`                      | ACCEPT | yes           |
+| `99.99` / `-99.99`             | `99.99` / `-99.99`         | ACCEPT | yes           |
+| `12345.67`                     | `12345.67`                 | ACCEPT | yes           |
+| `100.00`                       | `100.0`                    | ACCEPT | yes           |
+| `9999999999999.99` (15 sig)    | `9999999999999.99`         | ACCEPT | yes           |
+| `0.000000000000000001` (1e-18) | `1.0e-18`                  | ACCEPT | yes           |
+| `1E-30`                        | `1.0e-30`                  | ACCEPT | yes           |
+| `3.141592653589793` (16 sig)   | `3.141592653589793`        | ACCEPT | yes           |
+| `9007199254740992` (2^53)      | `9.007199254740992e15`     | ACCEPT | yes           |
+| `10000000000000000000` (1e19)  | `1.0e19`                   | ACCEPT | yes           |
+| `1E308`                        | `1.0e308`                  | ACCEPT | yes           |
+| `12345678901234567890` (20d)   | `1.2345678901234567e19`    | REJECT | no (rounds)   |
+| `12345678901234567890.12345`   | `1.2345678901234567e19`    | REJECT | no (rounds)   |
+| `-12345678901234567890.12345`  | `-1.2345678901234567e19`   | REJECT | no (rounds)   |
+| `18446744073709551615` (u64)   | `1.8446744073709552e19`    | REJECT | no (rounds)   |
+| `0.12345678901234567` (17 sig) | `0.12345678901234566`      | REJECT | no (rounds)   |
+| `1E400` (overflow)             | (bound pre-check)          | REJECT | n/a           |
+| `1E-320` (subnormal)           | (bound pre-check)          | REJECT | n/a           |
+| `Inf` / `-Inf` / `NaN`         | (non-finite pre-check)     | REJECT | n/a           |
+
+Note the `0.1` trap: a naive bit-exact float comparison would wrongly
+reject it; the shortest-round-trip-string comparison accepts it correctly.
+
+RED→green (via real `Repo.insert`, not just the encode helper):
+- `types_roundtrip_matrix_test.exs` — the pin flipped from `refute
+  Decimal.equal?(loaded, dec)` (which PINNED the silent rounding) to
+  `assert_raise XqliteEcto3.DecimalPrecisionError` + `err.value` structured
+  assertion; money/normal round-trips stay green. (29 passed)
+- `query_encoding_test.exs` — encode boundary refuses beyond-precision,
+  large money still encodes. (28 passed)
+- `decimal_precision_test.exs` (new) — the full guard table above +
+  structured-field assertions. (25 passed)
+
+`mix verify` green (format, compile w-a-e, deps.audit, sobelow, dialyzer,
+full seq suite — "All tests passed!"). B4 re-wet by this change (see
+REVIEW_AXES.md); the doc-vs-behaviour claim that decimals "silently lose
+precision" is now false — they are refused.
