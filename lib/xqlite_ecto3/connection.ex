@@ -1349,7 +1349,11 @@ defmodule XqliteEcto3.Connection do
       message: "#{dir} is not supported in ORDER BY in SQLite"
   end
 
-  def limit(%{limit: nil}, _sources), do: []
+  def limit(%{limit: nil, offset: nil}, _sources), do: []
+
+  # SQLite's grammar has no bare OFFSET — a LIMIT must precede it. LIMIT -1
+  # imposes no row cap, so OFFSET still skips the leading rows.
+  def limit(%{limit: nil}, _sources), do: " LIMIT -1"
 
   def limit(%{limit: %{expr: expression}} = query, sources) do
     [" LIMIT " | expr(expression, sources, query)]
@@ -2191,7 +2195,14 @@ defmodule XqliteEcto3.Connection do
     quote_entity(Atom.to_string(val))
   end
 
-  defp quote_entity(val), do: [[?", val, ?"]]
+  defp quote_entity(val), do: [[?", escape_identifier(val), ?"]]
+
+  # A double-quoted SQL identifier escapes an embedded quote by doubling it.
+  # Without this a name carrying a `"` (e.g. a runtime `identifier(^value)`
+  # fragment) breaks out of the quotes and injects arbitrary SQL.
+  defp escape_identifier(value) when is_binary(value) do
+    :binary.replace(value, "\"", "\"\"", [:global])
+  end
 
   defp intersperse_reduce(list, separator, user_acc, reducer, acc \\ [])
 
@@ -2211,15 +2222,20 @@ defmodule XqliteEcto3.Connection do
     if condition, do: value, else: []
   end
 
+  # A SQLite string literal escapes only the single quote (by doubling it).
+  # Backslash is an ordinary character — doubling it corrupts the value, so
+  # a literal `a\b` must emit as `'a\b'`, never `'a\\b'`.
   defp escape_string(value) when is_binary(value) do
-    value
-    |> :binary.replace("'", "''", [:global])
-    |> :binary.replace("\\", "\\\\", [:global])
+    :binary.replace(value, "'", "''", [:global])
   end
 
+  # JSON-path keys live inside a SQLite string literal AND inside JSON's own
+  # double-quoted-key grammar, so they need backslash and double-quote
+  # escaping on top of the single-quote escaping.
   defp escape_json_key(value) when is_binary(value) do
     value
     |> escape_string()
+    |> :binary.replace("\\", "\\\\", [:global])
     |> :binary.replace("\"", "\\\"", [:global])
   end
 

@@ -130,8 +130,8 @@ defmodule XqliteEcto3.QueryFeaturesTest do
     assert names == ["Bob", "Carol"]
   end
 
-  test "offset without limit requires LIMIT in SQLite" do
-    names = Repo.all(from(u in QU, select: u.name, order_by: u.name, limit: 999, offset: 2))
+  test "offset without limit" do
+    names = Repo.all(from(u in QU, select: u.name, order_by: u.name, offset: 2))
     assert names == ["Carol"]
   end
 
@@ -288,5 +288,19 @@ defmodule XqliteEcto3.QueryFeaturesTest do
     Repo.delete_all(QU)
 
     assert Repo.all(QU) == []
+  end
+
+  # ---------------------------------------------------------------------------
+  # Inline string-literal escaping
+  # ---------------------------------------------------------------------------
+
+  test "literal comparison with a backslash matches the stored value" do
+    {:ok, _} = Repo.insert(QU.changeset(%QU{}, %{name: "back\\slash"}))
+
+    # The RHS is a query literal inlined into the SQL. SQLite treats
+    # backslash as an ordinary character, so the emitted literal must not
+    # double it — otherwise the comparison silently matches nothing.
+    names = Repo.all(from(u in QU, where: u.name == "back\\slash", select: u.name))
+    assert names == ["back\\slash"]
   end
 end

@@ -139,6 +139,27 @@ defmodule XqliteEcto3.ConnectionTest do
   end
 
   # ---------------------------------------------------------------------------
+  # identifier and string-literal escaping
+  # ---------------------------------------------------------------------------
+
+  test "quotes an embedded double quote in a column identifier" do
+    result = SQL.insert(nil, "users", [:"a\"b"], [[:"a\"b"]], {:raise, [], []}, [], [])
+    assert to_sql(result) == ~s|INSERT INTO "users" ("a""b") VALUES (?1)|
+  end
+
+  test "quotes an embedded double quote in a table identifier" do
+    result = SQL.insert(nil, ~s|ev"il|, [:x], [[:x]], {:raise, [], []}, [], [])
+    assert to_sql(result) == ~s|INSERT INTO "ev""il" ("x") VALUES (?1)|
+  end
+
+  test "does not double backslashes in a string default" do
+    ddl = {:create, %Table{name: "t"}, [{:add, :path, :string, [default: "C:\\x"]}]}
+
+    assert [sql] = SQL.execute_ddl(ddl)
+    assert to_sql(sql) == ~s|CREATE TABLE "t" ("path" TEXT DEFAULT 'C:\\x')|
+  end
+
+  # ---------------------------------------------------------------------------
   # to_constraints
   # ---------------------------------------------------------------------------
 
