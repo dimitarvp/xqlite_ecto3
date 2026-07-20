@@ -178,4 +178,42 @@ defmodule XqliteEcto3.MigrationTest do
 
     TestRepo.query!("DROP TABLE raw_ddl_test")
   end
+
+  describe "reference ON DELETE" do
+    defp ref_ddl(on_delete) do
+      Connection.execute_ddl(
+        {:create, %Ecto.Migration.Table{name: :comments},
+         [
+           {:add, :post_id,
+            %Ecto.Migration.Reference{
+              table: :posts,
+              column: :id,
+              type: :id,
+              on_delete: on_delete
+            }, []}
+         ]}
+      )
+      |> List.first()
+      |> IO.iodata_to_binary()
+    end
+
+    test "whole-key :nilify_all emits ON DELETE SET NULL" do
+      assert ref_ddl(:nilify_all) =~ "ON DELETE SET NULL"
+    end
+
+    test "whole-key :default_all emits ON DELETE SET DEFAULT" do
+      assert ref_ddl(:default_all) =~ "ON DELETE SET DEFAULT"
+    end
+
+    # SQLite has no column-list ON DELETE syntax; the action always covers the
+    # whole key. Silently dropping the clause would ignore what the migration
+    # asked for, so the adapter must refuse loudly rather than miscompile.
+    test "column-list {:nilify, cols} refuses loudly instead of dropping the clause" do
+      assert_raise ArgumentError, fn -> ref_ddl({:nilify, [:post_id]}) end
+    end
+
+    test "column-list {:default, cols} refuses loudly instead of dropping the clause" do
+      assert_raise ArgumentError, fn -> ref_ddl({:default, [:post_id]}) end
+    end
+  end
 end

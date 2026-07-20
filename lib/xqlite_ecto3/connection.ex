@@ -2064,6 +2064,19 @@ defmodule XqliteEcto3.Connection do
   defp reference_on_delete(:default_all), do: " ON DELETE SET DEFAULT"
   defp reference_on_delete(:delete_all), do: " ON DELETE CASCADE"
   defp reference_on_delete(:restrict), do: " ON DELETE RESTRICT"
+
+  # SQLite applies ON DELETE SET NULL / SET DEFAULT to every column of the
+  # foreign key — there is no syntax to nilify only a subset. Emitting a bare
+  # FK (dropping the action) would silently ignore what the migration asked
+  # for, so refuse loudly and point at the whole-key equivalents.
+  defp reference_on_delete({option, columns})
+       when option in [:nilify, :default] and is_list(columns) do
+    raise ArgumentError,
+          "SQLite does not support column-list ON DELETE (got #{inspect({option, columns})}). " <>
+            "It applies the action to all foreign-key columns — use on_delete: :nilify_all " <>
+            "or :default_all instead."
+  end
+
   defp reference_on_delete(_), do: []
 
   defp reference_on_update(:nilify_all), do: " ON UPDATE SET NULL"
