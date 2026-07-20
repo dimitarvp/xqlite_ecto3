@@ -72,6 +72,16 @@ defmodule XqliteEcto3.JsonExtractPathTest do
     assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "found"
   end
 
+  test "dynamic key containing a backslash resolves via escaped quoted-key form" do
+    Repo.update_all(Doc, set: [label: "back\\slash"])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "bv"
+  end
+
+  test "dynamic key containing a double quote resolves via escaped quoted-key form" do
+    Repo.update_all(Doc, set: [label: "quo\"ted"])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "qv"
+  end
+
   test "dynamic key that matches nothing yields nil" do
     Repo.update_all(Doc, set: [label: "absent"])
     assert Repo.one(from(d in Doc, select: d.meta[d.label])) == nil

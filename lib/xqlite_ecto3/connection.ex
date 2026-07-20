@@ -2257,11 +2257,13 @@ defmodule XqliteEcto3.Connection do
   # grammar. Literal segments stay compile-time-escaped string chunks;
   # expression segments dispatch on typeof at runtime — integers index
   # arrays (`[n]`), anything else becomes a quoted object key
-  # (`."key"`, dot-safe). A NULL segment nulls the whole path, so
-  # json_extract returns NULL — graceful. Runtime keys containing a
-  # double quote are unsupported (they alter path parsing within the
-  # extracted document; same caveat as MySQL's CONCAT-built paths).
-  # The segment expression appears twice (typeof + value); for column
+  # (`."key"`, dot-safe). A runtime key value is escaped for the JSON5
+  # quoted-label grammar at runtime — backslashes doubled, embedded
+  # double quotes escaped — via nested `replace()`, so keys containing
+  # `\` or `"` resolve to the literal key (mirroring the compile-time
+  # `escape_json_key`) instead of silently missing. A NULL segment
+  # nulls the whole path, so json_extract returns NULL — graceful. The
+  # segment expression appears twice (typeof + value); for column
   # references that is free, and SQLite evaluates deterministically
   # within a statement.
   defp dynamic_json_path(path, sources, query) do
@@ -2281,9 +2283,9 @@ defmodule XqliteEcto3.Connection do
             seg,
             ") = 'integer' THEN '[' || ",
             seg,
-            " || ']' ELSE '.\"' || ",
+            " || ']' ELSE '.\"' || replace(replace(",
             seg,
-            " || '\"' END"
+            ", '\\', '\\\\'), '\"', '\\\"') || '\"' END"
           ]
       end)
 
