@@ -166,9 +166,9 @@ defmodule XqliteEcto3.Error do
     }
   end
 
-  def wrap({:sqlite_failure, code, extended_code, msg}) when is_binary(msg) do
+  def wrap({:sqlite_failure, code, extended_code, msg}) when is_binary(msg) or is_nil(msg) do
     %__MODULE__{
-      message: "SQLite failure: " <> msg,
+      message: sqlite_failure_message(msg),
       type: :sqlite_failure,
       details: %SqliteFailure{code: code, extended_code: extended_code, message: msg}
     }
@@ -212,4 +212,7 @@ defmodule XqliteEcto3.Error do
   def wrap(reason) do
     %__MODULE__{message: inspect(reason)}
   end
+
+  defp sqlite_failure_message(nil), do: "SQLite failure"
+  defp sqlite_failure_message(msg), do: "SQLite failure: " <> msg
 end

@@ -78,6 +78,13 @@ defmodule XqliteEcto3.ErrorWrapTest do
                message: "cannot start a transaction within a transaction"
              } = e.details
     end
+
+    test "preserves the result codes when the message is nil" do
+      e = Error.wrap({:sqlite_failure, 5, 5, nil})
+      assert e.type == :sqlite_failure
+
+      assert %Error.SqliteFailure{code: 5, extended_code: 5, message: nil} = e.details
+    end
   end
 
   describe "wrap/1 on {:sql_input_error, details_map}" do
