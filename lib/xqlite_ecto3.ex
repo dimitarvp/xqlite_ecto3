@@ -31,11 +31,12 @@ defmodule XqliteEcto3 do
   true` in your repo config to enable the opt-in 12-step rebuild dance for a
   migration `:modify`. The rebuild preserves everything SQLite exposes
   structurally — foreign keys (composite keys, `ON DELETE`/`ON UPDATE` actions,
-  and implicit-primary-key references included) and UNIQUE constraints are
-  reconstructed from the structural pragmas, alongside indexes, triggers, and
-  the AUTOINCREMENT sequence. `CHECK` constraints, `COLLATE` clauses, generated
-  columns, `DEFERRABLE` foreign keys, and `ON CONFLICT` clauses cannot be
-  reconstructed structurally, so a `:modify` on a table declaring any of them
+  and implicit-primary-key references included), the primary key (single-column
+  and composite), and UNIQUE constraints are reconstructed from the structural
+  pragmas, alongside indexes, triggers, and the AUTOINCREMENT sequence. `CHECK`
+  constraints, `COLLATE` clauses, generated columns, `DEFERRABLE` foreign keys,
+  `ON CONFLICT` clauses, and the `WITHOUT ROWID` / `STRICT` table options cannot
+  be reconstructed structurally, so a `:modify` on a table declaring any of them
   refuses loudly rather than dropping it — perform those by hand with
   `execute/1`. A rebuild also refuses when another, *populated* table references
   the rebuilt table with an `ON DELETE CASCADE`/`SET NULL`/`SET DEFAULT` action:
@@ -704,16 +705,19 @@ defmodule XqliteEcto3 do
     triggers = fetch_table_triggers!(meta, table, opts)
     autoincrement = fetch_autoincrement_value!(meta, table, opts)
 
-    {new_columns, copy_pairs} =
+    {new_columns, copy_pairs, primary_key} =
       plan_new_schema(existing_columns, changes, autoincrement: not is_nil(autoincrement))
+
+    table_constraints = primary_key ++ foreign_keys ++ unique_constraints
 
     statements =
       [
         "PRAGMA defer_foreign_keys = ON",
-        create_rebuild_table_sql(table, new_columns, foreign_keys ++ unique_constraints),
+        create_rebuild_table_sql(table, new_columns, table_constraints),
         copy_rows_sql(table, copy_pairs),
         "DROP TABLE #{quote_name(table.name)}",
-        ~s|ALTER TABLE "#{table.name}__xqlite_new" RENAME TO #{quote_name(table.name)}|,
+        "ALTER TABLE " <>
+          quote_name(transient_name(table.name)) <> " RENAME TO " <> quote_name(table.name),
         restore_autoincrement_sql(table, autoincrement)
       ] ++
         Enum.map(indexes, & &1.sql) ++
@@ -887,6 +891,23 @@ defmodule XqliteEcto3 do
       Regex.match?(~r/\bCOLLATE\b/i, create_sql) -> "COLLATE clauses"
       Regex.match?(~r/\bDEFERRABLE\b/i, create_sql) -> "DEFERRABLE foreign keys"
       Regex.match?(~r/\bON\s+CONFLICT\b/i, create_sql) -> "ON CONFLICT clauses"
+      true -> unpreservable_table_option(create_sql)
+    end
+  end
+
+  # WITHOUT ROWID and STRICT are table options that live in the tail after the
+  # final `)` closing the column/constraint list. Table options carry no
+  # parentheses, so the last `)` is an unambiguous boundary — a column merely
+  # named `rowid` or `strict` sits inside the list and never reaches the tail,
+  # avoiding a false positive. Neither option is exposed by the structural
+  # pragmas, so a rebuild would silently drop it (converting a WITHOUT ROWID
+  # table to a rowid table, or dropping strict type-checking); refuse instead.
+  defp unpreservable_table_option(create_sql) do
+    tail = create_sql |> String.split(")") |> List.last() || ""
+
+    cond do
+      Regex.match?(~r/\bWITHOUT\s+ROWID\b/i, tail) -> "WITHOUT ROWID storage"
+      Regex.match?(~r/\bSTRICT\b/i, tail) -> "STRICT typing"
       true -> nil
     end
   end
@@ -949,7 +970,7 @@ defmodule XqliteEcto3 do
   # A self-reference must point at the transient rebuild table, so that dropping
   # the original cannot cascade (or restrict) into the freshly-copied rows;
   # ALTER TABLE ... RENAME then rewrites this target back to the final name.
-  defp fk_target(target, table_name) when target == table_name, do: "#{table_name}__xqlite_new"
+  defp fk_target(target, table_name) when target == table_name, do: transient_name(table_name)
 
   defp fk_target(target, _table_name), do: target
 
@@ -1055,7 +1076,18 @@ defmodule XqliteEcto3 do
   # and are omitted from the copy.
   defp plan_new_schema(existing, changes, opts) do
     autoincrement? = Keyword.fetch!(opts, :autoincrement)
-    base = Enum.map(existing, &existing_to_column(&1, autoincrement?))
+
+    # Primary-key columns in declared order (table_xinfo `pk` is the 1-based
+    # position within the key, 0 otherwise). A single-column key stays inline on
+    # its column; a composite key is emitted as a table-level clause below.
+    pk_columns =
+      existing
+      |> Enum.filter(&(&1.pk > 0))
+      |> Enum.sort_by(& &1.pk)
+      |> Enum.map(& &1.name)
+
+    composite_pk? = length(pk_columns) > 1
+    base = Enum.map(existing, &existing_to_column(&1, autoincrement?, composite_pk?))
 
     # Apply changes in order. Result is a list of %{name, source_name, spec}
     # where source_name is the old column to copy FROM (nil for added cols),
@@ -1068,22 +1100,38 @@ defmodule XqliteEcto3 do
     copy_pairs =
       for %{name: name, source_name: src} <- final, not is_nil(src), do: {src, name}
 
-    {final, copy_pairs}
+    {final, copy_pairs, composite_pk_clause(composite_pk?, pk_columns, final)}
+  end
+
+  # A single-column PK is carried inline by `existing_to_column` (preserving the
+  # INTEGER PRIMARY KEY rowid alias and AUTOINCREMENT). A composite PK cannot be
+  # expressed inline, so reconstruct it as a table-level clause over the
+  # surviving PK columns in declared order — never dropping members down to a
+  # single narrower key.
+  defp composite_pk_clause(false, _pk_columns, _final), do: []
+
+  defp composite_pk_clause(true, pk_columns, final) do
+    case Enum.filter(pk_columns, fn name -> Enum.any?(final, &(&1.name == name)) end) do
+      [] -> []
+      cols -> [["PRIMARY KEY (", quoted_column_list(cols), ")"]]
+    end
   end
 
   defp existing_to_column(
          %{name: name, type: type, notnull: notnull, default: dflt, pk: pk},
-         autoincrement?
+         autoincrement?,
+         composite_pk?
        ) do
     pk_clause =
       cond do
+        composite_pk? -> ""
         pk == 1 and autoincrement? -> " PRIMARY KEY AUTOINCREMENT"
         pk == 1 -> " PRIMARY KEY"
         true -> ""
       end
 
     spec = [
-      ~s|"#{name}"|,
+      quote_name(name),
       " ",
       if(type in [nil, ""], do: "BLOB", else: type),
       if(notnull, do: " NOT NULL", else: ""),
@@ -1140,7 +1188,7 @@ defmodule XqliteEcto3 do
     type_sql = XqliteEcto3.DataType.column_type(type, opts)
 
     [
-      ~s|"#{name}"|,
+      quote_name(name),
       " ",
       type_sql,
       if(Keyword.get(opts, :null) == false, do: " NOT NULL", else: ""),
@@ -1165,7 +1213,9 @@ defmodule XqliteEcto3 do
       |> Enum.intersperse(", ")
 
     IO.iodata_to_binary([
-      ~s|CREATE TABLE "#{table.name}__xqlite_new" (|,
+      "CREATE TABLE ",
+      quote_name(transient_name(table.name)),
+      " (",
       definitions,
       ")"
     ])
@@ -1175,10 +1225,12 @@ defmodule XqliteEcto3 do
     if copy_pairs != [] do
       {old_cols, new_cols} = Enum.unzip(copy_pairs)
 
-      new_list = Enum.map_join(new_cols, ", ", &~s|"#{&1}"|)
-      old_list = Enum.map_join(old_cols, ", ", &~s|"#{&1}"|)
+      new_list = Enum.map_join(new_cols, ", ", &quote_name/1)
+      old_list = Enum.map_join(old_cols, ", ", &quote_name/1)
 
-      ~s|INSERT INTO "#{table.name}__xqlite_new" (#{new_list}) SELECT #{old_list} FROM "#{table.name}"|
+      "INSERT INTO " <>
+        quote_name(transient_name(table.name)) <>
+        " (#{new_list}) SELECT #{old_list} FROM " <> quote_name(table.name)
     end
   end
 
@@ -1188,14 +1240,28 @@ defmodule XqliteEcto3 do
   defp restore_autoincrement_sql(_table, nil), do: []
 
   defp restore_autoincrement_sql(table, seq) do
+    name_literal = quote_string(table.name)
+
     [
-      ~s|DELETE FROM sqlite_sequence WHERE name = '#{table.name}'|,
-      ~s|INSERT INTO sqlite_sequence (name, seq) VALUES ('#{table.name}', #{seq})|
+      "DELETE FROM sqlite_sequence WHERE name = " <> name_literal,
+      "INSERT INTO sqlite_sequence (name, seq) VALUES (" <> name_literal <> ", #{seq})"
     ]
   end
 
+  # The transient table the rebuild creates, copies into, and renames over the
+  # original.
+  defp transient_name(name), do: "#{name}__xqlite_new"
+
   defp quote_name(name) when is_atom(name), do: quote_name(Atom.to_string(name))
-  defp quote_name(name) when is_binary(name), do: ~s|"#{name}"|
+
+  # SQLite escapes a `"` inside a quoted identifier by doubling it.
+  defp quote_name(name) when is_binary(name),
+    do: ~s|"| <> String.replace(name, ~s|"|, ~s|""|) <> ~s|"|
+
+  # Escapes a value for a single-quoted SQL string literal (doubles embedded
+  # single quotes). Used for the sqlite_sequence `name`, which is a string
+  # literal with no identifier-quoting escape hatch.
+  defp quote_string(value), do: ~s|'| <> String.replace(to_string(value), ~s|'|, ~s|''|) <> ~s|'|
 
   @impl Ecto.Adapter.Schema
   def autogenerate(:id), do: nil

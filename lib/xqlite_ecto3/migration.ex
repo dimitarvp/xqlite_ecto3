@@ -20,11 +20,12 @@ defmodule XqliteEcto3.Migration do
   Adding a CHECK to an existing column requires a full table rebuild
   (create temp, copy rows, drop, rename, recreate indexes / triggers).
   `xqlite_ecto3` ships an opt-in rebuild behind `support_alter_via_table_rebuild:
-  true`. It reconstructs foreign keys and UNIQUE constraints from the structural
-  pragmas, so those survive the rebuild. CHECK constraints, COLLATE clauses,
-  generated columns, `DEFERRABLE` foreign keys, and `ON CONFLICT` clauses cannot
-  be reconstructed structurally, so a rebuild of a table declaring any of those
-  refuses loudly rather than dropping them. A rebuild likewise refuses when a
+  true`. It reconstructs the primary key (single-column and composite), foreign
+  keys, and UNIQUE constraints from the structural pragmas, so those survive the
+  rebuild. CHECK constraints, COLLATE clauses, generated columns, `DEFERRABLE`
+  foreign keys, `ON CONFLICT` clauses, and the `WITHOUT ROWID` / `STRICT` table
+  options cannot be reconstructed structurally, so a rebuild of a table declaring
+  any of those refuses loudly rather than dropping them. A rebuild likewise refuses when a
   *populated* table references the rebuilt one with an `ON DELETE CASCADE`/`SET
   NULL`/`SET DEFAULT` action, since dropping the old table would fire that action
   on the referencing rows. Adding a CHECK to an existing column therefore still

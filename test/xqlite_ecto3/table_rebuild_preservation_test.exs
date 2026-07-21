@@ -246,6 +246,59 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     end
   end
 
+  defmodule CompositePkMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_cpk")
+
+      # Reverse-declared PRIMARY KEY (b, a) so column order is a real assertion,
+      # not an accident of declaration matching alphabetical order.
+      execute(
+        "CREATE TABLE rp_cpk(a INTEGER NOT NULL, b INTEGER NOT NULL, label TEXT, " <>
+          "PRIMARY KEY (b, a))"
+      )
+
+      # Distinct first PK column values so a narrowed single-column PK would copy
+      # without error — the silent-narrowing manifestation.
+      execute("INSERT INTO rp_cpk(a, b, label) VALUES (1, 1, 'x'), (2, 2, 'y')")
+
+      alter table(:rp_cpk) do
+        modify(:label, :text, null: true)
+      end
+    end
+  end
+
+  defmodule WithoutRowidAlterMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:rp_wr) do
+        modify(:v, :text, null: true)
+      end
+    end
+  end
+
+  defmodule StrictAlterMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:rp_st) do
+        modify(:n, :integer, null: true)
+      end
+    end
+  end
+
+  defmodule QuotedColumnAlterMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:rp_qt) do
+        modify(:a, :integer, null: true)
+      end
+    end
+  end
+
   # --- helpers ---------------------------------------------------------------
 
   defp migrate!(module, version), do: Ecto.Migrator.up(PoolRepo, version, module, log: false)
@@ -489,5 +542,67 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     # SET NULL never fired — the child's FK value is unchanged, parent intact.
     assert [[1]] = PoolRepo.query!("SELECT pid FROM rp_ps_child WHERE id = 1").rows
     assert count("rp_ps_parent") == 1
+  end
+
+  test "a composite PRIMARY KEY is preserved with column order intact and enforced" do
+    migrate!(CompositePkMigration, 20_260_721_110_001)
+
+    assert count("rp_cpk") == 2
+
+    # Both PK columns survive, in the reverse-declared (b, a) order.
+    pk_cols =
+      PoolRepo.query!("SELECT name FROM pragma_table_info('rp_cpk') WHERE pk > 0 ORDER BY pk").rows
+      |> List.flatten()
+
+    assert pk_cols == ["b", "a"]
+
+    # (a=1, b=2) is a NEW composite key but collides on either single column
+    # (a=1 with row one, b=2 with row two); it inserts only if the full
+    # composite key is enforced, proving the PK was not narrowed to one column.
+    PoolRepo.query!("INSERT INTO rp_cpk(a, b, label) VALUES (1, 2, 'z')")
+
+    # The composite key is still enforced: an exact duplicate is rejected.
+    insert_rejected("INSERT INTO rp_cpk(a, b, label) VALUES (1, 1, 'dup')")
+  end
+
+  test "a WITHOUT ROWID table refuses the rebuild and stays intact" do
+    PoolRepo.query!("DROP TABLE IF EXISTS rp_wr")
+    PoolRepo.query!("CREATE TABLE rp_wr(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
+    PoolRepo.query!("INSERT INTO rp_wr(k, v) VALUES ('a', '1')")
+
+    assert_raise ArgumentError, fn ->
+      migrate!(WithoutRowidAlterMigration, 20_260_721_110_002)
+    end
+
+    # Refusal fired before any destructive step — the row survives and the table
+    # is still WITHOUT ROWID (a rowid reference does not resolve).
+    assert count("rp_wr") == 1
+    assert_raise XqliteEcto3.Error, fn -> PoolRepo.query!("SELECT rowid FROM rp_wr LIMIT 1") end
+  end
+
+  test "a STRICT table refuses the rebuild and keeps enforcing strict typing" do
+    PoolRepo.query!("DROP TABLE IF EXISTS rp_st")
+    PoolRepo.query!("CREATE TABLE rp_st(id INTEGER PRIMARY KEY, n INTEGER) STRICT")
+    PoolRepo.query!("INSERT INTO rp_st(id, n) VALUES (1, 10)")
+
+    assert_raise ArgumentError, fn ->
+      migrate!(StrictAlterMigration, 20_260_721_110_003)
+    end
+
+    # Refusal fired before any destructive step — the row survives and strict
+    # typing still rejects a non-integer bound to the INTEGER column.
+    assert count("rp_st") == 1
+    insert_rejected("INSERT INTO rp_st(id, n) VALUES (2, 'not-an-int')")
+  end
+
+  test "a column whose name contains a double quote survives the rebuild" do
+    PoolRepo.query!(~s|DROP TABLE IF EXISTS rp_qt|)
+    PoolRepo.query!(~s|CREATE TABLE rp_qt (a INTEGER, "we""ird" TEXT)|)
+    PoolRepo.query!(~s|INSERT INTO rp_qt(a, "we""ird") VALUES (1, 'hi')|)
+
+    migrate!(QuotedColumnAlterMigration, 20_260_721_110_004)
+
+    assert count("rp_qt") == 1
+    assert [["hi"]] = PoolRepo.query!(~s|SELECT "we""ird" FROM rp_qt|).rows
   end
 end
