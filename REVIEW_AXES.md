@@ -38,6 +38,21 @@ the connection is KEPT (`raised_close`→`run_close` closes only the query via
 exception surfaces UNCHANGED via `:erlang.raise` at `log_result` (`:1732`). Zero
 new findings. DRYNESS: **NOT DRY** — first clean covering run over the Runs-2–4
 churn (1 of 2), one more owed. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 9, 2026-07-21 — dryness lap 2, batch 1): covering pass over
+the post-Run-5 churn. The runtime JSON-path escape fix (`53599f4`) verified as a
+SQL.Connection product via live `to_sql` census (orchestrator re-ran, exit 0): the
+runtime branch emits `replace(replace(seg, '\', '\\'), '"', '\"')` —
+backslash-before-quote, mirroring `escape_json_key` — and mixed literal+runtime
+paths escape each segment independently under `||` in BOTH compose orders (no
+double-escape). `driver.ex` (finish_cached_stmt / disconnect) untouched in the
+churn (`git diff 5a411ee..6539a14` empty on its path) — Run 5's shape verification
+stands. Rebuild-engine Migration conformance from deps/ecto_sql source:
+`execute_ddl` returns `{:ok, []}` (the migration.ex:61 contract),
+`lock_for_migrations` returns `fun.()`; both pre-flight refusals run only READ
+queries before the destructive statement list. `config/test.exs` telemetry flag
+defaults ON when the env var is unset — behaviour-neutral (gates emission only).
+Zero new findings. DRYNESS: **DRY (2 of 2)** — second consecutive clean covering
+run. Re-wet triggers UNCHANGED.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.
@@ -498,6 +513,30 @@ byte-identical. NO X1-contract shape moved — the 2-vs-3-tuple CI-break class d
 NOT recur. DRYNESS: the standing audit was clean, but resolving F-X1-2 CHURNED
 `wrap/1` (a listed re-wetter) → **NOT DRY**, one covering pass owed over the new
 clauses. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 9, 2026-07-21 — dryness lap 2, batch 1): the owed adversarial
+pass over the three new tag-preserving `wrap/1` clauses (`2a9089a`). Full
+classification map re-derived @ deps/xqlite 0.10.0 AS COMPILED — 7 bare atoms / 8
+dedicated-clause tuples / 17 binary-payload 2-tuples / 14 tag-preserved shapes (46
+distinct; Run 5's "48" counted probe invocations, not shapes) — and driven LIVE:
+every tag preserved, zero `type: nil`, `to_constraints/2` spot-checks correct
+(probes re-run by the orchestrator, exit 0). Clause ordering: no dedicated clause
+shadowed (the map-payload `:sql_input_error` 2-tuple precedes the generic clauses;
+the binary-payload and tag-preserving 2-tuple clauses are mutually exclusive via
+`is_binary`); the 2–4 arity bound exactly covers the union (all tuple shapes are
+2/3/4 with atom heads, so `is_atom` is adequate); an adversarial edge probe
+(non-atom head, 5-tuple, empty tuple, bare string) degrades to `type: nil` without
+crash. The rebuild engine's pre-flight `ArgumentError` refusals are the sanctioned
+migration-DDL exception, NOT `Error.wrap` paths — a rebuild statement failing at
+RUNTIME still surfaces a structured `%XqliteEcto3.Error{}` via `query!`.
+DecimalPrecisionError raise unchanged (churn diff empty on `query.ex` /
+`decimal_precision.ex`). FORWARD blast v0.10.0..`80210b6` (7 commits, two newer
+than Run 5's walk — diff-verified ledger+probe-script only, no lib//native/):
+`error_reason/0` +2 bare atoms (additive, adapter-unreachable,
+atom-clause-classified); `error.rs` zero change; nif.rs = the known 20 DirtyIo
+attribute flips; `encode_val`→Result threading keeps the success shape
+byte-identical. Zero new findings. DRYNESS: **NOT DRY — 1 of 2**, first clean
+covering run over the `wrap/1` churn; the owed second pass goes to the mini-lap.
+Re-wet triggers UNCHANGED.
 
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
@@ -528,6 +567,19 @@ UNTOUCHED (nif.rs = 20 DirtyIo attribute-only flips, bodies byte-identical;
 byte-identical). Only the "all error reasons" row moved, ADDITIVELY (+2 bare atoms,
 both unreachable from the surface). Zero new findings. DRYNESS: **NOT DRY** — first
 clean covering run over the F-X2-1 churn (1 of 2), one more owed. Re-wet triggers
+UNCHANGED.
+COVERING RE-RUN (Run 9, 2026-07-21 — dryness lap 2, batch 1): surface re-enumerated
+at `6539a14` (Run 5 method) = **38 XqliteNIF-family + 7 Xqlite.\***, identical to
+the `5a411ee` baseline; `git diff 5a411ee..6539a14` shows ZERO
+`XqliteNIF.`/`Xqlite.` call-site lines added or removed (orchestrator re-grepped).
+The rebuild/preservation engine's 13 raw-SQL sites all route through
+`Ecto.Adapters.SQL.query!/4` (or `query`) → the adapter's own `handle_execute` →
+the already-mapped `query_with_changes` blast-radius row — no new row needed.
+Forward-delta walk (v0.10.0..`80210b6`) row by row: only the "all error reasons"
+row moved, additively (+2 adapter-unreachable bare atoms); every result-map,
+sentinel, and txn/pragma/open row untouched (nif.rs DirtyIo attribute-only,
+error.rs zero, `encode_val` success byte-identical). Zero new findings. DRYNESS:
+**DRY (2 of 2)** — second consecutive clean covering run. Re-wet triggers
 UNCHANGED.
 
 ## Release-readiness (adapter-specific additions)

@@ -105,6 +105,11 @@ after the S0–S2 burn-down.
   but consider a structured `{:error, ...}` or a moduledoc note. Same
   entry: `storage_up/1` MatchErrors on `XqliteNIF.open` failure
   instead of returning `{:error, term}` (near-impossible path). (Run 1)
+  Same class (Run 9): `fetch_existing_columns!` destructures
+  `{:ok, %{rows: rows}} = Ecto.Adapters.SQL.query(...)`
+  (`lib/xqlite_ecto3.ex:592`) — the rebuild's column-listing read
+  MatchErrors instead of raising structured on a near-impossible
+  failure; fold into any B1-1 remedy.
 - [S3] docs `groups_for_modules` lists 3 `@moduledoc false` modules
   (dead config). (wave-1)
 - [S3] Untracked `.expert/` root clutter — gitignore or remove

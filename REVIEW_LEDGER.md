@@ -1577,3 +1577,110 @@ over-claim — only `ON DELETE` fires on drop) + `XqliteEcto3` / `XqliteEcto3.Mi
 moduledocs. BACKLOG [A4] closure amended (incoming-FK limitation → resolved-by-refusal);
 REVIEW_AXES B7 re-wet note extended (pre-flight now also scans incoming FKs).
 `mix verify` GREEN at close.
+
+---
+
+## Run 9 — 2026-07-21 — dryness lap 2, batch 1: X1 + B1 + X2
+
+- Commit at scan: `6539a14` (clean tree; the remedies CI run GREEN incl. the
+  telemetry-OFF lane, re-confirmed at session start). Deps at xqlite 0.10.0
+  (`mix.lock` pin + `deps/xqlite` verified 0.10.0; `XQLITE_PATH` unset). Single
+  Opus reviewer; the orchestrator INDEPENDENTLY re-ran all three runtime probes
+  (scratchpad `run9/`: classification, edge, JSON-SQL census — all exit 0) and
+  re-checked the call-site-churn grep, the forward-commit diffs, and the
+  `error.ex` clause order against source (subagent runtime claims inadmissible
+  until re-run).
+- Scope: covering re-run over the adapter churn `5a411ee..6539a14` (15 commits:
+  Runs 6–8 fixes + the three maintainer remedies), adversarial priority on the
+  churn, plus a fresh forward xqlite walk `v0.10.0..80210b6` (7 commits — two
+  newer than Run 5's walk).
+
+### X1 — API/error-shape contract (PRIMARY; the owed pass over the new wrap/1 clauses)
+
+The three tag-preserving `wrap/1` clauses (`2a9089a`, `error.ex:212-222`)
+adversarially covered. Clause-ordering shadowing traced across all 11 clauses:
+every dedicated clause (constraint `:152`, sqlite_failure `:169`, sql_input
+`:177`, busy-set 3-tuple `:190`, utf8 `:200`, binary-payload 2-tuple `:204`)
+precedes the generic 2/3/4-tuple clauses; the binary-payload and tag-preserving
+2-tuple clauses are mutually exclusive via `is_binary`; the only dedicated
+map-payload 2-tuple (`:sql_input_error`) matches first by source order — no
+shadowing. Classification map re-derived against `error_reason/0` @0.10.0 AS
+COMPILED: 7 bare atoms / 8 dedicated / 17 binary-payload / 14 tag-preserved =
+46 distinct shapes (Run 5's "48" counted probe invocations, not shapes), and
+driven LIVE — every tag preserved, zero `type: nil`, `to_constraints/2`
+spot-checks correct (unique → `[unique: "t_c_index"]`, busy → `[]`). Edge probe:
+non-atom heads / 5-tuple / 1-tuple / empty tuple / bare string all degrade to
+`type: nil` without crash; the 2–4 arity bound is exactly the union's span, atom
+heads throughout, `is_atom` adequate. Rebuild-engine raises through the X1 lens:
+the pre-flight refusals (`lib/xqlite_ecto3.ex:687/:762/:792`) are `ArgumentError`
+inside migration DDL — the sanctioned exception, correctly NOT `Error.wrap`
+paths; a rebuild statement failing at RUNTIME surfaces a structured
+`%XqliteEcto3.Error{}` via `query!` — doctrine honored. DecimalPrecisionError
+encode-raise byte-identical (churn diff empty on `query.ex` /
+`decimal_precision.ex` / `driver.ex`). FORWARD blast (all 7 commits):
+`error_reason/0` grew ADDITIVELY only (+`:extension_loading_disabled`
++`:invalid_conflict_strategy` in `dd7c9f9`, both bare atoms, atom-clause-
+classified, both adapter-unreachable — grep-confirmed no `load_extension`/
+session call sites); `error.rs` + `constraint_parse.rs` zero change; `nif.rs` =
+the known 20 DirtyIo attribute-only flips; `util.rs`/`pragma.rs` `encode_val`→
+Result threading keeps the success shape byte-identical (OOM path degrades to
+`:internal_encoding_error`, already in the union); `8715270` = SAFETY comments
+only; `0f81e75`/`80210b6` diff-verified ledger+probe-script only (no
+lib//native/). Zero new findings.
+
+### B1 — behaviour conformance from source
+
+The runtime JSON-path escape fix (`53599f4`, `connection.ex:2269-2293`) verified
+as a SQL.Connection product via live `to_sql` census: the runtime branch emits
+`'."' || replace(replace(seg, '\', '\\'), '"', '\"') || '"'` —
+backslash-before-quote, mirroring `escape_json_key` (`connection.ex:2248-2253`)
+— and mixed literal+runtime paths escape each segment INDEPENDENTLY under `||`
+in both compose orders (literal-then-runtime and runtime-then-literal probed;
+no double-escape). `driver.ex` (finish_cached_stmt / disconnect) untouched in
+the churn — Run 5's shape verification stands. Rebuild-engine Migration
+conformance from deps/ecto_sql SOURCE: `execute_ddl` returns `{:ok, []}`
+(migration.ex:61 contract), `lock_for_migrations` returns `fun.()`; both
+pre-flight refusals run only READ queries before the destructive statement
+list (`lib/xqlite_ecto3.ex:697-698` vs `:710-725`). `config/test.exs`
+telemetry flag (`81d02ae`) defaults ON when the env var is unset —
+behaviour-neutral (gates emission only, no callback contract touched). Live:
+JSON/rebuild/migration test clusters green (24 + 40). Zero new findings.
+
+### X2 — cross-repo blast radius
+
+Surface re-enumerated at `6539a14` (Run 5 method, reproducible rg over
+`lib/**/*.ex`): **38 XqliteNIF-family + 7 Xqlite.\*** — identical to the
+`5a411ee` baseline; `git diff 5a411ee..6539a14 -- lib/` contains ZERO added or
+removed `XqliteNIF.`/`Xqlite.` lines (orchestrator re-grepped). The rebuild/
+preservation engine's 13 raw-SQL sites (e.g. `lib/xqlite_ecto3.ex:725/:729/
+:803/:896/:917`) all route through `Ecto.Adapters.SQL.query!/4` (or `query`) →
+the adapter's own `handle_execute` → the already-mapped `query_with_changes`
+blast-radius row; no new XqliteNIF/Xqlite site, no new row needed. Forward-delta
+walk through the Run 1 table row by row: only the "all error reasons" row moved,
+additively (+2 adapter-unreachable bare atoms); every result-map row
+(query_with_changes/stmt_multi_step/query/stream_fetch/txn_state), every
+sentinel (`:done`/`:multiple_statements`/`:cannot_execute`), and every
+txn/pragma/open row UNTOUCHED. Zero new findings.
+
+### Verdict + dryness
+
+- 0 new findings at any severity; zero repo edits from the review (working tree
+  stayed at `6539a14`). `mix verify` GREEN — the orchestrator's OWN run
+  (VERIFY_EXIT=0, full `test.seq` "All tests passed!").
+- Dryness: **B1 DRY (2 of 2)** and **X2 DRY (2 of 2)** — the program's first two
+  DRY axes. **X1 NOT DRY (1 of 2)** — first clean covering run over its own
+  lap-1 `wrap/1` churn; the owed second pass goes to the mini-lap. Re-wetters
+  unchanged on all three.
+- Completeness critic: (1) pre-existing typespec looseness — the busy-set
+  (`error.ex:197`) and utf8 (`:201`) clauses put bare maps in `details`, outside
+  `@type details` (`:140`); `wrap/1` has no `@spec` so dialyzer is silent; the
+  `type` field is correct and `to_constraints/2` unaffected, so not a
+  misclassification — candidate tighten for the X1 mini-lap pass. (2)
+  pre-existing destructuring match `{:ok, %{rows: rows}} =
+  Ecto.Adapters.SQL.query(...)` in `fetch_existing_columns!`
+  (`lib/xqlite_ecto3.ex:592`, commit `2124dba`) — same class as backlog B1-1;
+  appended there. (3) the forward busy `max_elapsed_ms` change (`c24383b`) is
+  BEHAVIORAL and unreachable at the pinned 0.10.0 dep — the dep-bump re-probe
+  disposition from Run 7 stands. (4) rebuild-dance deep semantics, JSON
+  behavioral fidelity, and telemetry event behavior deliberately untouched —
+  owed to B7 (batch 3) and B2/B9 (batch 4) lenses.
