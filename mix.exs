@@ -9,7 +9,7 @@ defmodule XqliteEcto3.MixProject do
     [
       app: :xqlite_ecto3,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.17",
       name: @name,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),

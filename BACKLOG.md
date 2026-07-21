@@ -15,9 +15,12 @@ after the S0–S2 burn-down.
   row (not a real shared-suite tag anywhere in `deps/`); rewrote the
   `:foreign_key_constraint` row excluded→supported (un-excluded, `--only
   foreign_key_constraint` ⇒ 6 passed via rich FK diagnostics). (wave-1)
-- [G3] Elixir floor: `~> 1.15` claimed, CI floor 1.17 — add lanes
-  or raise the floor (floor-raise = Dimi values call; identical gap
-  in xqlite). (wave-1)
+- [G3] DONE (2026-07-21, maintainer ruling: claim-what-you-test).
+  Floor raised `~> 1.15` → `~> 1.17` in mix.exs + the README badge,
+  matching the CI matrix floor exactly; the identical gap in xqlite
+  closed the same way (mix.exs + CHANGELOG note + CLAUDE.md). No new
+  lanes — 1.15/1.16 were never exercised and are no longer claimed.
+  (wave-1)
 - [G5] CLAUDE.md bootstrap (content list inventoried in
   `~/kod/fleet_review_staging/recon/recon_adapter_distilled.md`).
 
