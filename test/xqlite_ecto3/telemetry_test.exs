@@ -89,9 +89,15 @@ defmodule XqliteEcto3.TelemetryTest do
         )
 
       {:ok, state} = Driver.connect(database: db)
+      conn = state.conn
       :ok = Driver.disconnect(:normal, state)
 
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :disconnect], _, metadata}
+      # Telemetry handlers are process-global: filter to this connection's own
+      # disconnect by its conn, else a concurrent test's non-:normal disconnect
+      # (a ConnectionError or nil reason) can be captured first.
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :disconnect], _,
+                      %{conn: ^conn} = metadata}
+
       assert metadata.conn
       assert metadata.reason == :normal
 
