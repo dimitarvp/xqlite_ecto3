@@ -737,6 +737,10 @@ defmodule XqliteEcto3 do
            opts
          ) do
       %{rows: []} ->
+        # SQLite auto-resets defer_foreign_keys only at COMMIT; inside a
+        # transaction that never commits (the SQL Sandbox), the flag would
+        # leak ON and silently disable FK enforcement for the session.
+        Ecto.Adapters.SQL.query!(meta, "PRAGMA defer_foreign_keys = OFF", [], opts)
         {:ok, []}
 
       %{rows: violations} ->

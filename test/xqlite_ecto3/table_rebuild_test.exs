@@ -31,6 +31,32 @@ defmodule XqliteEcto3.TableRebuildTest do
     end
   end
 
+  describe "connection state after a rebuild" do
+    test "defer_foreign_keys is reset even when the transaction never commits" do
+      create("CREATE TABLE rb_dfk_parent(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TABLE rb_dfk(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "pid INTEGER NOT NULL REFERENCES rb_dfk_parent(id))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_dfk_parent(id) VALUES (1)")
+      TestRepo.query!("INSERT INTO rb_dfk(id, name, pid) VALUES (1, 'a', 1)")
+
+      assert {:ok, []} = run_alter(:rb_dfk, [{:modify, :name, :string, [null: true]}])
+
+      # SQLite auto-resets defer_foreign_keys only at COMMIT. Inside a
+      # transaction that never commits (the SQL Sandbox), the rebuild must
+      # reset the pragma itself or FK enforcement silently stays deferred
+      # for the rest of the session.
+      assert %{rows: [[0]]} = TestRepo.query!("PRAGMA defer_foreign_keys")
+
+      assert_raise XqliteEcto3.Error, fn ->
+        TestRepo.query!("INSERT INTO rb_dfk(id, name, pid) VALUES (2, 'b', 999)")
+      end
+    end
+  end
+
   describe "refuses to silently drop constructs it cannot reconstruct" do
     # Foreign keys and UNIQUE constraints are reconstructed from the structural
     # pragmas, so they survive the rebuild (see table_rebuild_preservation_test).
