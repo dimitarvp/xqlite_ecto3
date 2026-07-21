@@ -184,6 +184,33 @@ checkout sees 0). NEW angle (Run 6's unprobed owner-death): a task killed
 stays healthy (60/60 subsequent writes), no wedged connection. All probes
 re-run by the orchestrator (exit 0). Zero new findings. DRYNESS: **first clean
 covering run — 1 of 2, NOT DRY**, one more owed. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 13, 2026-07-21 — mini-lap batch 1, the two owed critic
+seeds): `driver.ex` UNCHANGED through `3c58c5c`. Storm subset re-driven
+deterministically (300/300 cold-start; exact-200 hot-row; orchestrator re-ran,
+exit 0). Seed (a) CLOSED CLEAN: a saturated pool sheds 20/20 excess callers as
+structured `%DBConnection.ConnectionError{}` queue-wait timeouts, 0 crashes,
+the pool recovers, the holder's txn commits on release, no wedge. **F-B3-3
+(S2, CONFIRMED + FIXED AT GATE, RED→green):** seed (b) — a rebuild migration
+under `Ecto.Adapters.SQL.Sandbox` succeeded but leaked
+`defer_foreign_keys = ON` (the sandbox's outer txn never commits, so SQLite's
+commit-time auto-reset never fires), after which an orphan FK insert was
+SILENTLY ACCEPTED (pre-rebuild control rejected; a non-sandbox control leaves
+the flag 0 and rejects — sandbox-specific; bounded to the session, a fresh
+checkout reads 0). Ruled at the ORCHESTRATOR GATE (ratified bar: an S2
+silent-enforcement-loss does not sit unfixed; same posture as the A4 gate
+correction; the remedy is one line with a control-proven no-op on committing
+transactions): `rebuild_table` now resets `PRAGMA defer_foreign_keys = OFF`
+after a clean `foreign_key_check`. Side effect: rebuilds are now VIABLE under
+the sandbox (the A4-era "sandbox unusable for rebuild tests" note is
+obsolete). RED→green: `table_rebuild_test.exs` +1 on the sandboxed TestRepo
+(post-rebuild pragma reads 0 + an orphan raises structured
+`XqliteEcto3.Error`; RED = 11/12 failing exactly on the leaked pragma; GREEN =
+12/12; the seed probe's verdict flips SILENT_WRONG_STATE → CLEAN — all
+orchestrator-run; preservation suite 15/15 unchanged). Maintainer may overrule
+(one-line revert). DRYNESS: a NEW confirmed surfaced → NOT a clean covering
+run — **B3 RESETS to 0 of 2, NOT DRY** (the reviewer's stays-at-1 proposal was
+overruled at gate; the chain rule as B5/B9). Re-wets ALSO on: any
+`defer_foreign_keys` handling change in `rebuild_table`.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -605,6 +632,26 @@ emission-test cluster → NOT a clean covering run — **B9 RESETS to 0 of 2, NO
 DRY** (the reviewer's stays-at-1-of-2 proposal was overruled at gate: a
 finding-run breaks the consecutive-clean chain, same rule as B5/Run 10). The
 test-hardening re-wets the emission-test surface. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 13, 2026-07-21 — mini-lap batch 1, the owed first
+re-cover of the hardened cluster + the `:ok`-capture audit): emission surface
+byte-unchanged since Run 12 (`458dc0c..3c58c5c` empty). Hardened cluster
+(8 files, one VM) 86/86 × 8 runs; the file alone 12/12; fresh event-surface
+probe 9/9 (cache hit/miss/evicted + txn trio + connect/disconnect+reason;
+orchestrator re-ran, exit 0); OTel path unchanged. **F-B9-3 (S3, CONFIRMED +
+FIXED, test-only):** the disconnect test bound `metadata` UNFILTERED and
+asserted `reason == :normal` OUTSIDE the receive pattern — a concurrent file's
+non-`:normal` disconnect (a `ConnectionError`/`nil` reason emitted by
+driver_connect_pragmas / driver_transaction_state) captured first FALSE-FAILS
+it; the F-B9-2 fix had scoped to the two `:error` captures and missed this
+value-asserting success-path capture. RED both ways: a deterministic injection
+probe (orchestrator re-ran, CONFIRMED) plus a live 1/20 cluster flake; fixed
+by pinning the capture on `%{conn: ^conn}`; GREEN 20/20 + 86/86×8. The
+`:ok`-capture audit dispositioned every OTHER discriminator-free capture
+harmless: they assert only instance-invariant fields, so a foreign same-name
+event yields the identical verdict; begin/savepoint carry `mode:` inside the
+pattern. DRYNESS: a new confirmed surfaced → NOT a clean covering run —
+**stays 0 of 2, NOT DRY**; the fix re-wets the emission-test surface. Re-wet
+triggers UNCHANGED.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean
@@ -710,6 +757,22 @@ attribute flips; `encode_val`→Result threading keeps the success shape
 byte-identical. Zero new findings. DRYNESS: **NOT DRY — 1 of 2**, first clean
 covering run over the `wrap/1` churn; the owed second pass goes to the mini-lap.
 Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 13, 2026-07-21 — mini-lap batch 1, the owed second pass):
+`error.ex` + `error_wrap_test.exs` + `connection.ex` (to_constraints) UNTOUCHED
+in `76b0890..3c58c5c` (the range's lib churn is the rebuild engine plus a
+docs-only migration.ex edit). The 46-shape classification map re-derived
+@0.10.0 AS COMPILED and driven LIVE — 60/60 probe checks, all tags preserved,
+zero `type: nil`, `to_constraints/2` spot-checks correct, adversarial edges
+degrade without crash (orchestrator re-ran, exit 0); `error_wrap_test.exs`
+23/23; clause ordering re-read clean. The Run-11 rebuild ArgumentError paths
+confirmed the sanctioned migration-DDL exception, correctly NOT `Error.wrap`.
+FORWARD blast: `../xqlite` HEAD `80210b6` UNMOVED since Run 9
+(orchestrator-confirmed); `error_reason/0` byte-identical. Details-typespec
+looseness (busy/utf8 bare-map `details`) dispositioned ACCEPT — a spec-honesty
+nit never consumed by `to_constraints/2`; tightening would churn `wrap/1` for
+zero correctness gain; if ever tightened, dedicated structs batched with future
+error enrichment. Zero findings. DRYNESS: **DRY (2 of 2)** — second consecutive
+clean covering run. Re-wet triggers UNCHANGED.
 
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites

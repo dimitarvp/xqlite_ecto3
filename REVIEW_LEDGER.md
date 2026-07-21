@@ -2000,3 +2000,83 @@ Zero new findings.
   F-B2-3 exposed. (3) F-B9-2 pattern breadth: `:ok`-asserting telemetry
   captures could latently mask foreign events (they pass regardless) — audit
   in B9's re-cover.
+
+---
+
+## Run 13 — 2026-07-21 — mini-lap batch 1: X1 + B3 + B9
+
+- Commit at scan: `3c58c5c` (clean). Deps at xqlite 0.10.0 (`XQLITE_PATH`
+  unset, `mix.lock` pin verified); reference `../xqlite` HEAD `80210b6`
+  UNMOVED since Run 9 (orchestrator-confirmed). Single Opus reviewer; the
+  orchestrator re-ran ALL 8 probe scripts fresh-VM (exit 0 each), reproduced
+  the F-B3-3 RED/GREEN itself (below), and applied one gate ruling and one
+  gate fix.
+
+### X1 — API/error-shape contract (the owed second pass) → DRY
+
+`error.ex` / `error_wrap_test.exs` / `to_constraints` untouched in range; the
+46-shape map re-driven live 60/60 (tags preserved, zero `type: nil`, edges
+degrade clean); rebuild ArgumentError paths = the sanctioned migration-DDL
+exception; forward blast: xqlite HEAD unmoved, `error_reason/0`
+byte-identical. Details-typespec looseness dispositioned ACCEPT (never
+consumed; tightening = churn for zero gain). Zero findings. **DRY (2 of 2)** —
+the program's seventh DRY axis.
+
+### B3 — sandbox + pooling (the two owed seeds; one S2 found + fixed at gate)
+
+`driver.ex` untouched; storms re-driven (300/300; exact-200). Seed (a)
+checkout-timeout CLOSED CLEAN: 20/20 structured queue-wait
+`%DBConnection.ConnectionError{}`, 0 crashes, pool recovers, holder commits,
+no wedge.
+
+- **F-B3-3 (S2, CONFIRMED + FIXED AT GATE, RED→green).** A rebuild migration
+  under `Ecto.Adapters.SQL.Sandbox` succeeds but leaks
+  `defer_foreign_keys = ON`: the rebuild sets the pragma
+  (`lib/xqlite_ecto3.ex:715`) and relied on COMMIT's auto-reset, which never
+  fires inside the sandbox's never-committing outer txn — a subsequent orphan
+  FK insert is SILENTLY ACCEPTED (pre-rebuild control rejects; a non-sandbox
+  control leaves the flag 0 and rejects — sandbox-specific; bounded to the
+  session, a fresh checkout reads 0). The reviewer filed it for a maintainer
+  remedy; the ORCHESTRATOR ruled at gate instead (the ratified bar does not
+  let an S2 silent-enforcement-loss sit; the remedy space collapses to one
+  bar-compliant option — doc-only violates the bar, refuse-under-sandbox
+  detection is hackier for less): `rebuild_table` resets
+  `PRAGMA defer_foreign_keys = OFF` after a clean `foreign_key_check` — a
+  control-proven no-op on committing transactions (preservation suite 15/15
+  unchanged) that also makes rebuilds VIABLE under the sandbox. RED→green
+  entirely orchestrator-run: new `table_rebuild_test.exs` test on the
+  sandboxed TestRepo RED at 11/12 (failing exactly on the leaked pragma) →
+  fix → 12/12; the seed probe's verdict flips SILENT_WRONG_STATE → CLEAN.
+  Maintainer may overrule (one-line revert).
+
+### B9 — telemetry (hardened-cluster re-cover; one more capture hardened)
+
+Emission surface byte-unchanged; cluster 86/86 × 8, file alone 12/12, fresh
+event-surface probe 9/9, OTel path unchanged.
+
+- **F-B9-3 (S3, CONFIRMED + FIXED, test-only).** The disconnect test asserted
+  `reason == :normal` on an UNFILTERED process-global capture — a concurrent
+  file's non-`:normal` disconnect false-fails it (deterministic injection
+  probe CONFIRMED by orchestrator re-run; live 1/20 cluster flake observed by
+  the reviewer). Same mechanism as F-B9-2, which had scoped only to the
+  `:error` captures. Fixed by pinning `%{conn: ^conn}` in the receive
+  pattern; 20/20 + 86/86×8 post-fix. The `:ok`-capture breadth audit
+  dispositioned every other discriminator-free capture harmless
+  (instance-invariant assertions only; begin/savepoint filter via `mode:`
+  in-pattern) — written disposition, no churn.
+
+### Verdict + dryness
+
+- 1 S2 (fixed at gate) + 1 S3 (fixed) + zero on X1. `mix verify` GREEN — the
+  orchestrator's OWN run.
+- Dryness: **X1 DRY (2 of 2) → scoreboard 7/12 DRY (B1, X2, B6, B8, B4, B10,
+  X1).** **B3 RESETS to 0 of 2** (finding-run; reviewer's stays-at-1 proposal
+  overruled — chain rule as B5/B9). **B9 stays 0 of 2** (finding-run). Owed:
+  B3, B9, B2, B5, B7 — all at 0 of 2, each needing two consecutive clean
+  covering runs.
+- Completeness critic: the F-B3-3 fix's pragma reset is per-rebuild — a
+  multi-`alter` migration running several rebuilds resets after each clean
+  check (correct but unprobed as a sequence); the sandbox-viability side
+  effect suggests migrating some preservation coverage to the sandboxed repo
+  later (enrichment, not owed); B9's next pass re-covers the twice-hardened
+  cluster; the B3/B9/B2/B5/B7 seconds inherit their standing seeds.

@@ -151,6 +151,32 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B3-3] (S2) A rebuild migration under
+  `Ecto.Adapters.SQL.Sandbox` leaked `defer_foreign_keys = ON`,
+  silently disabling FK enforcement for the rest of the sandbox
+  session: the rebuild set the pragma and relied on COMMIT's
+  auto-reset, which never fires inside the sandbox's never-committing
+  outer transaction — an orphan FK insert after a sandboxed rebuild
+  was silently accepted (a non-sandbox control resets at commit and
+  rejects; bounded to the session — a fresh checkout reads 0). Fixed
+  at the orchestrator gate (ratified bar: S2 silent-enforcement-loss
+  does not sit; the remedy space collapses to one bar-compliant
+  option): `rebuild_table` resets `PRAGMA defer_foreign_keys = OFF`
+  after a clean `foreign_key_check` — a no-op on committing
+  transactions, and it makes rebuilds viable under the sandbox.
+  RED→green in `table_rebuild_test.exs` (sandboxed TestRepo:
+  post-rebuild pragma reads 0, orphan raises structured
+  `XqliteEcto3.Error`). Maintainer may overrule (one-line revert).
+  (Run 13, B3)
+- 2026-07-21 [F-B9-3] (S3, test-only) The disconnect telemetry test
+  asserted `reason == :normal` on an unfiltered process-global
+  capture, so a concurrent file's non-`:normal` disconnect could be
+  captured first and FALSE-FAIL it (deterministic injection probe +
+  a live 1/20 cluster flake). Same mechanism as F-B9-2, which had
+  scoped only to the `:error` captures. Fixed by pinning
+  `%{conn: ^conn}` in the receive pattern; every other
+  discriminator-free capture audited and dispositioned harmless
+  (instance-invariant assertions only). (Run 13, B9)
 - 2026-07-21 [F-B2-3] (S2) The `:like_match_blob` exclusion was STALE —
   a false "not supported" claim. Its rationale asserted the build
   carries `SQLITE_LIKE_DOESNT_MATCH_BLOBS`, but the bundled SQLite
