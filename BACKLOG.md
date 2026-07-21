@@ -88,6 +88,16 @@ after the S0–S2 burn-down.
   shared-pool form. Related: the adapter's advertised `@default_opts`
   `pool_size: 5` is dead — pool sizing is consumed by Ecto before
   `child_spec` merges defaults, so Ecto's default 10 wins. (Run 2, B3)
+- [F-B7-6] (S3) The rebuild's `ON CONFLICT` refusal scan misses a
+  comment interposed between the two keywords: SQLite stores CREATE
+  TABLE text verbatim, so `x INTEGER UNIQUE ON /* c */ CONFLICT
+  REPLACE` defeats the `\bON\s+CONFLICT\b` word-boundary scan and the
+  conflict algorithm would be silently dropped by a rebuild.
+  Reachability ≈ nil (requires a comment BETWEEN the keywords; the
+  other scanned constructs are single-token and immune). A robust fix
+  means comment-stripping the CREATE text, which risks its own parser
+  bugs for no practical gain — maintainer taste: accept as-is or
+  strip comments before scanning. (Run 11, B7)
 - [F-B5-2] (S3) A CUSTOM-named plain or partial unique index cannot be
   matched by its declared name: SQLite's violation message for such
   indexes carries the `table.column` form, so `to_constraints/2`
@@ -141,6 +151,43 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B7-3] (S1) The rebuild silently NARROWED a composite
+  PRIMARY KEY: `existing_to_column` emitted an inline `PRIMARY KEY`
+  only for the `table_xinfo.pk == 1` column, so rebuilding a
+  `PRIMARY KEY (a, b)` table produced a single-column key — the
+  integrity constraint weakened without a word, legitimate composite
+  rows rejected (probed live: `(1, 99)` refused after rebuild;
+  reverse-declared `PRIMARY KEY (b, a)` reduced to `["b"]`). Fixed:
+  `plan_new_schema` collects pk members by declared position; more
+  than one suppresses the inline clause and emits a table-level
+  `PRIMARY KEY (…)` over the surviving members in order; single-column
+  keys stay inline to preserve the INTEGER-PK rowid alias and
+  AUTOINCREMENT. RED→green in `table_rebuild_preservation_test.exs`
+  (order asserted `["b", "a"]`, composite insert accepted, exact dup
+  rejected); RED independently reproduced at gate by stashing only the
+  engine (11/15 → 15/15). (Run 11, B7)
+- 2026-07-21 [F-B7-4] (S1) The rebuild silently DROPPED the
+  `WITHOUT ROWID` and `STRICT` table options: the generated CREATE had
+  no option tail and no refusal scan covered them (no structural
+  pragma exposes either). Probed live: a rebuilt WITHOUT ROWID table
+  gained a rowid; a rebuilt STRICT table accepted `'not-an-int'` into
+  an INTEGER column. Fixed: `unpreservable_table_option/1` scans the
+  tail after the final `)` of the stored CREATE text (table options
+  carry no parentheses, so the boundary is unambiguous and a column
+  merely named `strict`/`rowid` cannot false-positive) and refuses
+  loudly before any destructive step. RED→green (+2 tests asserting
+  refusal AND post-state: rowid still absent / strict still
+  enforcing / rows intact). (Run 11, B7)
+- 2026-07-21 [F-B7-5] (S2) Rebuild DDL quoting did not escape embedded
+  quotes: `quote_name` and raw `"#{name}"` interpolations left an
+  embedded `"` undoubled (malformed DDL — loud — for exotic
+  identifiers), and the sqlite_sequence restore inlined the table name
+  into a `'…'` string literal unescaped (a constructible silent
+  widening of its DELETE for a crafted AUTOINCREMENT table name).
+  Fixed: `quote_name` doubles `"`, new `quote_string` doubles `'`,
+  every rebuild DDL fragment (CREATE / INSERT-copy / DROP / RENAME /
+  sequence restore) routed through them, transient name centralized.
+  RED→green (a `we"ird` column round-trips with data). (Run 11, B7)
 - 2026-07-21 [A4] Faithful table-rebuild constraint preservation — CLOSED
   (structural-preservation scope, maintainer ruling 2026-07-21). Replaced the
   blanket refusal with faithful reconstruction of everything SQLite exposes

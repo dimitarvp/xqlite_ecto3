@@ -215,6 +215,18 @@ green). Zero new findings. DRYNESS: Run 3 found F-B4-1 (confirmed S1, since
 remedied); this is the **first clean covering run over the remedy churn, 1 of 2, NOT
 DRY**, one more owed. Re-wet triggers UNCHANGED (any `column_type(:decimal/:float)`,
 loaders/dumpers, custom type, or `encode_param` change).
+COVERING RE-RUN (Run 11, 2026-07-21 — dryness lap 2, batch 3): `data_type.ex` /
+`decimal_precision.ex` / `query.ex` (encode_param) / the loaders-dumpers ZERO
+commits in `828bb95..6539a14` (git-confirmed at gate — the range's only lib
+churn is the rebuild path). Matrix + guard table + one-way pins green (55
+tests); the decimal `stream_data` property green across 10 fresh seeds; a FRESH
+6-value guard cross-check (guard verdict ⟺ repo round-trip ⟺ raw typeof) fully
+consistent — including `1.2345678901234567` (17 significant digits yet genuinely
+float64-exact → correctly ACCEPTED, demonstrating the guard is
+representability-exact rather than a digit-count heuristic), plus 2^52 and 2^-13
+accepts and 18/19-sig rejects. Probes re-run by the orchestrator (exit 0). Zero
+new findings. DRYNESS: **DRY (2 of 2)** — second consecutive clean covering run.
+Re-wet triggers UNCHANGED.
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
@@ -399,6 +411,40 @@ self-refs excluded) and refusing when a POPULATED referencing table carries an
 +2 RED→green tests (populated CASCADE + SET NULL). Re-wetters UNCHANGED (now ALSO
 `fetch_foreign_keys!` / `fetch_unique_constraints!` / `create_rebuild_table_sql` /
 `refuse_incoming_actions_on_populated!` / `fetch_incoming_action_fks` / `table_has_rows?`).
+COVERING RE-RUN (Run 11, 2026-07-21 — dryness lap 2, batch 3; the owed adversarial
+pass on the preservation engine): BROKE the engine on three constructs. **F-B7-3
+(S1, FIXED, RED→green)** — composite PRIMARY KEY silently narrowed:
+`existing_to_column` emitted inline `PRIMARY KEY` only for the `pk == 1` column,
+so a rebuild of a `PRIMARY KEY (a, b)` table produced a single-column key
+(legitimate composite rows rejected). Fixed: `plan_new_schema` computes the pk
+members by `table_xinfo` position; more than one suppresses the inline PK and
+emits a table-level `composite_pk_clause` over the SURVIVING members in declared
+order (a single-column key stays inline, preserving the INTEGER-PK rowid alias +
+AUTOINCREMENT). **F-B7-4 (S1, FIXED, RED→green)** — `WITHOUT ROWID` / `STRICT`
+table options silently dropped (bare CREATE tail, unscanned; no structural
+pragma exposes them): a rebuilt WITHOUT ROWID table gained a rowid, a STRICT
+table accepted `'not-an-int'` into INTEGER. Fixed: `unpreservable_table_option/1`
+scans the tail after the FINAL `)` (table options carry no parens, so the
+boundary is unambiguous — a column merely NAMED `strict`/`rowid` never
+false-positives) and refuses loudly before any destructive step. **F-B7-5 (S2,
+FIXED, RED→green)** — `quote_name` and raw interpolations did not double an
+embedded `"` (malformed DDL on exotic names, loud) and `restore_autoincrement_sql`
+inlined the table name into a `'…'` literal unescaped (a constructible silent
+widening of the sqlite_sequence DELETE). Fixed: `quote_name` doubles `"`, new
+`quote_string` doubles `'`, every rebuild DDL fragment routed through them,
+transient name centralized in `transient_name/1`. RED reproduced INDEPENDENTLY at
+gate (`git stash` of only `lib/xqlite_ecto3.ex` under the new tests → 11/15;
+restored → 15/15). Clean re-anchors: mid-dance failure atomicity (the migration
+txn rolls back and fully restores a pre-existing table), generated-column refusal
+(hidden 2 AND 3), FK `MATCH` reported `NONE` by the pragma (inert in SQLite,
+correctly dropped). **F-B7-6 (S3, BACKLOG, not fixed)** — the `ON CONFLICT`
+refusal scan misses a comment interposed between the keywords (SQLite stores
+CREATE text verbatim; `\bON\s+CONFLICT\b` misses `ON /* c */ CONFLICT`) → the
+conflict algorithm would silently drop; reachability ≈ nil and comment-stripping
+risks its own bugs — filed. `table_rebuild_preservation_test.exs` +4. DRYNESS:
+three new confirmed → **B7 stays 0 of 2, NOT DRY**; the fixes re-wet. Re-wets
+ALSO on: any `composite_pk_clause` / `unpreservable_table_option` / `quote_name`
+/ `quote_string` / `existing_to_column` / `plan_new_schema` change.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
@@ -463,6 +509,18 @@ which disconnects+reconnects the connection, so connection-local state (temp tab
 session PRAGMAs, statement cache) does not survive a timeout and there is a reconnect
 cost; the graceful cancel's value is the blocked query returning at the deadline. NO
 code change, so B8 is NOT re-wet — its re-wetter list is UNCHANGED.
+COVERING RE-RUN (Run 11, 2026-07-21 — dryness lap 2, batch 3): `driver.ex` /
+`query.ex` have ZERO commits in `828bb95..6539a14` (git-confirmed at gate; the
+F-B8-3 remedy was README-only, the pool-deadline pin test-only). Core re-driven
+LIVE: cached-path AND one-shot-path (`statement_cache_size: 0`) 100 ms timeouts
+cancel at ~101 ms on a ~3.5 s query, both returning structured
+`%DBConnection.ConnectionError{}` with the pool reusable after; an in-txn
+timeout leaves `txn_state {:ok, :write}` with rollback + reuse working; the
+encode-raise (DecimalPrecisionError out of `Query.encode`) spawns no canceller,
+leaks no process or mailbox entry (delta 0), and the cancel path works
+immediately after; `cancellation_test.exs` 11 green. Probes re-run by the
+orchestrator (exit 0). Zero new findings. DRYNESS: **DRY (2 of 2)** — second
+consecutive clean covering run. Re-wet triggers UNCHANGED.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

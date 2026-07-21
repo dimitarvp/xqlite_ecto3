@@ -1792,3 +1792,111 @@ findings. F-B3-1 unchanged (backlog, maintainer call).
   engine's documented non-sandbox requirement (`defer_foreign_keys` never
   resets under an uncommitted sandbox txn). Probe-harness lesson recorded in
   the gate note above.
+
+---
+
+## Run 11 — 2026-07-21 — dryness lap 2, batch 3: B7 (PRIMARY) + B8 + B4
+
+- Commit at scan: `d26097f` (code state == `6539a14`; the two tips above it are
+  ledger docs + test-only, diff-verified). Deps at xqlite 0.10.0 (`XQLITE_PATH`
+  unset, `mix.lock` pin verified). Single Opus reviewer; the orchestrator
+  INDEPENDENTLY re-ran all 7 probe scripts (fresh VMs, scratchpad `run11/`),
+  re-grepped the zero-churn claims for B8/B4 surfaces, reviewed the engine diff
+  line by line, and reproduced the RED leg itself (`git stash` of only
+  `lib/xqlite_ecto3.ex` under the new tests → **11/15 failed exactly the 4 new
+  tests**; fix restored → **15/15**).
+- Scope: churn `828bb95..6539a14`; B7 = the owed adversarial pass on the A4
+  preservation engine (landed by maintainer ruling, never adversarially
+  reviewed until now — the pass Remedies explicitly owed).
+
+### B7 — migration ergonomics (PRIMARY): the engine BROKE three ways, all fixed
+
+- **F-B7-3 (S1, CONFIRMED + FIXED, RED→green).** Composite PRIMARY KEY silently
+  narrowed: `existing_to_column` emitted inline `PRIMARY KEY` only for the
+  column with `table_xinfo.pk == 1`, so rebuilding a `PRIMARY KEY (a, b)` table
+  produced a single-column key — an integrity constraint silently WEAKENED and
+  legitimate composite rows rejected (probe: `(1, 99)` refused post-rebuild;
+  reverse-declared `PRIMARY KEY (b, a)` came back `["b"]`). Fix:
+  `plan_new_schema` computes pk members by position; more than one suppresses
+  the inline PK and emits a table-level `composite_pk_clause` over the
+  SURVIVING members in declared order; a single-column key stays inline
+  (preserving the INTEGER-PK rowid alias + AUTOINCREMENT). Durable test asserts
+  order `["b", "a"]`, composite inserts accepted, exact duplicates rejected.
+- **F-B7-4 (S1, CONFIRMED + FIXED, RED→green).** `WITHOUT ROWID` and `STRICT`
+  table options silently dropped: `create_rebuild_table_sql` emitted a bare
+  CREATE with no option tail and no scan covered them (no structural pragma
+  exposes either). Probes: a rebuilt WITHOUT ROWID table GAINED a rowid; a
+  rebuilt STRICT table ACCEPTED `'not-an-int'` into an INTEGER column. Fix:
+  `unpreservable_table_option/1` scans the tail after the FINAL `)` — table
+  options carry no parentheses, so the boundary is unambiguous and a column
+  merely NAMED `strict`/`rowid` cannot false-positive — refusing loudly before
+  any destructive step. Durable tests assert the refusal AND the post-state
+  (rowid still absent / strict still enforcing / rows intact).
+- **F-B7-5 (S2, CONFIRMED + FIXED, RED→green).** Identifier and literal quoting
+  in rebuild DDL did not escape embedded quotes: `quote_name` and several raw
+  `"#{name}"` interpolations left an embedded `"` undoubled (malformed DDL —
+  loud — on exotic names), and `restore_autoincrement_sql` inlined the table
+  name into a `'…'` literal unescaped (a constructible SILENT widening of the
+  sqlite_sequence DELETE for a crafted AUTOINCREMENT table name). Fix:
+  `quote_name` doubles `"`; new `quote_string` doubles `'`; every rebuild DDL
+  fragment (CREATE/INSERT-copy/DROP/RENAME/sequence restore) routed through
+  them; transient name centralized in `transient_name/1`. Durable test
+  round-trips a `we"ird` column with data.
+- **F-B7-6 (S3, CONFIRMED, BACKLOG — filed, not fixed).** The `ON CONFLICT`
+  refusal scan misses a comment interposed between the keywords: SQLite stores
+  CREATE text verbatim, so `x INTEGER UNIQUE ON /* c */ CONFLICT REPLACE`
+  defeats `\bON\s+CONFLICT\b` and the conflict algorithm would silently drop.
+  Reachability ≈ nil (a comment BETWEEN the two keywords; the other scanned
+  constructs are single-token and immune) and comment-stripping risks its own
+  bugs — backlog, maintainer taste.
+- Clean re-anchors: mid-dance failure atomicity — a post-drop failure rolls the
+  whole migration txn back and fully restores a PRE-EXISTING table (the
+  reviewer's first atomicity probe was mis-designed — table created inside the
+  same migration, so full rollback correctly removes it; re-designed probe
+  PASS); generated columns hidden 2 AND 3 both refused; FK `MATCH FULL`
+  reported as `NONE` by `foreign_key_list` (MATCH is inert in SQLite — dropping
+  it is semantics-preserving); composite-FK / self-ref / incoming-FK / UNIQUE
+  preservation suites green. Docs (README both rebuild sections +
+  `XqliteEcto3` / `Migration` moduledocs) updated: composite PK now listed as
+  preserved, WITHOUT ROWID / STRICT added to the refusal list.
+
+### B8 — timeout→cancel divergence
+
+`driver.ex` / `query.ex`: ZERO commits in range (orchestrator-grepped). Core
+re-driven live (`probe_b8_core.exs`, orchestrator re-run exit 0): baseline
+~3465 ms query; cached-path timeout 100 ms → 101 ms structured
+`%DBConnection.ConnectionError{}`; one-shot path (`statement_cache_size: 0`) →
+101 ms; pool/conn reusable after both; in-txn timeout leaves
+`txn_state {:ok, :write}`, rollback + reuse work; encode-raise creates no
+canceller (process delta 0), no mailbox leak, cancel path works right after.
+`cancellation_test.exs` 11 green. Zero new findings.
+
+### B4 — type round-trips
+
+`data_type.ex` / `decimal_precision.ex` / `query.ex` / loaders-dumpers: ZERO
+commits in range (orchestrator-grepped). Matrix + guard table + one-way pins =
+55 green; decimal `stream_data` property green across 10 fresh seeds; fresh
+6-value guard cross-check (guard ⟺ repo round-trip ⟺ raw typeof) fully
+consistent — incl. `1.2345678901234567` (17 sig digits, genuinely
+float64-exact, correctly ACCEPTED — the guard is representability-exact, not a
+digit counter), 2^52 / 2^-13 accepts, 18/19-sig rejects
+(`probe_b4_guard.exs`, orchestrator re-run exit 0). Zero new findings.
+
+### Verdict + dryness
+
+- 3 new CONFIRMED fixed (2× S1 + 1× S2, all in the UNPUBLISHED rebuild engine)
+  + 1 new S3 filed (F-B7-6). `mix verify` GREEN — the orchestrator's OWN run
+  (VERIFY_EXIT=0, full `test.seq`).
+- Dryness: **B8 DRY (2 of 2)** and **B4 DRY (2 of 2)** — five DRY axes total
+  (B1, X2, B6, B8, B4). **B7 stays 0 of 2, NOT DRY** — three new confirmed;
+  the fixes re-wet; the next covering pass reviews the composite-PK/options-
+  scan/quoting fixes adversarially.
+- Completeness critic (mini-lap seeds): (1) DESC or per-column COLLATE inside a
+  table-level UNIQUE — `index_info` exposes neither; COLLATE is caught by the
+  CREATE-text scan upstream, but a DESC-in-UNIQUE would silently flatten to ASC
+  (uniqueness semantics unchanged, sort order lost — probe to conclusion). (2)
+  Composite PK where a `:remove` drops a member — the fix emits the key over
+  survivors (reasoned, not tested; a refusal might be the better semantics —
+  maintainer taste). (3) Non-ASCII-case incoming-FK table matching (`lower()`
+  is ASCII-only) unprobed. (4) A pre-existing `<name>__xqlite_new` collision
+  should fail loudly at CREATE before any destructive step — unverified live.
