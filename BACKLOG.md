@@ -88,16 +88,6 @@ after the S0–S2 burn-down.
   shared-pool form. Related: the adapter's advertised `@default_opts`
   `pool_size: 5` is dead — pool sizing is consumed by Ecto before
   `child_spec` merges defaults, so Ecto's default 10 wins. (Run 2, B3)
-- [F-B7-6] (S3) The rebuild's `ON CONFLICT` refusal scan misses a
-  comment interposed between the two keywords: SQLite stores CREATE
-  TABLE text verbatim, so `x INTEGER UNIQUE ON /* c */ CONFLICT
-  REPLACE` defeats the `\bON\s+CONFLICT\b` word-boundary scan and the
-  conflict algorithm would be silently dropped by a rebuild.
-  Reachability ≈ nil (requires a comment BETWEEN the keywords; the
-  other scanned constructs are single-token and immune). A robust fix
-  means comment-stripping the CREATE text, which risks its own parser
-  bugs for no practical gain — maintainer taste: accept as-is or
-  strip comments before scanning. (Run 11, B7)
 - [F-B5-2] (S3) A CUSTOM-named plain or partial unique index cannot be
   matched by its declared name: SQLite's violation message for such
   indexes carries the `table.column` form, so `to_constraints/2`
@@ -111,6 +101,12 @@ after the S0–S2 burn-down.
   constraint-mapping docs, or synthesize the name by matching
   `index_list` unique indexes over the violated columns (ambiguous
   when several cover the same columns). (Run 10, B5)
+  RULED (maintainer, 2026-07-21): implement the SYNTHESIS remedy from
+  the get-go — resolve the real index name via `index_list` +
+  `index_info` on the violation path (reactive-replay style, like the
+  rich FK diagnostics); when several unique indexes cover the violated
+  columns, emit all candidate names. Stays OPEN until implemented —
+  queued to land with B5's remaining covering runs.
 - [F-B5-1] `to_constraints/2` returns `[foreign_key: nil]` when an FK
   violation has no rich-diagnostics payload (default `rich_fk_diagnostics:
   false`, or a diagnosis that finds no rows). `nil` is not a valid
@@ -151,6 +147,19 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B7-6] (S3) ACCEPTED AS LIMITATION (maintainer ruling
+  2026-07-21). The rebuild's `ON CONFLICT` refusal scan can be
+  defeated by a comment interposed between the two keywords — SQLite
+  stores CREATE TABLE text verbatim, so `ON /* c */ CONFLICT` evades
+  the word-boundary regex and that construct-spelling would silently
+  lose its conflict algorithm through an opt-in rebuild. Ruled
+  accept-as-is over comment-stripping: reachability ≈ nil (the comment
+  must sit BETWEEN the keywords in the user's own DDL, and the rebuild
+  is opt-in), while a hand-rolled comment stripper risks parser bugs
+  of exactly this class; the other scanned constructs are single-token
+  and immune. Recorded in the announcement honesty ledger; surface a
+  fine-print line in the rebuild docs with the next docs pass.
+  (Run 11, B7)
 - 2026-07-21 [F-B3-3] (S2) A rebuild migration under
   `Ecto.Adapters.SQL.Sandbox` leaked `defer_foreign_keys = ON`,
   silently disabling FK enforcement for the rest of the sandbox
