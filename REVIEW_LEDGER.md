@@ -1900,3 +1900,103 @@ digit counter), 2^52 / 2^-13 accepts, 18/19-sig rejects
   maintainer taste). (3) Non-ASCII-case incoming-FK table matching (`lower()`
   is ASCII-only) unprobed. (4) A pre-existing `<name>__xqlite_new` collision
   should fail loudly at CREATE before any destructive step — unverified live.
+
+---
+
+## Run 12 — 2026-07-21 — dryness lap 2, batch 4: B2 + B9 + B10
+
+- Commit at scan: `458dc0c` (clean at start). Deps at xqlite 0.10.0
+  (`XQLITE_PATH` unset, `mix.lock` pin verified). Single Opus reviewer; the
+  orchestrator INDEPENDENTLY re-ran the deciding probes and both post-fix
+  suites, the full OFF/ON flag-bleed script, and the bench compile+smoke
+  (scratchpad `run12/`, all exit 0), reviewed all three diffs line by line,
+  and attempted its own RED for the telemetry flake (below).
+- Scope: churn `811d544..458dc0c` (11 commits), attributed per axis; emission
+  surfaces, bench methodology files, and `test_helper.exs` all have ZERO
+  commits in range (git-confirmed).
+
+### B2 — exclusion-list audit (a stale exclusion falsified empirically)
+
+Drift reconciled (19 = 14 tags + 5 locations at scan; `test_helper.exs`
+unchanged in range; tags-doc delta = Run 8's two corrections).
+`type.exs:362` un-excluded fails ONLY at its documented boolean line (384);
+all JSON-path SELECTs before it pass — the F-B2-1/F-B2-2 escapes hold under
+this lens. Fresh spot-isolations: on_delete_nilify_column_list (loud
+ArgumentError), map_type_schemaless (raw JSON TEXT, undecoded),
+insert_cell_wise_defaults (uneven columns), assigns_id_type,
+alter_primary_key, alter_foreign_key — all fail exactly as documented.
+
+- **F-B2-3 (S2, CONFIRMED + FIXED).** `:like_match_blob` was excluded on the
+  claim that the build carries `SQLITE_LIKE_DOESNT_MATCH_BLOBS` — the bundled
+  3.53.2 does NOT (compile_options probe: absent, orchestrator re-run;
+  `SELECT id WHERE b LIKE x'000102'` on a real BLOB column → `[[1]]`;
+  `:binary` maps to BLOB). Both tagged `type.exs` tests pass un-excluded — a
+  false "not supported" claim standing since Run 4, whose disposition method
+  was "reasoned from source" (trusted the flag rationale, never verified the
+  flag). Fix: exclusion removed (18 = 13 tags + 5 locations), tags-doc row →
+  supported; the two tests now run in the suite (`mix verify` green includes
+  them). Run-11 rebuild churn attribution: modify-only, un-staled no ALTER
+  exclusion.
+
+### B9 — telemetry (the owed flag-config pass + an async-safety fix)
+
+Emission surface byte-unchanged in range. Flag-bleed disproven BOTH
+directions (orchestrator re-ran the full script, exit 0): OFF
+compile-force-w-a-e → OFF smoke (refute) → ON force-recompile → ON smoke
+(assert_receive; emission RESTORED) → hardened cluster green (44 passed).
+`config/test.exs` mechanism + the CI `telemetry_disabled` lane commands match
+the locally proven pair; OTel mapping unchanged; `Application.compile_env`
+gating means a stale flag raises rather than silently bleeding.
+
+- **F-B9-2 (S3, CONFIRMED + FIXED — test-only).** `attach_capture` installs a
+  process-global handler filtered by event name only; the two
+  discriminator-free `:error` captures (handle_execute + connect) could grab
+  a CONCURRENT test's `:ok` `:stop` first → `left: :ok, right: :error`
+  (~25% flake when several telemetry files share one VM; ZERO impact on
+  `test.seq`, one file per OS process; product classification correct —
+  `classify_dbc` verified). Fixed by filtering each `:error` capture on its
+  unique operation (its `sql` / its pinned `database`); these were the only
+  two discriminator-free live-event `:error` captures (dedup by mechanism).
+  RED evidence: the reviewer's recorded seed-999 cluster log shows the exact
+  failure, and its deterministic foreign-`:ok`-injection probe reproduced it
+  (temp test, deleted); the orchestrator's 3 stashed-cluster attempts did NOT
+  flake (consistent with ~25%/run — P(miss all 3) ≈ 0.42) — accepted on the
+  recorded log + mechanism code-read. GREEN: cluster 0/25 + file-alone 12/12
+  under the orchestrator's own runs.
+
+### B10 — benchmarks (the owed ecto_sql-3.14-stack pass)
+
+Methodology files unchanged in range (bump touched only bench mix.exs+lock);
+pragma parity / disclosed-not-equalized versions / cancellation-as-demo /
+ledger-first all intact. Bench deps on disk match the bumped lock (ecto_sql
+3.14.0, ecto 3.14.1, ecto_sqlite3 0.24.1, exqlite 0.39.0; no fetch needed).
+Compile exit 0 + `BENCH_TIME=1` smoke exit 0 (orchestrator re-ran both) — all
+8 scenarios + the cancellation demo produce output; NO figures recorded.
+Rebuild fixes are migration-path only; bench scenarios touch no ALTER path.
+Zero new findings.
+
+### Verdict + dryness — LAP 2 COMPLETE
+
+- 2 new CONFIRMED fixed this run (F-B2-3 S2, F-B9-2 S3-test-only). `mix
+  verify` GREEN — the orchestrator's OWN run.
+- Dryness: **B10 DRY (2 of 2)**. **B2 stays 0 of 2** (new confirmed + the
+  exclusion-list change re-wets). **B9 RESETS to 0 of 2** — the reviewer
+  proposed stays-at-1; overruled at gate (a finding-run breaks the
+  consecutive-clean chain; same rule as B5/Run 10) — the flag-config pass
+  itself was clean, so the owed re-cover is the hardened emission-test
+  cluster plus the standing surface.
+- **LAP 2 FINAL SCOREBOARD: 6/12 DRY — B1, X2, B6, B8, B4, B10.** Owed to
+  the mini-lap: X1 (1 of 2), B3 (1 of 2), B9 (0 of 2), B2 (0 of 2), B5
+  (0 of 2), B7 (0 of 2). Lap-2 yield: 6 new confirmed findings (2× S1 +
+  2× S2 + 2× S3) — all S1/S2 fixed in-run — plus 2 S3s filed for maintainer
+  taste (F-B5-2, F-B7-6) and one probe-harness defect caught at gate.
+- Completeness critic (mini-lap seeds): (1) the two location-only exclusions
+  (`alter.exs:44`, `logging.exs:74`) verified by code-read only — ExUnit 1.20
+  crashes combining a CLI `location:` filter with configured tuple excludes;
+  isolate via a transient test_helper edit. (2) The remaining
+  "reasoned-from-source" tag exclusions are architectural type-absences
+  (array/bitstring/duration/prefix/transaction_isolation/lock_for_migrations)
+  — low-value to isolate but would fully close the reasoned-not-run gap
+  F-B2-3 exposed. (3) F-B9-2 pattern breadth: `:ok`-asserting telemetry
+  captures could latently mask foreign events (they pass regardless) — audit
+  in B9's re-cover.

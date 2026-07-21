@@ -103,6 +103,26 @@ backs no exclusion) — reconnect re-check is a B2 no-op, recorded. G2 remainder
 excluded→supported after `--only foreign_key_constraint` ⇒ 6 passed). DRYNESS: a NEW
 confirmed (F-B2-2) surfaced, so NOT a clean covering run — **B2 stays at 0 of 2 clean
 covering runs, NOT DRY**; the runtime-escape fix re-wets. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 12, 2026-07-21 — dryness lap 2, batch 4; the exclusion lens —
+Runs 9/10 covered the F-B2-2 escape via the contract/translation lenses). Drift
+reconciled: `test_helper.exs` unchanged in `811d544..458dc0c`; the tags-doc delta =
+exactly Run 8's two corrections; count re-enumerated 19 (14 tags + 5 locations).
+`type.exs:362` un-excluded fails ONLY at its documented boolean line (384:
+`o.metadata["enabled"] == true` → `1`); every JSON-path SELECT before it passes,
+incl. single-/double-quoted keys — the escape fixes hold under the exclusion lens.
+**F-B2-3 (S2, CONFIRMED + FIXED): the `:like_match_blob` exclusion was STALE** —
+its rationale claims the build carries `SQLITE_LIKE_DOESNT_MATCH_BLOBS`, but the
+bundled 3.53.2 does NOT (compile_options probe: absent; `LIKE x'000102'` on a BLOB
+column MATCHES; `:binary` maps to BLOB), so both tagged tests pass un-excluded — a
+false "not supported" claim. Root of the miss: Run 4 dispositioned it "legit
+(reasoned from source)" without verifying the flag; this run falsified it
+empirically. Fix: exclusion removed (now 18 = 13 tags + 5 locations), tags-doc row
+→ supported. Fresh legit re-confirmations (5): on_delete_nilify_column_list (loud
+ArgumentError), map_type_schemaless (raw JSON TEXT), insert_cell_wise_defaults,
+assigns_id_type, alter_primary_key + alter_foreign_key (loud). Run-11 rebuild
+churn is modify-only — un-staled no ALTER exclusion. DRYNESS: a NEW confirmed +
+an exclusion-list change (a listed re-wetter) → NOT a clean covering run — **B2
+stays 0 of 2, NOT DRY**. Re-wet triggers UNCHANGED.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
@@ -563,6 +583,28 @@ adapter event fires). DRYNESS: **first clean covering run over the Run-4 emissio
 flag-config surface (the owed second pass re-covers the OFF/ON compile path). Re-wets
 ALSO on: any `config/test.exs` telemetry-flag mechanism change or a
 `telemetry_disabled` lane/smoke change.
+COVERING RE-RUN (Run 12, 2026-07-21 — dryness lap 2, batch 4; the owed flag-config
+pass). Emission surface byte-unchanged in `811d544..458dc0c` (git log empty on
+driver.ex / fk_diagnostics.ex / telemetry.ex / open_telemetry.ex). Flag-bleed
+disproven BOTH directions: OFF compile (`XQLITE_ECTO3_TELEMETRY=off MIX_ENV=test
+mix compile --force --warnings-as-errors`) exit 0 → OFF smoke (refute: no adapter
+event) exit 0 → ON force-recompile exit 0 → ON smoke (assert_receive: emission
+RESTORED) exit 0; the compile gating is `Application.compile_env` so a stale flag
+raises at runtime rather than silently bleeding. `config/test.exs` env-flip
+mechanism verified; the CI `telemetry_disabled` lane's commands MATCH the locally
+proven pair; OTel mapping unchanged. **F-B9-2 (S3, CONFIRMED + FIXED): the
+standing telemetry test cluster was async-unsafe** — `attach_capture`'s
+process-global handler + two discriminator-free `:error` captures could grab a
+concurrent test's `:ok` `:stop` first (~25% flake when several telemetry files
+share one VM; ZERO impact on `test.seq`, which runs one file per OS process;
+product classification correct — test-only). Fixed by filtering each `:error`
+capture on its unique operation (sql / pinned database); cluster 0/25 post-fix
+(orchestrator re-run) and the file alone stays 12/12. DRYNESS: the owed
+flag-config pass itself was CLEAN, but a NEW confirmed surfaced in the
+emission-test cluster → NOT a clean covering run — **B9 RESETS to 0 of 2, NOT
+DRY** (the reviewer's stays-at-1-of-2 proposal was overruled at gate: a
+finding-run breaks the consecutive-clean chain, same rule as B5/Run 10). The
+test-hardening re-wets the emission-test surface. Re-wet triggers UNCHANGED.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean
@@ -594,6 +636,19 @@ ledger-first all unchanged. DRYNESS: methodology CLEAN (0 new findings), F-B10-1
 **first clean covering run (1 of 2), NOT DRY**; the dep bump (its own re-wet trigger)
 re-wets B10 → the owed second pass re-covers the ecto_sql-3.14 / ecto_sqlite3-0.24 stack.
 Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 12, 2026-07-21 — dryness lap 2, batch 4; the owed
+ecto_sql-3.14-stack pass). Methodology honesty re-read CLEAN — `bench.exs` +
+`bench/lib` unchanged in range (Run 8's bump touched only mix.exs + mix.lock):
+pragma parity (WAL / synchronous NORMAL / 64 MB cache / 5 s busy /
+autocheckpoint 1000), versions disclosed-not-equalized, cancellation-as-demo,
+ledger-first all intact. Bench deps on disk match the bumped lock exactly
+(ecto_sql 3.14.0 / ecto 3.14.1 / ecto_sqlite3 0.24.1 / exqlite 0.39.0 — no
+fetch needed). `mix compile` exit 0 and the `BENCH_TIME=1` smoke exit 0 on the
+3.14 stack (orchestrator re-ran both) — all 8 scenarios + the cancellation demo
+produce output; NO figures recorded. The Run-11 rebuild fixes are
+migration-path only — bench scenarios touch no ALTER path. Zero new findings.
+DRYNESS: **DRY (2 of 2)** — second consecutive clean covering run over the
+post-bump stack. Re-wet triggers UNCHANGED.
 
 ## Cross-repo axes (one system)
 

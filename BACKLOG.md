@@ -151,6 +151,27 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-07-21 [F-B2-3] (S2) The `:like_match_blob` exclusion was STALE —
+  a false "not supported" claim. Its rationale asserted the build
+  carries `SQLITE_LIKE_DOESNT_MATCH_BLOBS`, but the bundled SQLite
+  3.53.2 does not (compile_options probe: absent), so `LIKE` matches
+  BLOB operands (`:binary` maps to BLOB) and both tagged `type.exs`
+  tests pass un-excluded. Standing since Run 4, whose disposition was
+  "reasoned from source" — trusted the flag rationale without
+  verifying the flag; falsified empirically this run. Fixed: exclusion
+  removed from `test_helper.exs` (now 18 = 13 tags + 5 locations),
+  `ECTO_INTEGRATION_TAGS.md` row corrected to supported; the two tests
+  now run in the suite. (Run 12, B2)
+- 2026-07-21 [F-B9-2] (S3, test-only) The telemetry test cluster was
+  async-unsafe: `attach_capture` installs a process-global handler
+  filtered by event name only, and the two discriminator-free `:error`
+  captures (handle_execute + connect) could grab a concurrent test's
+  `:ok` `:stop` first (~25% flake when several telemetry files share
+  one VM; zero impact on `test.seq`, which runs one file per OS
+  process; product classification correct). Fixed by filtering each
+  `:error` capture on its unique operation (its `sql` / its pinned
+  `database`) — the only two discriminator-free live-event `:error`
+  captures. Cluster 0/25 post-fix. (Run 12, B9)
 - 2026-07-21 [F-B7-3] (S1) The rebuild silently NARROWED a composite
   PRIMARY KEY: `existing_to_column` emitted an inline `PRIMARY KEY`
   only for the `table_xinfo.pk == 1` column, so rebuilding a
