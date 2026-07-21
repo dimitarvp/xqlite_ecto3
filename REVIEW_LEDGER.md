@@ -1684,3 +1684,111 @@ txn/pragma/open row UNTOUCHED. Zero new findings.
   disposition from Run 7 stands. (4) rebuild-dance deep semantics, JSON
   behavioral fidelity, and telemetry event behavior deliberately untouched —
   owed to B7 (batch 3) and B2/B9 (batch 4) lenses.
+
+---
+
+## Run 10 — 2026-07-21 — dryness lap 2, batch 2: B6 + B5 + B3
+
+- Commit at scan: `6539a14` (HEAD `76b0890` is docs-only above it — verified by
+  diff). Deps at xqlite 0.10.0 (`XQLITE_PATH` unset, `mix.lock` pin verified).
+  Single Opus reviewer; the orchestrator INDEPENDENTLY re-ran ALL 12 runtime
+  probes (scratchpad `run10/`), ran the F-B5-2 deciding probe itself, and
+  reviewed the two test-file diffs line by line.
+- Scope: covering re-run over the churn `dec4469..6539a14` (13 commits; per-axis
+  attribution by git log — `connection.ex` touched ONLY by `53599f4`;
+  `to_constraints/2`/`fk_diagnostics.ex`/`driver.ex` all UNCHANGED in range).
+- GATE NOTE (probe harness, not the adapter): the orchestrator re-run exposed
+  two B5 probes as NON-IDEMPOTENT — `:erlang.unique_integer([:positive])`-based
+  tmp DB names are near-deterministic across fresh VMs, so a re-run VM
+  regenerated an EARLIER agent VM's "unique" filename, hit its already-applied
+  migration, and died with `:already_up` (proven by dumping `schema_migrations`
+  from the colliding files). Scripts patched to wall-clock-ns names +
+  pre-clean; both re-run green (6/6, PASS). Probe VALIDITY unaffected — the
+  agent's assertions ran on files its own VM had freshly created. Standing
+  lesson for future probe prompts: tmp names must be wall-clock-unique.
+
+### B6 — query translation (the JSON-escape churn, RESULTS lens)
+
+Run 9 verified the emitted SQL shape; this pass owned RESULTS. Runtime keys via
+`d.meta[d.label]` — dot, backslash, double-quote, single-quote, unicode (café,
+naïve日本), digit-string "123" (object key, NOT array index — `typeof('text')`
+routing), empty string — plus mixed literal+runtime paths in BOTH orders: 11/11
+return the expected value, never silent nil; raw `json_extract` ground truth
+confirms SQLite resolves `$.""`, `$."123"`, `$."it's"`. Escape-order crux: keys
+containing BOTH backslash and quote (`a\"b`, `x\\y`, `q"\r`) all resolve — the
+backslash-first `replace(replace(…))` order holds under composition (3/3).
+Emission helpers `escape_string`/`limit`/`quote_entity` byte-unchanged in range,
+so the Run-6 wrong-results seeds were re-anchored targeted (11/11: count(col)
+skips NULL, sum over NULLs, `NOT IN [1,nil]` → [], LIKE ASCII-only fold
+(zebra↔ZEBRA yes, äpfel≠Äpfel), `LIMIT -1` on bare offset, single-paren
+`exists(SELECT`, ON CONFLICT expression-target dedup) + 85 committed anchors.
+Durable coverage: `json_extract_path_test.exs` +5 (single-quote / digit-string /
+empty-string runtime keys, both mixed orders). Zero new findings.
+
+### B5 — constraint mapping (rebuilt-UNIQUE end-to-end + a new S3)
+
+`to_constraints/2` (`connection.ex:102-162`) and `fk_diagnostics.ex` UNCHANGED
+in range; the churn is the A4 engine reconstructing UNIQUE as table-level
+clauses backed by `sqlite_autoindex_*`. Proven END-TO-END through real
+`Ecto.Migrator` + changesets on a rebuilt table (the Remedies evidence had
+stopped at `to_constraints/2` output): `unique_constraint(:sku)` converts to
+`{:error, changeset}` with `constraint_name: "rp_uq_sku_index"`, and the
+composite `unique_constraint(:name, name: "rp_uq_name_region_index")` converts
+on `:name` — the autoindex name is transparent because SQLite's violation
+message carries the table.column form and the adapter derives the conventional
+`<table>_<cols>_index`. Column order: a reverse-declared `UNIQUE(region, name)`
+derives `rp_uq2_region_name_index` (declaration order via `index_info` seqno,
+not alphabetical). Standing subtypes re-anchored live (4/4): rowid PK +
+WITHOUT ROWID PK derive; partial unique index → table.column form → derived
+conventional name (matches Ecto's default `unique_constraint` name); expression
+unique index → `index 'name'` message form → `index_name` direct path.
+Reconnect-enforcement contract test green. Durable coverage:
+`table_rebuild_preservation_test.exs` UNIQUE test extended with both changeset
+conversions (structured assertions on `constraint: :unique` +
+`constraint_name`).
+
+- **F-B5-2 (S3, CONFIRMED, BACKLOG).** Surfaced by this run's subtype probes;
+  settled by an ORCHESTRATOR deciding probe (`orch_b5_custom_name_probe.exs`):
+  a CUSTOM-named plain (or partial) unique index cannot be matched by its
+  declared name — the violation message carries table.column, the adapter
+  derives the conventional name, so `unique_constraint(:v, name: :my_custom)`
+  never matches and Ecto raises `Ecto.ConstraintError` (type `:unique`,
+  violated `"items_v_index"`); the CONTROL with the derived name converts to a
+  changeset error on the same table. Loud, not silent; expression indexes DO
+  round-trip their real name. Remedy (document the naming contract vs
+  synthesize the name from `index_list` over the violated columns — ambiguous
+  when several unique indexes cover them) = maintainer call.
+
+### B3 — sandbox + pooling (standing surface + the owed owner-death angle)
+
+Connect with-chain (`driver.ex:54-88`) UNCHANGED in range (git log empty; the
+F-B3-2 remedy was README-only). Five probes, all deterministic (exact counts,
+monitors, bounded polling, ceilings ≥10×), all PASS on both the reviewer's and
+the orchestrator's runs: cold-start PRAGMA storm (pool 12, fresh non-WAL file,
+300 immediate inserts → 300/300, 0 errors, wal after); hot-row busy storm
+(pool 10, 200 concurrent txns on ONE row → exactly 200, pool healthy); forced
+busy (200 ms vs held lock → structured `{:database_busy_or_locked, …}`,
+writable after); sandbox `{:shared, owner}` + `allow/3` bidirectional with
+rollback isolation; NEW angle — mid-transaction owner `:kill` → uncommitted
+write rolled back (count 0), pool healthy (60/60 after), no wedge. Zero new
+findings. F-B3-1 unchanged (backlog, maintainer call).
+
+### Verdict + dryness
+
+- 1 new CONFIRMED S3 (F-B5-2 → BACKLOG, maintainer remedy). 0 new S0–S2. Two
+  test files hardened (+5 JSON-path tests, +changeset conversions in the
+  rebuild preservation suite). `mix verify` GREEN — the orchestrator's OWN run.
+- Dryness: **B6 DRY (2 of 2)** — third DRY axis. **B5 resets to 0 of 2, NOT
+  DRY** — a new confirmed finding surfaced (the reviewer's DRY proposal was
+  OVERRULED at gate; same precedent as F-B3-2/F-B4-1: a finding-run is not a
+  clean run, churn-origin notwithstanding). **B3 → 1 of 2, NOT DRY** — first
+  clean covering run.
+- Completeness critic: B6 window-frame semantics / NOCASE collation / typed
+  `type(...)` extraction unchanged since Run 6 and not re-driven (committed
+  tests cover; deep NULL-in-window remains an unlived Run 6 residual). B5
+  origin-`c` unique-index recreation through rebuild rests on
+  `table_rebuild_test.exs` (not re-driven here). B3 mini-lap seeds: DBConnection
+  checkout-timeout × busy-storm interaction; sandbox ownership vs the rebuild
+  engine's documented non-sandbox requirement (`defer_foreign_keys` never
+  resets under an uncommitted sandbox txn). Probe-harness lesson recorded in
+  the gate note above.

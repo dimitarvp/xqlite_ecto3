@@ -44,6 +44,10 @@ defmodule XqliteEcto3.JsonExtractPathTest do
           "dotted.key" => "found",
           "quo\"ted" => "qv",
           "back\\slash" => "bv",
+          "it's" => "sqv",
+          "123" => "digitv",
+          "" => "emptyv",
+          "rt" => %{"lit" => "rlv"},
           "nested" => %{"a.b" => "deep"}
         }
       })
@@ -80,6 +84,31 @@ defmodule XqliteEcto3.JsonExtractPathTest do
   test "dynamic key containing a double quote resolves via escaped quoted-key form" do
     Repo.update_all(Doc, set: [label: "quo\"ted"])
     assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "qv"
+  end
+
+  test "dynamic key containing a single quote resolves (a runtime value needs no SQL-quote escaping)" do
+    Repo.update_all(Doc, set: [label: "it's"])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "sqv"
+  end
+
+  test "dynamic digit-string key resolves the object key, not an array index" do
+    Repo.update_all(Doc, set: [label: "123"])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "digitv"
+  end
+
+  test "dynamic empty-string key resolves the empty object key" do
+    Repo.update_all(Doc, set: [label: ""])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label])) == "emptyv"
+  end
+
+  test "mixed literal-then-runtime path resolves each segment independently" do
+    Repo.update_all(Doc, set: [label: "a.b"])
+    assert Repo.one(from(d in Doc, select: d.meta["nested"][d.label])) == "deep"
+  end
+
+  test "mixed runtime-then-literal path resolves each segment independently" do
+    Repo.update_all(Doc, set: [label: "rt"])
+    assert Repo.one(from(d in Doc, select: d.meta[d.label]["lit"])) == "rlv"
   end
 
   test "dynamic key that matches nothing yields nil" do

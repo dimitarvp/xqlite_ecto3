@@ -191,6 +191,20 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     end
   end
 
+  defmodule RpUq do
+    use Ecto.Schema
+
+    import Ecto.Changeset
+
+    schema "rp_uq" do
+      field(:name, :string)
+      field(:sku, :string)
+      field(:region, :string)
+    end
+
+    def changeset(struct, attrs), do: cast(struct, attrs, [:name, :sku, :region])
+  end
+
   defmodule MutualRefMigration do
     use Ecto.Migration
 
@@ -362,6 +376,8 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
   end
 
   test "table-level UNIQUE constraints (single and composite) are preserved and enforced" do
+    import Ecto.Changeset
+
     migrate!(UniqueMigration, 20_260_721_100_008)
 
     # Both UNIQUE constraints backed by origin-'u' auto-indexes on the new table.
@@ -383,6 +399,32 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     assert is_binary(name)
 
     insert_rejected("INSERT INTO rp_uq(id, name, sku, region) VALUES (3, 'a', 's3', 'eu')")
+
+    # End to end: a real changeset actually converts to a changeset error — the
+    # auto-index (sqlite_autoindex_*) name is transparent because SQLite reports
+    # the table.column form and the mapping derives the conventional index name.
+    single =
+      %RpUq{}
+      |> RpUq.changeset(%{name: "b", sku: "s1", region: "us"})
+      |> unique_constraint(:sku)
+      |> PoolRepo.insert()
+
+    assert {:error, single_cs} = single
+    assert {_msg, single_opts} = single_cs.errors[:sku]
+    assert single_opts[:constraint] == :unique
+    assert single_opts[:constraint_name] == "rp_uq_sku_index"
+
+    # The composite form needs the explicit conventional name; column order intact.
+    composite =
+      %RpUq{}
+      |> RpUq.changeset(%{name: "a", sku: "s_fresh", region: "eu"})
+      |> unique_constraint(:name, name: "rp_uq_name_region_index")
+      |> PoolRepo.insert()
+
+    assert {:error, composite_cs} = composite
+    assert {_msg, composite_opts} = composite_cs.errors[:name]
+    assert composite_opts[:constraint] == :unique
+    assert composite_opts[:constraint_name] == "rp_uq_name_region_index"
   end
 
   test "the dance leaves PRAGMA foreign_keys unchanged and copies mutually-referencing rows" do

@@ -148,6 +148,22 @@ changes nothing; the fresh-file first boot must flip regardless). Added a README
 "First-boot WAL noise on a fresh database" section (symptom + harmless/self-healing
 rationale + three mitigations). NO code change, so B3 is NOT re-wet — its re-wetter
 list is UNCHANGED.
+COVERING RE-RUN (Run 10, 2026-07-21 — dryness lap 2, batch 2): connect with-chain
+(`driver.ex:54-88`: busy_timeout before journal_mode before foreign_keys)
+verified UNCHANGED in range (git log empty on driver.ex; the F-B3-2 remedy was
+README-only). Standing storm surface re-driven deterministically (exact-count
+invariants, monitors, bounded polling, ceilings ≥10×): cold-start PRAGMA storm
+(pool 12, fresh non-WAL file, 300 immediate concurrent inserts → 300/300 ok,
+0 errors, journal_mode=wal after); hot-row busy storm (pool 10, 200 concurrent
+write txns on ONE row → final counter exactly 200, pool healthy after); forced
+busy (200 ms timeout vs a held write lock → structured
+`{:database_busy_or_locked, …}`, writable after release); sandbox
+`{:shared, owner}` AND `allow/3` bidirectional with rollback isolation (fresh
+checkout sees 0). NEW angle (Run 6's unprobed owner-death): a task killed
+`:kill` MID-TRANSACTION → the uncommitted write rolls back (count 0), the pool
+stays healthy (60/60 subsequent writes), no wedged connection. All probes
+re-run by the orchestrator (exit 0). Zero new findings. DRYNESS: **first clean
+covering run — 1 of 2, NOT DRY**, one more owed. Re-wet triggers UNCHANGED.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -232,6 +248,32 @@ Committed the reconnect contract deterministically (`driver_connect_pragmas_test
 UNCHANGED (raw-insert probes didn't exercise the suffix-matcher path — no remedy
 sharpening). Zero new findings. DRYNESS: **first clean covering run (1 of 2), NOT
 DRY**, one more owed (Run 2 found F-B5-1). Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 10, 2026-07-21 — dryness lap 2, batch 2): the A4 rebuild
+engine now reconstructs UNIQUE as table-level clauses (backed by
+`sqlite_autoindex_*`); `to_constraints/2` + `fk_diagnostics.ex` verified
+UNCHANGED in range. The mapping proven END-TO-END on a rebuilt table (the
+Remedies entry had only reached `to_constraints/2` output): a real
+`unique_constraint(:sku)` (single) and `unique_constraint(:name, name:
+"rp_uq_name_region_index")` (composite) each CONVERT to `{:error, changeset}`
+with the derived conventional name — the autoindex name is transparent because
+SQLite reports the table.column message form and the adapter derives
+`<table>_<cols>_index`. Column order proven by a reverse-declared
+`UNIQUE(region, name)` → `..._region_name_index` (declaration order, not
+alphabetical). Standing subtypes re-anchored live (rowid + WITHOUT ROWID PK
+derive; partial index derives — matching Ecto's default-name contract;
+expression index takes the `index_name` direct path); reconnect-enforcement
+contract test green. `table_rebuild_preservation_test.exs` extended with the
+changeset conversions. **F-B5-2 (S3, CONFIRMED, BACKLOG) — surfaced by this
+run's probes, settled by an orchestrator deciding probe:** a CUSTOM-named plain
+(or partial) unique index cannot be matched by its declared name — the
+violation carries the table.column form, the adapter derives the conventional
+name, so `unique_constraint(:v, name: :my_custom)` misses and Ecto raises
+`Ecto.ConstraintError` (control with the derived name converts). Loud, not
+silent; expression indexes DO carry their real name. Remedy (document the
+naming contract vs synthesize via `index_list`) = maintainer call. DRYNESS: a
+NEW confirmed surfaced, so NOT a clean covering run — **B5 resets to 0 of 2,
+NOT DRY** (the reviewer's DRY proposal was overruled at gate). Re-wets ALSO
+on: any `derive_index_name`/`unique_index_name` change.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL
@@ -271,6 +313,24 @@ ON CONFLICT partial-index + expression targets all correct. Churn re-verified li
 (escape_string single-`\`, `LIMIT -1 OFFSET`, quote_entity injection collapse).
 Zero new findings. DRYNESS: **first clean covering run (1 of 2), NOT DRY**, one
 more owed (Run 2 found three fixed bugs). Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 10, 2026-07-21 — dryness lap 2, batch 2): the runtime
+JSON-escape churn (`53599f4`, the ONLY connection.ex commit in range per git log)
+re-covered through the TRANSLATION lens on RESULTS (Run 9 owned only the SQL
+shape). Runtime keys via `d.meta[d.label]` — dot / backslash / double-quote /
+single-quote / unicode (café, naïve日本) / digit-string "123" (routed to the
+object key, NOT an array index) / empty string — plus mixed literal+runtime
+paths in BOTH orders: every case returns the expected value, never silent nil
+(raw `json_extract` ground truth confirms SQLite resolves `$.""`, `$."123"`,
+`$."it's"`); a backslash+quote combo key set proves the backslash-first
+replace() order under composition. escape_string/limit/quote_entity
+byte-unchanged in range, so the Run-6 wrong-results seeds were re-anchored
+targeted (count(col)/sum over NULLs, NOT IN with nil → [], LIKE ASCII-only
+fold, `LIMIT -1` on bare offset, single-paren `exists(SELECT`, ON CONFLICT
+expression target) + 85 committed anchors green. `json_extract_path_test.exs`
++5 durable tests (single-quote/digit/empty runtime keys, both mixed orders).
+All probes re-run by the orchestrator (exit 0). Zero new findings. DRYNESS:
+**DRY (2 of 2)** — second consecutive clean covering run. Re-wet triggers
+UNCHANGED.
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which

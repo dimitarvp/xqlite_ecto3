@@ -88,6 +88,19 @@ after the S0–S2 burn-down.
   shared-pool form. Related: the adapter's advertised `@default_opts`
   `pool_size: 5` is dead — pool sizing is consumed by Ecto before
   `child_spec` merges defaults, so Ecto's default 10 wins. (Run 2, B3)
+- [F-B5-2] (S3) A CUSTOM-named plain or partial unique index cannot be
+  matched by its declared name: SQLite's violation message for such
+  indexes carries the `table.column` form, so `to_constraints/2`
+  derives the conventional `<table>_<cols>_index`; a changeset
+  declaring `unique_constraint(:v, name: :my_custom)` never matches
+  and Ecto raises `Ecto.ConstraintError` (loud, not silent — deciding
+  probe: the control with the derived name converts, the custom name
+  raises). Expression unique indexes DO carry their real name
+  (`index 'name'` message form → `index_name` direct path). Remedy is
+  a maintainer call: document the naming contract in the
+  constraint-mapping docs, or synthesize the name by matching
+  `index_list` unique indexes over the violated columns (ambiguous
+  when several cover the same columns). (Run 10, B5)
 - [F-B5-1] `to_constraints/2` returns `[foreign_key: nil]` when an FK
   violation has no rich-diagnostics payload (default `rich_fk_diagnostics:
   false`, or a diagnosis that finds no rows). `nil` is not a valid
