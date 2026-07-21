@@ -18,7 +18,7 @@ Bundled SQLite version: **3.53.2**. Shared files loaded: **16/18**.
 | `:insert_cell_wise_defaults` | excluded | SQLite multi-row VALUES requires all rows to have the same columns |
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
 | `:json_extract_path` | needs adapter work | `json_extract` returns 1/0 for booleans; adapter needs coercion layer |
-| `:like_match_blob` | excluded | SQLite compiled with `SQLITE_LIKE_DOESNT_MATCH_BLOBS` rejects LIKE on BLOBs |
+| `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands (`:binary` stores as `BLOB`), so both tagged `type.exs` tests pass un-excluded |
 | `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
 | `:microsecond_precision` | excluded (permanent) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. |

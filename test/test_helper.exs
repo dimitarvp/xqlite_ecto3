@@ -51,9 +51,6 @@ excludes = [
   # SQLite multi-row VALUES requires all rows to have the same columns
   :insert_cell_wise_defaults,
 
-  # SQLite compiled with SQLITE_LIKE_DOESNT_MATCH_BLOBS
-  :like_match_blob,
-
   # JSON stored as TEXT; without schema Ecto cannot invoke JSON decoder
   :map_type_schemaless,
 

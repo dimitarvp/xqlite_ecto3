@@ -70,9 +70,10 @@ defmodule XqliteEcto3.TelemetryTest do
       bogus = "/no/such/dir/xqlite_test.db"
       assert {:error, _} = Driver.connect(database: bogus)
 
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :connect, :stop], _, metadata}
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :connect, :stop], _,
+                      %{database: ^bogus} = metadata}
+
       assert metadata.result_class == :error
-      assert metadata.database == bogus
 
       :telemetry.detach(handler_id)
     end
@@ -215,7 +216,12 @@ defmodule XqliteEcto3.TelemetryTest do
 
       {:error, _, _state2} = Driver.handle_execute(query, [], [], state)
 
-      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_execute, :stop], _, metadata}
+      # Telemetry handlers are process-global: filter to this operation's
+      # own :stop by its SQL, else a concurrent successful execute's :ok
+      # :stop can be captured first.
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_execute, :stop], _,
+                      %{sql: "SELECT * FROM nonexistent_table"} = metadata}
+
       assert metadata.result_class == :error
 
       :telemetry.detach(handler_id)
