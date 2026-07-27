@@ -193,7 +193,11 @@ jobs:
       - name: Run tests sequentially with coverage export
         run: mix xqlite_ecto3.test.seq --cover
 
+      # cron runs skip the upload: excoveralls reads the committer from the
+      # event payload's sender field, which schedule events don't carry
+      # (BadMapError), and the push run already uploaded this SHA's coverage.
       - name: Push merged coverage to Coveralls
+        if: github.event_name != 'schedule'
         run: mix coveralls.github --import-cover cover test/xqlite_ecto3/url_test.exs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
