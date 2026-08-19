@@ -630,11 +630,20 @@ defmodule XqliteEcto3.Driver do
     :ok
   end
 
+  # A UNIQUE violation names only the table and columns, so the real
+  # index name is read back from the database here — two read-only
+  # pragmas on a path that has already failed, always on.
   defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
-    XqliteEcto3.FkDiagnostics.wrap_with_replay(reason, state.conn, sql, params)
+    reason
+    |> XqliteEcto3.FkDiagnostics.wrap_with_replay(state.conn, sql, params)
+    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
   end
 
-  defp wrap_execute_error(reason, _sql, _params, _state), do: XqliteEcto3.Error.wrap(reason)
+  defp wrap_execute_error(reason, _sql, _params, state) do
+    reason
+    |> XqliteEcto3.Error.wrap()
+    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
+  end
 
   @impl DBConnection
   def handle_close(_query, _opts, state) do

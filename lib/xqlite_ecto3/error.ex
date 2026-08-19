@@ -77,6 +77,16 @@ defmodule XqliteEcto3.Error do
     diagnosis ran: `:not_run` (flag off or non-FK error), `:ok`
     (violations populated), or `{:unavailable, reason}` (attempted but
     failed — the original error is surfaced regardless).
+
+    For `subtype: :constraint_unique` reported as table and columns
+    (every unique index except one built over an expression, which
+    SQLite names directly in `index_name`), `unique_index_names`
+    carries the real names of the unique indexes covering those
+    columns, read back from the database by
+    `XqliteEcto3.UniqueIndexNames`. `unique_index_lookup` reports
+    whether that read ran: `:not_run` (a violation of another kind, or
+    one that already names its index), `:ok`, or `{:unavailable,
+    reason}`.
     """
 
     defstruct [
@@ -89,7 +99,9 @@ defmodule XqliteEcto3.Error do
       :target_type,
       columns: [],
       fk_violations: [],
-      fk_diagnostics: :not_run
+      fk_diagnostics: :not_run,
+      unique_index_names: [],
+      unique_index_lookup: :not_run
     ]
 
     @type t :: %__MODULE__{
@@ -102,7 +114,9 @@ defmodule XqliteEcto3.Error do
             target_type: atom() | nil,
             columns: [String.t()],
             fk_violations: [XqliteEcto3.Error.FkViolation.t()],
-            fk_diagnostics: :not_run | :ok | {:unavailable, term()}
+            fk_diagnostics: :not_run | :ok | {:unavailable, term()},
+            unique_index_names: [String.t()],
+            unique_index_lookup: :not_run | :ok | {:unavailable, term()}
           }
   end
 
