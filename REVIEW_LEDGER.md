@@ -2080,3 +2080,56 @@ event-surface probe 9/9, OTel path unchanged.
   effect suggests migrating some preservation coverage to the sandboxed repo
   later (enrichment, not owed); B9's next pass re-covers the twice-hardened
   cluster; the B3/B9/B2/B5/B7 seconds inherit their standing seeds.
+
+---
+
+## Remedies — 2026-08-20 — maintainer ruling F-B5-2 (unique index name synthesis)
+
+- Base: `5748b8f` (clean tree). Implemented by an Opus subagent; orchestrator
+  gate: line-review of all five files; fresh re-runs of the new test file
+  (14/14) and the index/violation shape probe; INDEPENDENT RED→GREEN via a
+  deciding probe with the fix stashed (`Ecto.ConstraintError` raised on the
+  derived-guess `gate_items_v_index`) and restored (converts,
+  `constraint_name: "my_custom_gate"`); own `mix verify` exit 0 (first run
+  hit the stale-PLT toolchain drift, priv/plts rebuilt).
+- The ruled synthesis: new `XqliteEcto3.UniqueIndexNames` — on a
+  `:constraint_unique` violation carrying only table+columns (`index_name`
+  nil), reads `PRAGMA index_list` (unique, origin `"c"` only —
+  `sqlite_autoindex_*` filtered) + `PRAGMA index_info` (exact ordered column
+  match) on the still-checked-out conn, reporting every matching name
+  (sorted, deduped). Rides on two new `Constraint` fields
+  (`unique_index_names`, `unique_index_lookup: :not_run | :ok |
+  {:unavailable, reason}`), mirroring the FK-diagnostics pair. Always-on —
+  two read-only pragmas on an already-failed path, no opt-in flag; any
+  pragma failure degrades to the conventional derived name.
+  `to_constraints/2`: resolved names win, one `{:unique, name}` per
+  candidate; derived name is the fallback (table-level UNIQUE / PK /
+  lookup unavailable). Expression indexes keep their direct `index_name`
+  path untouched.
+- TWO RULING REFINEMENTS forced by Ecto's matcher (verified in deps source:
+  `Ecto.Repo.Schema.constraints_to_errors/3` raises on ANY
+  emitted-but-undeclared constraint): (1) "either candidate matches" is
+  unimplementable — on ambiguity the changeset must declare EVERY candidate
+  (footgun documented in the moduledoc); (2) the derived name cannot be an
+  always-candidate (it would break the custom-name case itself) — fallback
+  only. CONSEQUENCE: a bare `unique_constraint(:v)` against a CUSTOM-named
+  index now raises `Ecto.ConstraintError` instead of accidentally converting
+  via the adapter-and-Ecto double-guess — Postgres-parity (PG reports real
+  constraint names too). Maintainer may overrule; the only alternative
+  mechanism is documentation, not emission.
+- Durable coverage: `unique_index_names_test.exs` (14 tests: custom plain /
+  custom partial / partial-condition scope / multi-column index order /
+  ambiguity with both declared / conventional + table-level UNIQUE controls /
+  expression direct-path + no-lookup / degradation on unusable conn and
+  vanished table). Regression re-runs green: rebuild preservation 15,
+  connection 31, constraints 11, fk_diagnostics 13, error_wrap 23.
+- Dryness: B5 churned by its own remedy, as planned — the covering runs
+  start post-synthesis. B5 re-wet triggers now ALSO include
+  `unique_index_names.ex` / `unique_constraints/1`.
+- Seeds for B5's covering pass: resolution inside an explicit transaction
+  (the pragma read runs mid-aborted-txn) and under an `ON CONFLICT ROLLBACK`
+  clause; `quote_ident` now duplicated 2× (fk_diagnostics + here — below the
+  ≥3× extraction bar); no telemetry span around the lookup (FkDiagnostics
+  has one — maintainer taste); README documents the FK-name synthesis but
+  not the unique-name synthesis (fold into the owed docs pass alongside the
+  F-B7-6 fine-print line).

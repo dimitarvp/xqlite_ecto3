@@ -91,25 +91,6 @@ after the S0–S2 burn-down.
   shared-pool form. Related: the adapter's advertised `@default_opts`
   `pool_size: 5` is dead — pool sizing is consumed by Ecto before
   `child_spec` merges defaults, so Ecto's default 10 wins. (Run 2, B3)
-- [F-B5-2] (S3) A CUSTOM-named plain or partial unique index cannot be
-  matched by its declared name: SQLite's violation message for such
-  indexes carries the `table.column` form, so `to_constraints/2`
-  derives the conventional `<table>_<cols>_index`; a changeset
-  declaring `unique_constraint(:v, name: :my_custom)` never matches
-  and Ecto raises `Ecto.ConstraintError` (loud, not silent — deciding
-  probe: the control with the derived name converts, the custom name
-  raises). Expression unique indexes DO carry their real name
-  (`index 'name'` message form → `index_name` direct path). Remedy is
-  a maintainer call: document the naming contract in the
-  constraint-mapping docs, or synthesize the name by matching
-  `index_list` unique indexes over the violated columns (ambiguous
-  when several cover the same columns). (Run 10, B5)
-  RULED (maintainer, 2026-07-21): implement the SYNTHESIS remedy from
-  the get-go — resolve the real index name via `index_list` +
-  `index_info` on the violation path (reactive-replay style, like the
-  rich FK diagnostics); when several unique indexes cover the violated
-  columns, emit all candidate names. Stays OPEN until implemented —
-  queued to land with B5's remaining covering runs.
 - [F-B5-1] `to_constraints/2` returns `[foreign_key: nil]` when an FK
   violation has no rich-diagnostics payload (default `rich_fk_diagnostics:
   false`, or a diagnosis that finds no rows). `nil` is not a valid
@@ -150,6 +131,19 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-08-20 [F-B5-2] (S3) IMPLEMENTED per the 2026-07-21 synthesis
+  ruling: `XqliteEcto3.UniqueIndexNames` resolves the real unique
+  index name(s) via `index_list`+`index_info` on the violation path
+  (always-on, two read-only pragmas; failures degrade to the derived
+  conventional name); `to_constraints/2` emits one `{:unique, name}`
+  per candidate — resolved names win, derived is the fallback. Two
+  Ecto-matcher-forced refinements (Ecto raises on ANY emitted-but-
+  undeclared constraint, verified in deps source): ambiguity requires
+  the changeset to declare EVERY candidate; and a bare
+  `unique_constraint(:v)` against a CUSTOM-named index now raises
+  instead of accidentally converting via the double-guess
+  (Postgres-parity). 14 committed tests. Detail: ledger Remedies
+  2026-08-20.
 - 2026-07-21 [F-B7-6] (S3) ACCEPTED AS LIMITATION (maintainer ruling
   2026-07-21). The rebuild's `ON CONFLICT` refusal scan can be
   defeated by a comment interposed between the two keywords — SQLite

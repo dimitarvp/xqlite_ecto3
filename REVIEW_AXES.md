@@ -333,6 +333,23 @@ naming contract vs synthesize via `index_list`) = maintainer call. DRYNESS: a
 NEW confirmed surfaced, so NOT a clean covering run — **B5 resets to 0 of 2,
 NOT DRY** (the reviewer's DRY proposal was overruled at gate). Re-wets ALSO
 on: any `derive_index_name`/`unique_index_name` change.
+REMEDY (2026-08-20 — the F-B5-2 synthesis ruling implemented): new
+`XqliteEcto3.UniqueIndexNames` reads the real unique-index names back on the
+violation path (`index_list` unique origin-"c" rows; `index_info` exact
+ordered column match; sorted+deduped; always-on; pragma failure degrades to
+the derived name), riding on two new Constraint fields
+(`unique_index_names`, `unique_index_lookup`); `to_constraints/2` emits one
+`{:unique, name}` per candidate — resolved names win, the derived
+conventional name is the fallback. Ecto's matcher raises on any
+emitted-but-undeclared constraint, so ambiguity requires declaring every
+candidate, and a bare `unique_constraint/1` against a custom-named index now
+raises (Postgres-parity) — both documented in the moduledoc. B5 churned by
+its own remedy as planned; the covering runs review the synthesis
+adversarially. Re-wets ALSO on: any `unique_index_names.ex` /
+`unique_constraints/1` change. Covering-pass seeds: resolution inside an
+explicit txn + ON CONFLICT ROLLBACK; `quote_ident` duplication (2×, below
+the ≥3× bar); no telemetry span around the lookup (FkDiagnostics has one);
+README documents FK synthesis but not unique synthesis (owed docs pass).
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL
