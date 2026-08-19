@@ -350,6 +350,31 @@ adversarially. Re-wets ALSO on: any `unique_index_names.ex` /
 explicit txn + ON CONFLICT ROLLBACK; `quote_ident` duplication (2×, below
 the ≥3× bar); no telemetry span around the lookup (FkDiagnostics has one);
 README documents FK synthesis but not unique synthesis (owed docs pass).
+COVERING RE-RUN (Run 14, 2026-08-20 — the owed adversarial pass on the
+synthesis engine): FIVE new findings — the emission design broke under
+sibling indexes. **F-B5-3 (S2, FIXED at gate, RED→green):** emitting every
+candidate made a by-the-book `unique_constraint(:v)` raise the moment a
+sibling partial or differently-collated unique index existed over the same
+columns (the sibling provably innocent — with the conventional index
+dropped, the same insert SUCCEEDS under the partial alone). Fix: emit a
+real name only when it is the SINGLE candidate; zero-or-several fall back
+to the conventional derived name while the struct keeps the candidate
+list. **F-B5-6 (S3, reviewer's S2 overruled at gate; HARDENED):** the
+lookup is uncancellable post-token work billed to the checkout deadline —
+candidate reads now capped at 24/table with structured degradation; the
+1500-index kill lever collapsed to control parity on the orchestrator's
+re-drive; contention leg (busy-blocked pragma, non-WAL) unproven → seeded.
+Filed: F-B5-4 (cross-schema pragma resolution), F-B5-5 (mis-parsed
+column list matches a real index), F-B5-7 (lookup-status collapse), a B3
+seed (ON CONFLICT ROLLBACK mid-txn COMMIT failure, pre-existing). CLEAN:
+explicit-txn resolution, sandbox ownership, exotic identifiers, mixed
+expression+column (always `index 'name'` form), insert_all/update/STRICT/
+WITHOUT ROWID, FK-diagnostics interplay, standing surface. DRYNESS:
+finding-run + fix churn — **B5 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`capped_matching_indexes/3` / candidacy rules / `wrap_execute_error/4`
+cancel-token position / xqlite `constraint_parse.rs`. Next-pass seeds: the
+contention leg; conn death between the two pragmas; concurrent DDL racing
+the lookup; WITHOUT ROWID × partial × expression crosses.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

@@ -101,7 +101,47 @@ after the S0–S2 burn-down.
   crashes with a `FunctionClauseError` (verified: `String.ends_with?(nil,
   "x")` raises). Latent (narrow trigger); consider returning `[]` (raw
   error) or synthesizing the `<source>_<field>_fkey` name from
-  `options[:source]`. (Run 2, B5)
+  `options[:source]`. (Run 2, B5) Sharpened (Run 14): live-driven per
+  match mode — `:exact` → `Ecto.ConstraintError` naming nil;
+  `:suffix`/`:prefix` → `FunctionClauseError` in
+  `String.ends_with?/starts_with?`.
+- [F-B5-4] (S3) The unique-index name lookup runs `PRAGMA index_list`
+  unqualified, so when the same table name exists in several schemas
+  (ATTACH, TEMP) the reported index can belong to the wrong table —
+  SQLite resolves temp, then main, then attached. Reachable only via
+  raw SQL / with_xqlite (the schema API refuses prefixes). Probes: a
+  violation on archive.t reported main's index; a violation on main.sh
+  reported the TEMP index. Remedy direction: `SELECT schema FROM
+  pragma_table_list WHERE name = ?` detects the ambiguity in one read;
+  degrade to the derived name when more than one schema matches.
+  (Run 14, B5)
+- [F-B5-5] (S3) xqlite's violation-message parse (constraint_parse.rs
+  splits columns on ", " and the table on the first ".") mis-parses a
+  column name containing ", " — and the lookup then matches the
+  mis-parsed column list against real indexes, emitting a
+  wrong-but-real name (probe: violating an index over the column
+  literally named "a, b" reported the index over (a, b); both
+  "columns" are real columns of the table, so a table_xinfo
+  cross-check would not catch it). A table name containing "."
+  degrades instead (nonexistent-table lookup → derived name).
+  Partially unfixable — SQLite's message grammar is ambiguous for such
+  names. Crafted-schema reachability. (Run 14, B5)
+- [F-B5-7] (S3) `unique_index_lookup: :ok` with `unique_index_names:
+  []` cannot distinguish "no named unique index matched" from "the
+  pragma saw no rows at all": a stale per-connection schema cache, a
+  vanished table, and the CREATE-UNIQUE-INDEX DDL-failure path (the
+  index being built does not exist yet) all collapse into the same
+  silent derived-name fallback. Reporting gap only; refine the status
+  shape when a consumer materializes. (Run 14, B5)
+- [B3 seed, ORCHESTRATOR-UNVERIFIED] (reviewer-driven; Run 14's ON
+  CONFLICT ROLLBACK probe walked into it): `INSERT OR ROLLBACK` /
+  `ON CONFLICT ROLLBACK` inside `Repo.transaction` leaves the adapter
+  COMMITting a transaction SQLite already rolled back — the caller
+  gets a loud "cannot commit - no transaction is active"
+  `XqliteEcto3.Error` and the connection disconnects. Pre-existing,
+  independent of the name synthesis. B3's next covering run:
+  reproduce, classify, decide the remedy (txn_state check before
+  COMMIT?). (Run 14, filed to B3)
 - [B1-1] `dump_cmd/3` is a required `Ecto.Adapter.Structure` callback
   (no `@optional_callbacks`) but the adapter `raise`s. Unreachable via
   mix tasks (`mix ecto.dump` uses `structure_dump/2`), so harmless —

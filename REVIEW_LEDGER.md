@@ -2133,3 +2133,97 @@ event-surface probe 9/9, OTel path unchanged.
   has one — maintainer taste); README documents the FK-name synthesis but
   not the unique-name synthesis (fold into the owed docs pass alongside the
   F-B7-6 fine-print line).
+
+---
+
+## Run 14 — 2026-08-20 — mini-lap batch 2: B5 (post-synthesis covering pass)
+
+- Commit at scan: `c6bfdb9`. Deps at xqlite 0.10.0 (`XQLITE_PATH` unset).
+  Single Opus reviewer, adversarial stance on the new synthesis engine. The
+  orchestrator re-ran the reviewer's consolidated repro itself (every finding
+  reproduced), re-drove it post-fix (finding legs flipped dead, backlogged
+  legs unchanged), wrote and drove its own RED→green (5 tests RED at
+  `c6bfdb9`, 17/17 after the fix), and ran its own `mix verify`.
+- Maintainer note: Dimi ratified the 2026-08-20 Remedies judgment call
+  verbatim ("that was the right call… errors should always be actionable,
+  i.e. contain as much info as possible, and machine-parseable too") — now
+  standing policy for future error-behavior forks.
+
+### B5 — constraint mapping (the owed adversarial pass): the emission design broke
+
+- **F-B5-3 (S2, CONFIRMED + FIXED AT GATE, RED→green).** Emitting every
+  candidate made a by-the-book `unique_constraint(:v)` raise
+  `Ecto.ConstraintError` as soon as a sibling unique index existed over the
+  same columns — a partial (`WHERE active = 1`) or a differently-collated
+  (`COLLATE NOCASE`) sibling. The sibling is provably innocent in the driver
+  case: with the conventional index dropped and only the partial left, the
+  identical insert SUCCEEDS. Ecto raises for every emitted-but-undeclared
+  name, so multi-candidate emission poisons ordinary schemas (the
+  conventional index carries Ecto's own generated name; the changeset is
+  by-the-book). Regression introduced by the synthesis remedy — its
+  ambiguity tests covered only two CUSTOM-named indexes, where declaring
+  both was tolerable. Fix: `unique_constraints/1` emits a real name only
+  when it is the SINGLE candidate; zero or several candidates emit the
+  conventional derived name while `unique_index_names` keeps the full
+  candidate list (machine-readable, actionable). Contract tests rewritten to
+  pin the new emission; sibling-partial and sibling-collation regression
+  tests added (RED at `c6bfdb9`: raise; GREEN: convert under the derived
+  name).
+- **F-B5-6 (S3 — reviewer proposed S2, orchestrator overruled; HARDENED at
+  gate).** The lookup runs after the driver stops its cancel token and bills
+  1+N pragma reads to the caller's checkout deadline, uncancellable. The
+  reviewer's deterministic lever (1500 named unique indexes → ~16 ms mean →
+  DBConnection kills the connection under an 11 ms timeout, stack trace
+  inside the lookup) reproduced on the orchestrator's own run — but requires
+  a schema no real application carries (~9 µs per index at realistic
+  counts), and the realistic trigger (a pragma blocked up to busy_timeout
+  under cross-process contention, non-WAL) is read-from-code, NOT proven.
+  Severity = consequence × reachability → S3. Hardening applied: candidate
+  reads capped at 24 per table (`{:unavailable, {:too_many_unique_indexes,
+  n}}` → derived fallback; cap test committed). Post-fix re-drive: the kill
+  lever collapsed to control parity (5.67 ms vs 5.40 ms control — the
+  residue is 1500-index maintenance, not the lookup; the probe's adaptively
+  chosen 6 ms timeout then sat inside normal jitter, explaining its own
+  control-leg trip). The "two read-only pragmas" comment/doc divergence
+  fixed (bounded-lookups language). The unproven contention leg stays a
+  next-pass seed, not a closed question.
+- **Filed S3s (BACKLOG):** F-B5-4 (unqualified `PRAGMA index_list` resolves
+  a same-named table in another schema — ATTACH/TEMP; raw-SQL-only
+  reachability), F-B5-5 (message parse splits columns on ", " — a column
+  literally named "a, b" mis-matches a real sibling index; partially
+  unfixable; crafted-schema reachability), F-B5-7 (lookup status `:ok` with
+  `[]` collapses no-match / stale schema cache / vanished table / DDL
+  failure into one silent fallback — reporting gap). F-B5-1 sharpened with
+  live per-match-mode exceptions. B3 seed filed (ON CONFLICT ROLLBACK
+  mid-transaction → COMMIT of an already-rolled-back txn → loud error +
+  disconnect; pre-existing, orchestrator-unverified).
+- **CLEAN (reviewer-driven; orchestrator re-ran the consolidated repro and
+  the committed suites):** explicit-transaction resolution; sandbox
+  ownership incl. in-sandbox-txn index visibility; exotic identifiers
+  (embedded quotes, unicode, spaces, keywords, case-mismatch) through both
+  the violation and the pragma round-trip; mixed expression+column indexes
+  (3.53.2 reports `index 'name'` whenever any term is an expression →
+  direct path, lookup never runs); insert_all (raw error — matches
+  Postgrex) / `Repo.update` / STRICT / WITHOUT ROWID; FK-diagnostics
+  interplay in both directions; handle_declare divergence dispositioned
+  with a constraint comment (a declared query is a SELECT and cannot raise
+  a UNIQUE violation); the non-unique `to_constraints/2` clauses
+  byte-unchanged in range.
+
+### Verdict + dryness
+
+- 1 S2 fixed at gate (RED→green, orchestrator-driven) + 1 S3 hardened at
+  gate + 3 S3 filed + 1 B3 seed + F-B5-1 sharpened. `mix verify` GREEN — the
+  orchestrator's OWN run. 17/17 on the hardened test file.
+- Dryness: finding-run + fix churn — **B5 stays 0 of 2, NOT DRY**; two
+  consecutive clean covering runs owed over the post-fix surface. Re-wet
+  triggers extended: `capped_matching_indexes/3` / candidacy rules /
+  `wrap_execute_error/4`'s position relative to the cancel token / xqlite's
+  `constraint_parse.rs`.
+- Completeness critic (next B5 pass): the contention leg of the lookup cost
+  (rollback-journal mode + a co-operating second OS process, or an in-repo
+  wedge probe); connection death between `index_list` and `index_info`
+  (only a first-pragma failure is tested); concurrent DDL racing the
+  lookup; WITHOUT ROWID × partial × expression crosses; hook
+  (update/commit/rollback) interaction during the lookup (read-only,
+  nothing should fire — unverified).
