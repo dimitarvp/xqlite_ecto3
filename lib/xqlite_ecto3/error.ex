@@ -86,7 +86,9 @@ defmodule XqliteEcto3.Error do
     `XqliteEcto3.UniqueIndexNames`. `unique_index_lookup` reports
     whether that read ran: `:not_run` (a violation of another kind, or
     one that already names its index), `:ok`, or `{:unavailable,
-    reason}`.
+    reason}`. A single candidate is what the constraint mapping emits;
+    several stay readable here while the mapping falls back to the
+    conventional derived name (SQLite never says which index fired).
     """
 
     defstruct [

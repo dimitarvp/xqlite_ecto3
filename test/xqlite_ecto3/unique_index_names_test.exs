@@ -54,6 +54,31 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     def changeset(struct, attrs), do: cast(struct, attrs, [:v])
   end
 
+  defmodule Sib do
+    use Ecto.Schema
+
+    import Ecto.Changeset
+
+    schema "uix_sibs" do
+      field(:v, :string)
+      field(:active, :integer)
+    end
+
+    def changeset(struct, attrs), do: cast(struct, attrs, [:v, :active])
+  end
+
+  defmodule Coll do
+    use Ecto.Schema
+
+    import Ecto.Changeset
+
+    schema "uix_colls" do
+      field(:v, :string)
+    end
+
+    def changeset(struct, attrs), do: cast(struct, attrs, [:v])
+  end
+
   defmodule Expr do
     use Ecto.Schema
 
@@ -115,10 +140,45 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       "id INTEGER PRIMARY KEY AUTOINCREMENT, a TEXT, b TEXT",
       ["CREATE UNIQUE INDEX IF NOT EXISTS pair_unique ON uix_pairs(b, a)"]
     )
+
+    create_table!(
+      "uix_sibs",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT, active INTEGER",
+      [
+        "CREATE UNIQUE INDEX IF NOT EXISTS uix_sibs_v_index ON uix_sibs(v)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS sib_live ON uix_sibs(v) WHERE active = 1"
+      ]
+    )
+
+    create_table!(
+      "uix_colls",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT",
+      [
+        "CREATE UNIQUE INDEX IF NOT EXISTS uix_colls_v_index ON uix_colls(v)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS coll_nocase ON uix_colls(v COLLATE NOCASE)"
+      ]
+    )
+
+    cap_columns = Enum.map_join(0..24, ", ", fn i -> "c#{i} TEXT" end)
+
+    create_table!(
+      "uix_caps",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, " <> cap_columns,
+      for(i <- 0..24, do: "CREATE UNIQUE INDEX IF NOT EXISTS cap_uq_#{i} ON uix_caps(c#{i})")
+    )
   end
 
   setup do
-    clear_tables!(["uix_items", "uix_parts", "uix_dupes", "uix_exprs", "uix_pairs"])
+    clear_tables!([
+      "uix_items",
+      "uix_parts",
+      "uix_dupes",
+      "uix_exprs",
+      "uix_pairs",
+      "uix_sibs",
+      "uix_colls",
+      "uix_caps"
+    ])
   end
 
   # ---------------------------------------------------------------------------
@@ -200,7 +260,7 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   # Several unique indexes over the same columns
   # ---------------------------------------------------------------------------
 
-  test "every unique index covering the violated columns is reported" do
+  test "ambiguous candidates are recorded but the derived name is emitted" do
     {:ok, _} = Repo.insert(Dupe.changeset(%Dupe{}, %{v: "both"}))
 
     assert {:error, %Error{} = err} = Repo.query("INSERT INTO uix_dupes(v) VALUES ('both')", [])
@@ -208,25 +268,73 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     assert %Constraint{unique_index_names: ["dupe_left_unique", "dupe_right_unique"]} =
              err.details
 
-    assert Conn.to_constraints(err, []) == [
-             unique: "dupe_left_unique",
-             unique: "dupe_right_unique"
-           ]
+    assert Conn.to_constraints(err, []) == [unique: "uix_dupes_v_index"]
   end
 
-  test "a changeset declaring every candidate converts" do
+  test "a bare unique_constraint converts when the candidates are ambiguous" do
     {:ok, _} = Repo.insert(Dupe.changeset(%Dupe{}, %{v: "both"}))
 
     result =
       %Dupe{}
       |> Dupe.changeset(%{v: "both"})
-      |> unique_constraint(:v, name: "dupe_left_unique")
-      |> unique_constraint(:v, name: "dupe_right_unique")
+      |> unique_constraint(:v)
       |> Repo.insert()
 
     assert {:error, changeset} = result
-    names = for {:v, {_msg, opts}} <- changeset.errors, do: opts[:constraint_name]
-    assert Enum.sort(names) == ["dupe_left_unique", "dupe_right_unique"]
+    assert [{:v, {_msg, opts}}] = changeset.errors
+    assert opts[:constraint_name] == "uix_dupes_v_index"
+  end
+
+  test "a sibling partial index does not break a by-the-book changeset" do
+    {:ok, _} = Repo.insert(Sib.changeset(%Sib{}, %{v: "p", active: 0}))
+
+    assert {:error, %Error{} = err} =
+             Repo.query("INSERT INTO uix_sibs(v, active) VALUES ('p', 0)", [])
+
+    assert %Constraint{unique_index_names: ["sib_live", "uix_sibs_v_index"]} = err.details
+    assert Conn.to_constraints(err, []) == [unique: "uix_sibs_v_index"]
+
+    result =
+      %Sib{}
+      |> Sib.changeset(%{v: "p", active: 0})
+      |> unique_constraint(:v)
+      |> Repo.insert()
+
+    assert {:error, changeset} = result
+    assert [{:v, {_msg, opts}}] = changeset.errors
+    assert opts[:constraint_name] == "uix_sibs_v_index"
+  end
+
+  test "a sibling index under another collation does not break a by-the-book changeset" do
+    {:ok, _} = Repo.insert(Coll.changeset(%Coll{}, %{v: "c"}))
+
+    assert {:error, %Error{} = err} = Repo.query("INSERT INTO uix_colls(v) VALUES ('c')", [])
+
+    assert %Constraint{unique_index_names: ["coll_nocase", "uix_colls_v_index"]} = err.details
+    assert Conn.to_constraints(err, []) == [unique: "uix_colls_v_index"]
+
+    result =
+      %Coll{}
+      |> Coll.changeset(%{v: "c"})
+      |> unique_constraint(:v)
+      |> Repo.insert()
+
+    assert {:error, changeset} = result
+    assert [{:v, {_msg, opts}}] = changeset.errors
+    assert opts[:constraint_name] == "uix_colls_v_index"
+  end
+
+  test "more named unique indexes than the lookup cap degrade to the derived name" do
+    {:ok, _} = Repo.query("INSERT INTO uix_caps(c0) VALUES ('x')", [])
+
+    assert {:error, %Error{} = err} = Repo.query("INSERT INTO uix_caps(c0) VALUES ('x')", [])
+
+    assert %Constraint{
+             unique_index_names: [],
+             unique_index_lookup: {:unavailable, {:too_many_unique_indexes, 25}}
+           } = err.details
+
+    assert Conn.to_constraints(err, []) == [unique: "uix_caps_c0_index"]
   end
 
   # ---------------------------------------------------------------------------

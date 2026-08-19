@@ -25,12 +25,22 @@ defmodule XqliteEcto3.UniqueIndexNames do
   `sqlite_autoindex_*` names that no changeset would declare, so
   those keep using the conventional derived name.
 
-  Several unique indexes can cover the same columns and SQLite never
-  says which one it hit, so every candidate is reported. Ecto turns a
-  reported constraint into a changeset error only when the changeset
-  declares that exact name, and raises `Ecto.ConstraintError` for
-  every name it does not — so a column covered by two unique indexes
-  needs one `Ecto.Changeset.unique_constraint/3` call per name.
+  Several unique indexes can cover the same columns — including ones
+  that provably did not fire, such as a partial index whose condition
+  excludes the row, or a sibling under another collation — and SQLite
+  never says which one it hit. Every candidate is recorded on the
+  error struct, but the constraint mapping emits a real name only
+  when exactly one candidate exists: Ecto raises
+  `Ecto.ConstraintError` for every emitted name a changeset did not
+  declare, so emitting several would break by-the-book changesets the
+  moment a sibling index appears. With zero or several candidates the
+  conventional derived `"<table>_<cols>_index"` name is emitted
+  instead, exactly as before the lookup existed.
+
+  The lookup runs on the caller's checked-out connection inside the
+  caller's timeout, so its work is bounded: one `index_info` read per
+  named unique index on the table, refused outright past 24 of them
+  (`{:unavailable, {:too_many_unique_indexes, n}}`).
 
   Both pragmas are fallible. Any failure leaves the names empty and
   records `{:unavailable, reason}`; the conventional derived name
@@ -40,6 +50,8 @@ defmodule XqliteEcto3.UniqueIndexNames do
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.Constraint
   alias XqliteNIF, as: NIF
+
+  @max_candidate_lookups 24
 
   @doc """
   Fills in `unique_index_names` on a UNIQUE violation that names only
@@ -78,10 +90,22 @@ defmodule XqliteEcto3.UniqueIndexNames do
       {:ok, %{rows: rows}} ->
         rows
         |> Enum.flat_map(&named_unique_index/1)
-        |> matching_indexes(conn, columns)
+        |> capped_matching_indexes(conn, columns)
 
       {:error, _reason} = err ->
         err
+    end
+  end
+
+  # The lookup bills its cost to the caller's checkout deadline, so the
+  # per-index reads must stay bounded no matter what the schema holds.
+  defp capped_matching_indexes(names, conn, columns) do
+    count = length(names)
+
+    if count > @max_candidate_lookups do
+      {:error, {:too_many_unique_indexes, count}}
+    else
+      matching_indexes(names, conn, columns)
     end
   end
 

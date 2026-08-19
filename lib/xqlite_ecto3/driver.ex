@@ -631,8 +631,8 @@ defmodule XqliteEcto3.Driver do
   end
 
   # A UNIQUE violation names only the table and columns, so the real
-  # index name is read back from the database here — two read-only
-  # pragmas on a path that has already failed, always on.
+  # index name is read back from the database here — bounded read-only
+  # pragma lookups on a path that has already failed, always on.
   defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
     reason
     |> XqliteEcto3.FkDiagnostics.wrap_with_replay(state.conn, sql, params)
@@ -656,6 +656,8 @@ defmodule XqliteEcto3.Driver do
     start_md = %{conn: state.conn, query: query, sql: sql}
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_declare], start_md do
+      # No unique-index name lookup on this path: a declared query is a
+      # SELECT and cannot raise a UNIQUE violation.
       result =
         case NIF.stream_open(state.conn, sql, params) do
           {:ok, handle} ->

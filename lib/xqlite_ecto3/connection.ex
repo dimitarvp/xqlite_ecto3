@@ -161,14 +161,16 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(_, _), do: []
 
-  # The index names read back from the database on the error path
-  # (see XqliteEcto3.UniqueIndexNames) win: they are what the index
-  # was actually created with. Without them — a table-level UNIQUE or
-  # PRIMARY KEY, whose backing index carries an internal
-  # sqlite_autoindex_* name, or a lookup that could not run — the
-  # conventional derived name is the best answer available.
-  defp unique_constraints(%XqliteEcto3.Error.Constraint{unique_index_names: [_ | _] = names}) do
-    Enum.map(names, fn name -> {:unique, name} end)
+  # A real index name read back from the database (see
+  # XqliteEcto3.UniqueIndexNames) wins — but only when it is the single
+  # candidate. SQLite never says which index fired, so with several
+  # candidates (say a partial or differently collated sibling over the
+  # same columns) any of them may be innocent, and Ecto raises for
+  # every emitted name a changeset did not declare. Ambiguity therefore
+  # falls back to the conventional derived name; the candidates stay
+  # readable on the error struct.
+  defp unique_constraints(%XqliteEcto3.Error.Constraint{unique_index_names: [name]}) do
+    [unique: name]
   end
 
   defp unique_constraints(%XqliteEcto3.Error.Constraint{} = d), do: [unique: unique_index_name(d)]
