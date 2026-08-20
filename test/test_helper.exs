@@ -61,19 +61,26 @@ excludes = [
   # Our lock_for_migrations/3 is a deliberate no-op passthrough
   # (single-writer SQLite needs no advisory migration lock), so Ecto never
   # raises its pool-size-below-2 MigrationError. The one tagged test —
-  # deps/ecto_sql/integration_test/sql/migrator.exs:197 — expects that
-  # raise.
+  # deps/ecto_sql/integration_test/sql/migrator.exs:198 — expects that
+  # raise. (Line pointers name the `test` line: an ExUnit line filter
+  # snaps to the nearest test AT OR BEFORE the line, so pointing at a
+  # @tag line silently runs the preceding test.)
   :lock_for_migrations,
 
   # (permanent SQLite limit) no schema/namespace concept; ATTACH DATABASE
   # is the closest approximation but it is deliberately not wired up.
   :prefix,
 
-  # The table rebuild engages for these, but `modify` with a
-  # `references(...)` type has no DataType.column_type clause yet — an
-  # ADAPTER gap (see BACKLOG), not a SQLite limit. One :alter_primary_key
-  # test additionally hits a genuine SQLite limit: a PRIMARY KEY column
-  # cannot be ADDED to an existing table.
+  # The rebuild engine refuses `modify :col, references(...)` up front
+  # with guidance (refuse_reference_changes!): it reconstructs foreign
+  # keys from the existing schema and cannot merge a new or repointed
+  # one into that list. An ADAPTER gap, not a SQLite limit — making
+  # `modify references` work is filed as F-B7-25-feature in BACKLOG.
+  # The two :alter_primary_key tests fail for two separate reasons:
+  # migration.exs:640 hits the reference refusal above;
+  # migration.exs:705 adds a PRIMARY KEY column to an existing table,
+  # which SQLite's ALTER TABLE cannot do (no rebuild involved — the
+  # rebuild only engages for `modify`).
   :alter_primary_key,
   :alter_foreign_key,
 
@@ -84,7 +91,12 @@ excludes = [
   # SQLite has no native bitstring type
   :bitstring_type,
 
-  # SQLite has no native duration/interval type
+  # Ecto's :duration type dumps to a %Duration{} struct that our param
+  # encoder has no clause for (query.ex encode_param/1), so it reaches
+  # the JSON fallback and raises. SQLite also has no interval storage
+  # class, but the blocker here is OURS: supporting :duration means an
+  # encode clause plus a load path, and the upstream tests additionally
+  # assert Postgres fields:/precision: truncation semantics.
   :duration_type,
 
   # transaction.exs:161 "transactions are not shared in repo" runs two
@@ -141,9 +153,10 @@ excludes = [
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
   # :assigns_id_type but really fails on `modify` with a `references(...)`
-  # type — the same DataType.column_type adapter gap as :alter_foreign_key
-  # (see BACKLOG), not a SQLite limit. The 3 other :assigns_id_type tests
-  # pass, so the exclusion stays narrowed to this line.
+  # type — the same up-front reference refusal as :alter_foreign_key
+  # (F-B7-25-feature in BACKLOG), not a SQLite limit. The 3 other
+  # :assigns_id_type tests pass, so the exclusion stays narrowed to this
+  # line.
   {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}}
 ]
 

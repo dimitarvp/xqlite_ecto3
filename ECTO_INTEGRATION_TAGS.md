@@ -8,14 +8,14 @@ exclusions. Bundled SQLite version: **3.53.2**. Shared files loaded:
 | Tag | Status | Notes |
 |-----|--------|-------|
 | `:add_column_if_not_exists` | supported | adapter checks `PRAGMA table_info()` per alter block; filters no-ops |
-| `:alter_foreign_key` | excluded | the table rebuild engages, but `modify` with a `references(...)` type has no `DataType.column_type` clause yet — an adapter gap (backlog), not a SQLite limit |
-| `:alter_primary_key` | excluded | one test hits the same modify-with-references adapter gap (backlog); the other hits a genuine SQLite limit — a PRIMARY KEY column cannot be ADDED to an existing table |
-| `:array_type` | excluded | SQLite has no native array column type |
-| `:assigns_id_type` | supported (3/4) | user-assigned PKs work; the tag's one failing test is `migration.exs:664`, location-excluded — the modify-with-references adapter gap, nothing to do with PK handling |
+| `:alter_foreign_key` | excluded | the rebuild engine refuses `modify :col, references(...)` up front with guidance — it reconstructs foreign keys from the existing schema and cannot merge a new or repointed one in. An adapter gap (`F-B7-25-feature` in BACKLOG), not a SQLite limit |
+| `:alter_primary_key` | excluded | two separate causes: migration.exs:640 hits the reference refusal above; migration.exs:705 ADDs a PRIMARY KEY column, which SQLite's ALTER TABLE cannot do (no rebuild involved — it only engages for `modify`) |
+| `:array_type` | excluded | the adapter DOES ship arrays (`{:array, _}` maps to TEXT; `XqliteEcto3.Types.Array` stores JSON with round-trips) — what cannot work is the Postgres array operator surface these tests exercise (`x in t.ints`, `update_all` `push:`/`pull:`) and untyped/fragment decoding |
+| `:assigns_id_type` | supported (3/4) | user-assigned PKs work; the tag's one failing test is `migration.exs:664`, location-excluded — the up-front reference refusal (`F-B7-25-feature`), nothing to do with PK handling |
 | `:bitstring_type` | excluded | SQLite has no native bitstring type |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
 | `:delete_with_join` | supported | conservative rewrite to `DELETE FROM t WHERE pk IN (SELECT …)`; raises `Ecto.QueryError` on shapes we can't safely transform |
-| `:duration_type` | excluded | SQLite has no native duration/interval type |
+| `:duration_type` | excluded | Ecto's `:duration` dumps a `%Duration{}` struct our param encoder has no clause for (it reaches the JSON fallback and raises) — our gap, not SQLite's; the upstream tests additionally assert Postgres `fields:`/`precision:` truncation |
 | `:foreign_key_constraint` | supported | not excluded and all 6 pass (`--only foreign_key_constraint` ⇒ 6 passed); rich FK diagnostics (opt-in `rich_fk_diagnostics: true`) synthesize the `<table>_<col>_fkey` name that `foreign_key_constraint/3` matches on |
 | `:insert_cell_wise_defaults` | supported (7/8) | only `repo.exs:864` actually inserts uneven rows (location-excluded): Ecto pads the missing cell with NULL, so the column DEFAULT never applies. The other seven tagged tests pass and run |
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
@@ -52,5 +52,10 @@ full rationales live next to each tuple in `test/test_helper.exs`.
 | `ecto_sql .../sql/alter.exs:44` | a schemaless SELECT after `modify :numeric` returns the storage value (INTEGER 1), never `%Decimal{}` — types live at the Ecto schema layer by design |
 | `ecto_sql .../sql/logging.exs:74` | UUIDs are stored as TEXT by default, so query-telemetry params carry the 36-char string, not Postgres's 16-byte binary |
 | `ecto .../cases/type.exs:362` | untyped boolean SELECT returns 1/0 (no load hook on untyped selects); use `type(..., :boolean)` |
-| `ecto_sql .../sql/migration.exs:664` | `modify` with a `references(...)` type — adapter gap (backlog), not a SQLite limit |
+| `ecto_sql .../sql/migration.exs:664` | `modify` with a `references(...)` type — the up-front reference refusal (`F-B7-25-feature`), not a SQLite limit |
 | `ecto .../cases/repo.exs:864` | uneven `insert_all` rows: the NULL Ecto pads in suppresses the column DEFAULT |
+
+Line pointers in this table and in `test_helper.exs` name the `test`
+line, never the `@tag` line: an ExUnit line filter snaps to the nearest
+test at or before the given line, so a pointer at a `@tag` line silently
+runs the preceding test and reports a false all-clear.
