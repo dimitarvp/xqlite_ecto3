@@ -54,10 +54,13 @@ defmodule XqliteEcto3.UniqueIndexNames do
   past 24 of them (`{:unavailable, {:too_many_unique_indexes, n}}`);
   and a wall-clock budget equal to the connection's `busy_timeout`,
   checked before every read
-  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). A zero
-  `busy_timeout` disables the wall-clock budget rather than allotting
-  no time: reads that cannot block need no time cap, and the 24-index
-  cap alone bounds the work. A single
+  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). When the
+  pragma reports a zero timeout — either a genuine `busy_timeout: 0`
+  or a busy policy/observer holding the connection's busy slot, which
+  makes the pragma report 0 while reads wait for policy-governed
+  durations — the lookup takes a fixed 500 ms budget instead: far
+  above any healthy lookup, and a hard bound on policy-governed
+  waits multiplying across the candidate reads. A single
   read can still block for up to `busy_timeout` when another process
   holds a write lock on a rollback-journal database — the same worst
   case any statement pays under that contention; WAL databases do not
@@ -80,6 +83,15 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @max_candidate_lookups 24
 
+  # A zero from `PRAGMA busy_timeout` is ambiguous: a genuine zero timeout
+  # (reads fail fast, cannot block), or a busy policy/observer holding the
+  # connection's busy slot (the pragma then reports 0 while reads wait for
+  # policy-governed durations). The two are indistinguishable from here,
+  # so a zero-reported timeout gets this fixed budget: far above a healthy
+  # lookup (a 24-candidate pass measures ~0.4 ms uncontended), far below
+  # a policy's worst case multiplied across every candidate read.
+  @zero_slot_budget_ms 500
+
   @doc """
   Fills in `unique_index_names` on a UNIQUE violation that names only
   a table and columns.
@@ -96,11 +108,14 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @doc false
   @spec within_budget?(integer(), non_neg_integer(), integer()) :: boolean()
-  def within_budget?(_started_at_ms, 0, _now_ms), do: true
-
   def within_budget?(started_at_ms, budget_ms, now_ms) do
     now_ms - started_at_ms <= budget_ms
   end
+
+  @doc false
+  @spec lookup_budget_ms(non_neg_integer()) :: pos_integer()
+  def lookup_budget_ms(0), do: @zero_slot_budget_ms
+  def lookup_budget_ms(ms), do: ms
 
   defp resolve_details(
          %Constraint{
@@ -143,14 +158,14 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   # The budget equals the connection's busy timeout: one blocked read
   # already costs that much, so the budget stops further reads from
-  # multiplying the price across every candidate. A zero timeout means
-  # reads cannot block, so there is no price to multiply — zero disables
-  # the wall-clock check entirely (it must not mean "no time at all");
-  # the candidate cap alone bounds the work.
+  # multiplying the price across every candidate. A zero-reported timeout
+  # routes through `lookup_budget_ms/1` (see `@zero_slot_budget_ms`) so
+  # the lookup is never unbounded and never budgetless; an unexpected
+  # pragma shape takes the same fixed budget rather than either extreme.
   defp busy_budget(conn) do
     case NIF.query(conn, "PRAGMA busy_timeout", []) do
-      {:ok, %{rows: [[ms] | _]}} when is_integer(ms) and ms >= 0 -> {:ok, ms}
-      {:ok, _unexpected_shape} -> {:ok, 0}
+      {:ok, %{rows: [[ms] | _]}} when is_integer(ms) and ms >= 0 -> {:ok, lookup_budget_ms(ms)}
+      {:ok, _unexpected_shape} -> {:ok, lookup_budget_ms(0)}
       {:error, _reason} = err -> err
     end
   end

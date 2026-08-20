@@ -27,6 +27,14 @@ defmodule XqliteEcto3.FkDiagnostics do
   themselves) skip the replay: the violating rows still exist while
   the transaction is open, so steps 3–4 run directly.
 
+  Cost under write contention: the replay is a WRITE, so unlike the
+  read-only unique-index-name lookup it contends for WAL's single
+  write lock. With another writer holding the database, the replay
+  can block for up to a full `busy_timeout` on top of the failing
+  statement's own busy wait before degrading — the diagnosed error
+  path then costs roughly two busy waits. This runs only after a
+  violation and only under `rich_fk_diagnostics: true`.
+
   Every step is fallible; any failure degrades to the original blind
   error with `fk_diagnostics: {:unavailable, reason}` — the diagnosis
   never masks or replaces the error it is diagnosing.

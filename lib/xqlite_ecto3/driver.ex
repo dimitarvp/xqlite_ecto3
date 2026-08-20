@@ -680,8 +680,11 @@ defmodule XqliteEcto3.Driver do
     start_md = %{conn: state.conn, query: query, sql: sql}
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_declare], start_md do
-      # No unique-index name lookup on this path: a declared query is a
-      # SELECT and cannot raise a UNIQUE violation.
+      # No unique-index name lookup on this path. Streamed DML (an
+      # INSERT ... RETURNING through Ecto.Adapters.SQL.stream/4) CAN
+      # violate UNIQUE here; its error stays correctly classified but
+      # reports unique_index_lookup: :not_run — no changeset traverses
+      # a stream, so the resolved names have no consumer on this path.
       result =
         case NIF.stream_open(state.conn, sql, params) do
           {:ok, handle} ->

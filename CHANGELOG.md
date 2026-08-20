@@ -153,9 +153,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   policy/observer installed through `with_xqlite/3`) was read as "no
   time at all" and intermittently halted the lookup, so changesets
   declaring the real index name could raise `Ecto.ConstraintError`
-  instead of converting. Zero now disables the wall-clock check: reads
-  that cannot block have no lock-wait cost to cap, and the
-  24-candidate cap alone bounds the work.
+  instead of converting. A zero-reported timeout now gets a fixed
+  500 ms budget instead: a healthy lookup finishes in well under a
+  millisecond, while a busy policy holding the slot (which also makes
+  the pragma report 0) can no longer multiply its waits unbounded
+  across the candidate reads.
 
 - **The xqlite dependency bound is patch-level (`~> 0.11.0`).**
   xqlite is pre-1.0, so a minor bump is its break slot; the previous

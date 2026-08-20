@@ -514,9 +514,9 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_051)
   end
 
-  test "a zero budget disables the wall-clock check instead of allotting no time" do
-    assert XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 0, 1_001)
-    assert XqliteEcto3.UniqueIndexNames.within_budget?(0, 0, 60_000)
+  test "a zero-reported busy timeout gets the fixed budget, not zero and not unlimited" do
+    assert XqliteEcto3.UniqueIndexNames.lookup_budget_ms(0) == 500
+    assert XqliteEcto3.UniqueIndexNames.lookup_budget_ms(2_000) == 2_000
   end
 
   # ---------------------------------------------------------------------------
