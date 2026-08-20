@@ -237,6 +237,28 @@ orchestrator-run; preservation suite 15/15 unchanged). Maintainer may overrule
 run — **B3 RESETS to 0 of 2, NOT DRY** (the reviewer's stays-at-1 proposal was
 overruled at gate; the chain rule as B5/B9). Re-wets ALSO on: any
 `defer_foreign_keys` handling change in `rebuild_table`.
+COVERING RE-RUN (Run 23, 2026-08-20 — lap 3, 0.11.0 delta absorption):
+**F-B3-5 (S1, FIXED, RED→green)** — the ON-CONFLICT-ROLLBACK seed settled
+AGAINST the code: the violated constraint rolls back the whole SQLite
+transaction while the driver's bookkeeping keeps going, so later body
+statements ran in autocommit and COMMITTED DURABLY inside a transaction
+that reported failure (idiomatic-changeset reachable). Fix:
+`handle_execute`'s error path asks `NIF.transaction_status/1` while a
+transaction is supposed to be open and disconnects at the point of damage
+(absorbs F-B3-6, the discriminator-less commit error). **F-B3-4 (S2)** —
+a busy observer via `with_xqlite` replaces the busy slot and permanently
+disables the configured `busy_timeout` on that pooled connection
+(unregister does NOT restore); adapter docs fixed (`with_xqlite`
+connection-scoped-state warning naming `Xqlite.busy_timeout/2` as
+restore), xqlite-side fork filed (BACKLOG, xqlite court). CLEAN: busy-API
+determination re-confirmed at 0.11.0 (no policy API; only the Run-21
+budget READ is new), dirty-reader flip neutral under storm, standing
+storms exact-count green. DRYNESS: S1+S2 — **B3 stays 0 of 2, NOT DRY**.
+Re-wets ALSO on: `disconnect_if_rolled_back/2` / any `handle_execute`
+error-path change / `with_xqlite/3` checkout semantics. Next-pass seeds:
+F-B3-5 × SQL Sandbox; the connection-scoped-state family through
+with_xqlite; F-B3-4 at pool_size > 1; cancelled-DML auto-rollback (with
+the B8 re-cover); a cross-process contention wedge.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -850,6 +872,29 @@ event yields the identical verdict; begin/savepoint carry `mode:` inside the
 pattern. DRYNESS: a new confirmed surfaced → NOT a clean covering run —
 **stays 0 of 2, NOT DRY**; the fix re-wets the emission-test surface. Re-wet
 triggers UNCHANGED.
+COVERING RE-RUN (Run 23, 2026-08-20 — lap 3, 0.11.0 delta absorption):
+**F-B9-5 (S2 doc divergence, FIXED as docs)** — `[:xqlite_ecto3,
+:disconnect]` never fires on graceful pool/application shutdown (no
+trap_exit in DBConnection's connection process; probed 0/0/1 vs the error
+control), so the documented "pool closes a connection" trigger and the
+guide's connect-vs-disconnect counter pattern were both wrong; guide +
+moduledoc now state the real trigger and the unbalanced-pair fact.
+**F-B9-4 (S3, FILED)** — the unique-name lookup (1+N pragma reads, up to
+a busy_timeout per Run 21) runs inside `handle_execute` with no span
+while sibling `fk_diagnostics` has one; filed with the proposed span
+shape; the guide's "glue" sentence no longer implies microseconds.
+**F-B9-6 (S3, FIXED as docs)** — span-contract omissions (`system_time`,
+`telemetry_span_context`, duration-on-start ambiguity, missing
+`fk_diagnostics` moduledoc entry, missing `:reason` in the guide row) all
+corrected. CLEAN: emission churn = the two Run-21 driver hunks only
+(sibling files byte-identical), flag-bleed disproven by compiled VALUE,
+event-surface spot-drive 20/21, dirty-flip span neutrality
+(1200/1200 paired, ns-scale), OTel byte-unchanged. DRYNESS: finding-run —
+**B9 stays 0 of 2, NOT DRY**. Re-wets ALSO on: telemetry moduledoc /
+guide event-table edits / `disconnect_if_rolled_back`. Next-pass seeds:
+drive an `:exception` phase; OFF-build smoke re-drive; `cached_count`
+semantics numerically; the bridge RawConn checkout's missing event
+(decide with F-B9-4); `:checkout` counted against actual checkouts.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean

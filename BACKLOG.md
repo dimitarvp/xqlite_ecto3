@@ -158,6 +158,32 @@ after the S0–S2 burn-down.
   contention block into a 0.05 ms structured busy failure with the
   same status — documented xqlite behavior, and the one existing
   mitigation for the lookup's residual single-read block.
+- [F-B3-4-xqlite] (S2 adapter-facing; xqlite court, from Run 23) A busy
+  OBSERVER (`Xqlite.register_busy_observer/2`) replaces the connection's
+  one busy slot; with no policy installed the master callback answers
+  "give up", so a previously configured `busy_timeout` silently stops
+  applying — and UNregistering empties the slot WITHOUT restoring the
+  timeout (`sqlite3_busy_handler(conn, None, ...)` leaves busyTimeout
+  0). Adapter docs now warn on `with_xqlite/3`; owed on the xqlite
+  side: (a) the slot-replacement warning on `register_busy_observer/2`
+  itself (its siblings `set_busy_policy/2` and `busy_timeout/2` carry
+  it), (b) consider remembering the prior `busy_timeout` at slot
+  install and re-applying it when the slot empties, so unregister is a
+  true undo. Same busy-slot surface as [F-B5-8-residual] — one
+  adversarial lap should cover whichever lands. Knock-on (B5): under an
+  observer, `busy_budget/1` reads 0 and the unique-name lookup budget
+  collapses — emission turns timing-dependent on such connections.
+- [F-B9-4] (S3, from Run 23) The unique-index-name lookup runs 1+N
+  pragma reads on the caller's connection inside the
+  `handle_execute` span with no span of its own, while the sibling
+  `fk_diagnostics` replay has one — and the lookup can bill up to a
+  full `busy_timeout` (Run 21), invisible to dashboards. Proposed
+  shape: `[:xqlite_ecto3, :unique_index_names, :start | :stop |
+  :exception]`, start metadata `%{conn, table, columns}`, stop adds
+  `%{candidate_count, lookup_status, index_reads}`, standard
+  monotonic_time/duration ns. Add the guide row + moduledoc entry with
+  it. Decide together with the bridge RawConn checkout's missing
+  event.
 - [F-B7-27] (S3) A table rebuild drops the table's `sqlite_stat1` rows
   (DROP TABLE deletes them; nothing restores them, and the re-created
   indexes start unanalyzed), so the query planner falls back to built-in

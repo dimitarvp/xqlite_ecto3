@@ -2964,3 +2964,149 @@ event-surface probe 9/9, OTel path unchanged.
   database — reachable only through that door); error-quality pass on
   the loud-but-bare paths (stranded-constraint removals surface raw
   SQLite text a pre-flight check could name in domain terms).
+
+---
+
+## Run 23 — 2026-08-20 — lap 3, batch 3: B3 + B9 (0.11.0 delta absorption)
+
+- Commit at scan: `d646d97`. Deps at xqlite 0.11.0 from Hex. Single Opus
+  reviewer over both axes; orchestrator re-drove every finding probe
+  (atomicity ×2, idiomatic-reach, busy-observer, disconnect-gap,
+  lookup-span asymmetry, storms) — all verdicts identical — implemented
+  the S1 fix + all doc fixes, captured suite RED via the stash pattern
+  (driver.ex stashed under the new tests → exactly the 2 designed
+  failures), own exit-file-gated `mix verify`.
+
+### B3 — the ON-CONFLICT-ROLLBACK seed settled against the code, plus the with_xqlite busy footgun
+
+- **F-B3-5 (S1, CONFIRMED + FIXED AT GATE, RED→green).** The Run-14 seed,
+  worse than filed: a constraint declared `ON CONFLICT ROLLBACK` (or an
+  `INSERT OR ROLLBACK`) violated inside `Repo.transaction/2` makes SQLite
+  roll back the WHOLE transaction and return to autocommit — while the
+  driver's bookkeeping still says a transaction is open. Every later body
+  statement then ran in autocommit and COMMITTED DURABLY; at the end the
+  COMMIT failed ("cannot commit - no transaction is active"), the
+  connection recycled, and the caller was told the transaction failed
+  with part of its work on disk. Reachable from textbook Ecto (a
+  by-the-book `unique_constraint/1` changeset whose error the body
+  handles and carries on — probed end-to-end: pre-violation write gone,
+  post-violation write durable, transaction reports failure). The ABORT
+  control is clean, the pool recovers (40/40), the failure is loud —
+  the S1 is for the durable partial write. FIX: `handle_execute/4`'s
+  error path now asks SQLite whether the transaction still exists
+  (`NIF.transaction_status/1` — the same read `handle_status/2` makes; a
+  dirty-scheduler ~0.85 µs call, error-path only, only while a
+  transaction is supposed to be open) and returns
+  `{:disconnect, wrapped, state}` when it is gone — DBConnection tears
+  the transaction down at the point of damage and no later body
+  statement can run. The caller now receives the ORIGINAL constraint
+  violation, not the trailing commit failure — which also absorbs
+  **F-B3-6 (S3)**: the "cannot commit" error carried no structured
+  discriminator (generic code 1/1) and stops being the caller's view;
+  its residual (classifying no-active-transaction commit failures
+  structurally, for other causes) is noted here, not filed. Tests: a
+  driver-callback pair (disconnect at damage + an ordinary in-txn error
+  stays `{:error, ...}` with the transaction open — the
+  over-disconnect control) + a PoolRepo atomicity test (no body write
+  after the violation survives; RED on the old driver = the leaked
+  write, count 1).
+- **F-B3-4 (S2, CONFIRMED; adapter side FIXED as docs, xqlite side
+  FILED).** A busy OBSERVER installed through `with_xqlite`
+  (`Xqlite.register_busy_observer/2` — the composition the README
+  advertises for busy observability) replaces the connection's ONE busy
+  slot: with no retry policy the master callback answers "give up", so
+  the pooled connection stops honoring the configured `busy_timeout`
+  entirely (403 ms → 0 ms on the probe) — and UNregistering empties the
+  slot without restoring the timeout (still 0 after; only
+  `PRAGMA busy_timeout` / `Xqlite.busy_timeout/2` repairs it). The
+  poisoning outlives the callback for the life of that pooled
+  connection. Adapter fix in-run: `with_xqlite/3` moduledoc gains a
+  "connection-scoped state persists" section naming the busy slot
+  hazard and `Xqlite.busy_timeout/2` as the restore path. Xqlite-side
+  fork FILED in BACKLOG (xqlite court): doc the slot replacement on
+  `register_busy_observer/2` (the warning exists on its siblings), and
+  consider remembering + restoring `busy_timeout` when the slot
+  empties, so unregister is a true undo — same busy-slot surface as the
+  F-B5-8 design fork, one adversarial lap should cover both. Knock-on
+  handed to B5: `busy_budget/1` reads 0 under an observer → the
+  unique-name lookup budget collapses and emission turns
+  timing-dependent on such connections.
+- **CLEAN (orchestrator re-drove storms; leg evidence reviewer-run):**
+  busy-API determination re-confirmed at 0.11.0 (driver.ex churn since
+  `3c58c5c` = the Run-21 wrap_execute_error resolution hunks only; no
+  policy API anywhere; forced busy 202 ms vs 200 ms timeout, structured,
+  writable after); dirty-reader flip neutral (8000/8000 flipped reads +
+  2000/2000 writes overlapped, baseline-derived 10× ceiling honored,
+  pool healthy); standing storms (cold-start 300/300 with wal after;
+  hot-row exact-200; F-B3-2 first-boot noise present and self-healing as
+  documented).
+- Dryness: an S1 + an S2 — **B3 stays 0 of 2, NOT DRY**. Re-wet triggers
+  ALSO: `disconnect_if_rolled_back/2` / any `handle_execute` error-path
+  change / `with_xqlite/3` checkout semantics.
+- Completeness critic (next B3 pass): F-B3-5 under the SQL Sandbox (the
+  sandbox's isolation IS a never-committing outer transaction; if an ON
+  CONFLICT ROLLBACK violation destroys it, later test writes autocommit
+  into the real test database — same shape as F-B3-3 with worse blast
+  radius; now partially mitigated by the disconnect guard, but the
+  sandbox interaction is unprobed); the connection-scoped-state FAMILY
+  through with_xqlite (authorizer, extensions, session pragmas, hooks —
+  only the busy slot was probed); F-B3-4 at pool_size > 1 (intermittent
+  poisoning); a cancelled DML inside an explicit transaction (SQLite
+  auto-rolls-back the whole transaction on interrupt of
+  INSERT/UPDATE/DELETE — does the timeout path leak the same F-B3-5
+  shape? belongs with the B8 re-cover); a cross-process contention
+  wedge (this pass used a second in-VM connection).
+
+### B9 — the disconnect event's documented trigger was never true, and the lookup is invisible
+
+- **F-B9-5 (S2 doc-behavior divergence, CONFIRMED + FIXED as docs).**
+  `[:xqlite_ecto3, :disconnect]`'s documented trigger ("pool closes a
+  connection") never fires on a graceful pool or application shutdown —
+  DBConnection's connection process does not trap exits, so terminate
+  never runs; the event fires only on error-driven teardowns
+  (orchestrator-re-driven: 0 events on `Supervisor.stop` and
+  `Repo.stop`, 1 on the error control). Anyone following the guide's
+  connect-vs-disconnect counter pattern gets permanently unbalanced
+  counters. FIX (docs — trap_exit is not the adapter's to set): the
+  guide row and the moduledoc now state the real trigger and say
+  plainly that connect/disconnect counts are not a balanced pair.
+- **F-B9-4 (S3, CONFIRMED, FILED).** The unique-index-name lookup runs
+  1+N pragma reads inside the `handle_execute` span with no span of its
+  own, while `fk_diagnostics` (the sibling error-path replay) has one —
+  and Run 21 proved the lookup can bill a full `busy_timeout`, invisible
+  to dashboards. FILED with the proposed span shape
+  (`[:xqlite_ecto3, :unique_index_names, :*]`, start `%{conn, table,
+  columns}`, stop `%{candidate_count, lookup_status, index_reads}`);
+  the guide's "glue" sentence no longer implies the gap is
+  microseconds (updated in-run).
+- **F-B9-6 (S3, CONFIRMED + FIXED as docs).** The documented surface
+  omitted keys every consumer sees (`system_time` on `:start`,
+  `telemetry_span_context` on every span event), grouped measurements
+  so `:start` read as carrying `duration`, omitted the
+  `fk_diagnostics` event from the moduledoc entirely, and the guide's
+  disconnect row omitted `:reason`. All four corrected in-run
+  (moduledoc span-contract preamble + error-path-diagnostics section;
+  guide row + pairing note).
+- **CLEAN:** emission churn `458dc0c..d646d97` = the two Run-21
+  driver.ex hunks only, zero new emission sites (fk_diagnostics.ex /
+  telemetry.ex / open_telemetry.ex byte-identical by blob hash); flag
+  bleed disproven both directions (compiled flag VALUE checked, not
+  exit codes); event-surface spot-drive 20/21 documented checks pass
+  (the 21st is F-B9-5; the fabricated-event control proves absence is
+  reportable); dirty-flip neutrality (1200/1200 spans paired, integer
+  nanoseconds, synthetic-unpaired control caught); OTel mapping
+  byte-unchanged.
+- Dryness: finding-run (one S2 + two S3s) — **B9 stays 0 of 2, NOT
+  DRY**. Re-wet triggers ALSO: any `disconnect_if_rolled_back` /
+  telemetry moduledoc surface edit / `guides/wiring_telemetry.md`
+  event-table edit.
+- Completeness critic (next B9 pass): drive an `:exception` phase on at
+  least one span (all failures produce `:stop` + `result_class:
+  :error` today); re-drive the OFF-build smoke (this pass checked the
+  compiled flag value only); verify `cached_count`'s
+  before-the-action semantics numerically; decide whether the
+  `with_xqlite` bridge checkout (RawConn clause, no span — all bridge
+  work invisible to adapter telemetry) deserves an event, together
+  with the F-B9-4 span; count `:checkout` events against actual
+  checkouts; after the docs remedies, re-read both doc surfaces
+  against a fresh live capture.
