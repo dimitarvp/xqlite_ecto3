@@ -401,6 +401,34 @@ finding-run + fix churn — **B5 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
 cancel-token position / xqlite `constraint_parse.rs`. Next-pass seeds: the
 contention leg; conn death between the two pragmas; concurrent DDL racing
 the lookup; WITHOUT ROWID × partial × expression crosses.
+COVERING RE-RUN (Run 21, 2026-08-20 — lap 3, the post-fix pass over the
+Run-14 seeds): the seeds bit — **F-B5-8 (S2, FIXED)**: the contention leg
+settled AGAINST the code; rollback-journal contention blocks each pragma
+read a full `busy_timeout`, uncancellable (post-token), multiplying up to
+25× (44.5 s worst on a 30 s timeout); fix = a per-lookup wall-clock budget
+equal to the connection's own `busy_timeout`, checked before every read
+(`{:lookup_budget_exceeded, ms}` → derived fallback); WAL immune (probed);
+the residual single-read block (= any statement's worst case under that
+contention) documented + the full-remedy design fork filed. **F-B5-9 (S2,
+FIXED, RED→green)**: autoindexes (`origin "u"/"pk"`) now count as
+candidates, so a lone innocent named sibling is no longer blamed for a
+table-level-UNIQUE violation; a lone `sqlite_autoindex_*` candidate emits
+the derived name (prefix reserved by SQLite). **F-B5-10 (reviewer S2
+regraded S3-docs)**: expression-twin creation order decides which name
+SQLite reports — Postgres-parity engine surface; the declare-both-names
+contract is now in the moduledoc, the structural detect-and-degrade option
+filed. Filed F-B5-11 (expression form carries `table: nil, columns: []`);
+documented in-run: cap reversion (F-B5-12) + post-hoc schema drift
+(F-B5-13). Sharpened F-B5-5 (the first-dot split poisons the DERIVED name
+too) and F-B5-7 (a dropped table yields `:ok`/`[]` on the FIRST pragma; a
+busy observer is the one existing F-B5-8 mitigation). CLEAN: mid-lookup
+connection death (200/200 structured), DDL races, WITHOUT ROWID × STRICT ×
+partial × expression crosses (36), hook silence during the lookup, repo
+churn `c6bfdb9..787ea23`, dep churn 0.10.0→0.11.0 (`constraint_parse.rs` /
+`error.rs` byte-identical; 10/10 parse shapes re-anchored live). DRYNESS:
+finding-run — **B5 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`busy_budget/1` / `within_budget?/3` / `unique_index/1` origin set / the
+autoindex emission clause in `unique_constraints/1`.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

@@ -2666,3 +2666,132 @@ event-surface probe 9/9, OTel path unchanged.
   `14e6692`); this one is the real thing. Two reds, one harness case,
   one S1 — the floor is earning its keep. B4 re-wets (guard churn);
   its re-cover reviews the new oracle adversarially.
+
+---
+
+## Run 21 — 2026-08-20 — lap 3, batch 1: B5 (post-fix covering pass over the Run-14 seeds)
+
+- Commit at scan: `787ea23`. Deps at xqlite 0.11.0 from Hex (`XQLITE_PATH`
+  unset). Single Opus reviewer on the Run-14 completeness-critic seeds; the
+  orchestrator re-drove every load-bearing probe itself (contention
+  mechanism, driver kill, multiplier, invisible sibling, expression order,
+  parse shapes), captured the suite RED itself (exactly 5 failures at
+  `787ea23`), implemented both fixes, re-drove the probes post-fix, and ran
+  its own exit-file-gated `mix verify`.
+
+### B5 — the seeded legs bit: two S2s fixed at gate, one reviewer-S2 regraded
+
+- **F-B5-8 (S2, CONFIRMED + FIXED AT GATE).** The Run-14 contention seed
+  settled AGAINST the code. In a rollback-journal database each of the
+  lookup's 1+N pragma reads needs a fresh SHARED lock, and a competing
+  EXCLUSIVE writer blocks EACH read for the full `busy_timeout` —
+  uncancellable (the driver stops the cancel token before
+  `wrap_execute_error/4` runs), billed to the caller's checkout deadline.
+  Orchestrator-reproduced three ways: the lookup blocked exactly
+  `busy_timeout` while a RESERVED-lock control passed in 0.09 ms (the probe
+  discriminates); end-to-end a 500 ms-timeout insert ran 5006 ms and
+  DBConnection destroyed the pooled connection with the client stack inside
+  `UniqueIndexNames.candidates/3`; and the cost MULTIPLIES across reads —
+  24-candidate table, 30 s busy_timeout, cycling writer → 44.5 s worst
+  lookup (39256× control), because `matching_indexes` halts only on error,
+  so a read that blocks and then succeeds keeps the loop going (ceiling 25
+  blocked reads). WAL is immune (probed: the lookup never blocks there and
+  an EXCLUSIVE-mode competitor cannot even acquire beside a reader). FIX: a
+  per-lookup wall-clock budget equal to the connection's own
+  `busy_timeout`, read once at lookup start and checked before every
+  candidate read; exceeding it degrades to
+  `{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}` and the derived
+  conventional name. Post-fix the multiplier collapses to ≤ one budget. The
+  residual — a single read can still block for one `busy_timeout`, the same
+  worst case the statement itself pays under that contention, and the
+  deadline can still recycle the connection there exactly as it would for a
+  slow statement — is documented in the moduledoc and filed as a design
+  fork (cancellable-past-token vs short busy handler vs deadline skip; the
+  short-handler option touches the busy slot B3 owns, so whichever lands
+  needs its own adversarial lap). RED evidence: pure `within_budget?/3`
+  unit tests + orchestrator probe re-drives pre/post fix (a deterministic
+  in-suite contention trip needs a cross-process wedge, so the budget
+  behavior stays probe-settled; recorded here per the runtime-claims rule).
+- **F-B5-9 (S2, CONFIRMED + FIXED AT GATE, RED→green).** The F-B5-3
+  single-candidate rule counted only NAMED (`origin "c"`) unique indexes;
+  the `sqlite_autoindex_*` backers of table-level UNIQUE / PRIMARY KEY were
+  excluded from candidacy entirely. So when the autoindex fired beside
+  exactly one innocent named sibling (partial or another collation), that
+  sibling became the "single candidate", its name was emitted, and a
+  by-the-book `unique_constraint/1` raised `Ecto.ConstraintError`.
+  Innocence proven by dropping the blamed index — the identical insert
+  still violates via the autoindex. Reachable from hand-written schemas,
+  `execute/1` DDL, and the rebuild engine's own table-level UNIQUE
+  reconstruction. FIX: autoindexes (origins `"u"`/`"pk"`) join the
+  candidate set and are recorded on the struct (machine-honest); the
+  emission rule gains a clause — a lone `sqlite_autoindex_*` candidate
+  emits the derived conventional name (the `sqlite_` prefix is
+  SQLite-reserved, so the match cannot collide with a user index name).
+  Suite RED at `787ea23` was exactly the 5 new/strengthened tests (2
+  autoindex regressions, 1 strengthened table-level-UNIQUE contract test
+  now pinning the recorded autoindex name, 2 budget-helper tests); green
+  after the fix.
+- **F-B5-10 (reviewer proposed S2 → REGRADED S3-docs at gate).** A plain
+  unique index and a unique EXPRESSION index over the same value can both
+  be violated by one statement; SQLite reports whichever it checked first
+  (creation order), and on the `index '<name>'` form the adapter emits that
+  name directly. So a later migration adding `lower(col)` uniqueness flips
+  existing by-the-book changesets from convert to raise, with no code
+  change. Orchestrator-reproduced (conventional-then-expression raises;
+  the opposite order converts; an unreachable-partial-expression control
+  converts). REGRADE RATIONALE: PostgreSQL behaves the same way — it
+  reports the one violated constraint it hit, and Ecto raises identically
+  for any undeclared name — so this is engine-order surface every adapter
+  shares, not an adapter defect. DISPOSITION: the declare-both-names
+  contract is now in the moduledoc; the structural detect-and-degrade
+  option (needs the same bounded read as F-B5-11) is filed.
+- **Filed / documented S3s:** F-B5-11 filed (the `index '<name>'` form
+  yields `table: nil, columns: []` — no structured handle on what
+  collided; remedy = one `sqlite_schema` + `index_info` read, shared with
+  F-B5-10's structural option). F-B5-12 documented in-run (past the
+  24-index cap the emitted name reverts to the derived one — the moduledoc
+  now says so). F-B5-13 documented in-run (the post-hoc lookup can reflect
+  post-DDL schema — the moduledoc now says so). Sharpened: F-B5-5 (the
+  first-dot table split poisons the DERIVED fallback too — table `x.y`
+  derives `x_y.v_index` where Ecto's own default is `x.y_v_index`, so even
+  degradation emits an undeclarable name), F-B5-7 (a DROPPED table yields
+  `:ok`/`[]` on the FIRST pragma — indistinguishable from no-match; and a
+  registered busy observer converts the F-B5-8 block into a 0.05 ms
+  structured failure with the same status — the one existing mitigation).
+- **CLEAN (reviewer-driven; orchestrator re-ran every load-bearing leg):**
+  second-pragma failure degrades structurally (ATTACH wedge: first read
+  resolves, second blocks → derived name, no crash, no wrong name);
+  connection death mid-lookup (200/200 `{:unavailable,
+  :connection_closed}`, zero crashes / wrong names / bad emissions);
+  concurrent DDL racing the lookup (5 shapes, all structured; the
+  stale-name shapes are F-B5-13); WITHOUT ROWID × STRICT × partial ×
+  expression crosses (36 crosses, mapping byte-identical per table kind,
+  zero by-the-book failures on a plain conventional index); hooks silent
+  during the read-only lookup (0 messages; a subscriber querying the same
+  connection cannot perturb it); repo churn `c6bfdb9..787ea23` clean for
+  the constraint path (only the F-B5-3 fix + cap hardening in range;
+  `fk_diagnostics.ex` untouched; the cancel-token position unchanged); dep
+  churn 0.10.0→0.11.0 clean (`constraint_parse.rs` and `error.rs`
+  byte-identical between the tags; 10/10 parse-shape assumptions
+  re-anchored live on the released package).
+
+### Verdict + dryness
+
+- 2 S2 fixed at gate + 1 reviewer-S2 regraded to S3-docs with the contract
+  documented + 1 S3 filed + 2 S3s documented in-run + 2 sharpenings.
+  `mix verify` GREEN — the orchestrator's own exit-file-gated run.
+- Dryness: finding-run + fix churn — **B5 stays 0 of 2, NOT DRY**; two
+  consecutive clean covering runs owed over the post-fix surface. Re-wet
+  triggers extended: `busy_budget/1` / `within_budget?/3` /
+  `unique_index/1` origin set / the autoindex emission clause in
+  `unique_constraints/1`.
+- Completeness critic (next B5 pass): the F-B5-8 design fork's landing
+  needs its own adversarial lap; the FK-diagnostics replay
+  (`wrap_with_replay/4`) runs on the same post-token path and was NOT
+  probed under cross-process contention; a systematic sweep of which
+  pragma failures return `{:ok, []}` vs an error (the F-B5-7 class);
+  insert_all / update_all under the new emission rule;
+  `unique_constraint/3` `match: :suffix`/`:prefix` against resolved real
+  names; whether the rebuild engine can manufacture the F-B5-9 shape (a
+  named unique index converted to a table-level UNIQUE while a named
+  sibling survives) — handed to the next B7 pass as a seed.

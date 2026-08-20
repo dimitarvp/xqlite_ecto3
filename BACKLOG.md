@@ -135,6 +135,13 @@ after the S0–S2 burn-down.
   degrade the unique-name lookup to `{:unavailable,
   {:unparseable_violation_table, raw}}` instead of running the pragma
   on garbage — honest reporting without touching the parse.
+  Sharpened (Run 21): the split is on the FIRST dot only, so table
+  `x.y` with column `v` parses as `table: "x", columns: ["y.v"]` — and
+  the DERIVED fallback is poisoned too: it emits `x_y.v_index` where
+  Ecto's own default for that table is `x.y_v_index`, so even the
+  degradation path yields a name no changeset can declare. Also
+  re-anchored live on xqlite 0.11.0 (constraint_parse.rs byte-identical
+  to 0.10.0).
 - [F-B5-7] (S3) `unique_index_lookup: :ok` with `unique_index_names:
   []` cannot distinguish "no named unique index matched" from "the
   pragma saw no rows at all": a stale per-connection schema cache, a
@@ -142,6 +149,47 @@ after the S0–S2 burn-down.
   index being built does not exist yet) all collapse into the same
   silent derived-name fallback. Reporting gap only; refine the status
   shape when a consumer materializes. (Run 14, B5)
+  Sharpened (Run 21): (a) `DROP TABLE` between violation and lookup
+  yields `:ok`/`[]` on the FIRST pragma — `PRAGMA index_list` on a
+  missing table returns zero rows, not an error — so "table vanished"
+  is invisible even without reaching the second pragma; a systematic
+  sweep of which pragma failures error vs return empty is seeded for
+  the next pass. (b) A registered busy observer converts an F-B5-8
+  contention block into a 0.05 ms structured busy failure with the
+  same status — documented xqlite behavior, and the one existing
+  mitigation for the lookup's residual single-read block.
+- [F-B5-8-residual] (S3, design fork — the full remedy for the Run 21
+  S2) The shipped budget bound caps the lookup's contention cost at
+  ~one `busy_timeout`; the residual single blocked read (rollback
+  journal + cross-process writer) still bills the caller's checkout
+  deadline uncancellably, exactly like a slow statement. Full-remedy
+  options, each needing its own adversarial lap before landing:
+  (a) keep the driver's cancel token alive across
+  `wrap_execute_error/4` so the lookup cancels like the statement
+  (touches the B8 token lifecycle); (b) install a short busy handler
+  for the lookup's duration and restore after (touches the busy slot
+  B3 owns — policy/observer clobber risk); (c) skip the lookup when
+  the statement already consumed most of the caller's deadline.
+  (Run 21, B5)
+- [F-B5-10-structural] (S3) Expression-twin ambiguity: when the
+  `index '<name>'` form reports an all-expression index and a plain
+  unique index over the same table coexists, both may be violated and
+  creation order picked the reported one (Postgres-parity; the
+  declare-both-names contract is documented in the moduledoc). The
+  structural upgrade — resolve the reported index's table via
+  `sqlite_schema`, read `index_info`, and treat all-expression +
+  coexisting plain unique as ambiguity → derived fallback with both
+  names on the struct — shares its read with F-B5-11 and lands with
+  it, if ever. (Run 21, B5)
+- [F-B5-11] (S3) On the `index '<name>'` message form the Constraint
+  struct carries `table: nil, columns: []` — the index name is the
+  only handle and its schema relationship is not machine-readable,
+  against the errors-carry-maximum-structure rule. Remedy: one bounded
+  error-path read — `SELECT tbl_name FROM sqlite_schema WHERE
+  type='index' AND name = ?` fills `table`; `PRAGMA index_info` fills
+  the plain-column terms (expression terms stay out). Same cost
+  profile as the existing lookup; the same read F-B5-10-structural
+  needs. (Run 21, B5)
 - [UUID-case] (maintainer menu, from Run 19) The three shipped UUID
   paths have three different case behaviors: `Types.UUID` normalizes
   an upper-case UUID to lower on the way IN (stored and read lower);
