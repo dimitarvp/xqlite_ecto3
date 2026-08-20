@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Real unique index names in constraint errors.** On a UNIQUE
+  violation the adapter reads the table's unique index names back
+  (`PRAGMA index_list` + `index_info`) and reports the real name when
+  exactly one index covers the violated columns, so
+  `unique_constraint(:email, name: :users_email_uniq)` converts
+  against a custom-named index exactly like PostgreSQL. Every
+  candidate lands on the error
+  (`details.unique_index_names`/`unique_index_lookup`); ambiguous and
+  autoindex cases fall back to Ecto's derived
+  `<table>_<columns>_index` name. Postgres parity cuts both ways: a
+  bare `unique_constraint/1` against a custom-named index now raises
+  `Ecto.ConstraintError` — declare the real name. The lookup runs
+  only on the error path, is time-budgeted, and degrades to the
+  derived name if its reads fail.
+
 - **`XqliteEcto3.Telemetry.OpenTelemetry`.** A pure, dependency-free
   mapping from the adapter's telemetry events to OpenTelemetry's
   stable database semantic-convention attributes, mirroring
@@ -145,6 +160,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **`busy_timeout` repo config is validated at connect.** SQLite
+  stores the timeout as a C int and silently clamps negatives and
+  values past 2_147_483_647 to 0 — so `busy_timeout: :infinity` (or
+  `3_000_000_000`, "wait basically forever") connected fine and then
+  never waited on a single lock, failing every contended statement
+  immediately. Non-integers (`:infinity`, strings, floats) and
+  out-of-range integers are now structured connect errors
+  (`type: :invalid_busy_timeout`); `2_147_483_647` ms (~24.8 days)
+  is the accepted way to spell "wait forever".
 
 - **Decimal parameters now bind as numbers, so comparisons are
   correct everywhere.** They previously bound as TEXT; a direct

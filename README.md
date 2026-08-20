@@ -250,6 +250,35 @@ failure degrades to the original error
 Caveat: explicitly named FK constraints still need
 `foreign_key_constraint(:field, name: ...)` with the synthesized
 name — SQLite does not store FK constraint names.
+Three more caveats: the replay is a write, so under lock contention
+it can wait up to one extra `busy_timeout` on top of the failed
+statement's own wait; SQLite does not undo `last_insert_rowid()` on
+rollback, so after a replay the connection reports the rowid of the
+rolled-back phantom row until the next successful insert; and
+streamed DML (`Ecto.Adapters.SQL.stream/4`) skips the replay — the
+error still classifies as `:constraint_foreign_key`, with
+`fk_diagnostics: :not_run`.
+
+### Real unique index names
+
+On a unique violation the adapter reads the table's unique index
+names back (`PRAGMA index_list` + `index_info`) and reports the real
+name when exactly one index covers the violated columns — so
+`unique_constraint(:email, name: :users_email_uniq)` converts against
+a custom-named index, exactly like PostgreSQL. Indexes with Ecto's
+default `<table>_<columns>_index` names and `UNIQUE` column
+constraints keep matching a bare `unique_constraint(:email)`; with
+several candidate indexes the derived name is reported and every
+candidate lands in `e.details.unique_index_names`. Postgres parity
+cuts both ways: a bare `unique_constraint/1` against a custom-named
+index raises `Ecto.ConstraintError` — declare the real name (this is
+the one changeset difference from ecto_sqlite3, which always derives
+the conventional name). The lookup runs only on the error path, is
+time-budgeted, and degrades to the derived name when its reads fail
+or the budget is exceeded — `e.details.unique_index_lookup` says
+which happened. Streamed DML skips the lookup the same way
+(`unique_index_lookup: :not_run`). Full contract in the
+`XqliteEcto3.UniqueIndexNames` moduledoc.
 
 ### Streaming
 

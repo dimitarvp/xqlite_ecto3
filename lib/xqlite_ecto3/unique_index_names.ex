@@ -55,10 +55,11 @@ defmodule XqliteEcto3.UniqueIndexNames do
   and a wall-clock budget equal to the connection's `busy_timeout`,
   checked before every read
   (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). When the
-  pragma reports a zero timeout — either a genuine `busy_timeout: 0`
-  or a busy policy/observer holding the connection's busy slot, which
-  makes the pragma report 0 while reads wait for policy-governed
-  durations — the lookup takes a fixed 500 ms budget instead: far
+  pragma reports a zero timeout — a genuine `busy_timeout: 0`, or a
+  busy policy or observer holding the connection's busy slot (both
+  make the pragma report 0; under a policy contended reads wait
+  policy-governed durations, under an observer alone they fail
+  immediately) — the lookup takes a fixed 500 ms budget instead: far
   above any healthy lookup, and a hard bound on policy-governed
   waits multiplying across the candidate reads. A single
   read can still block for up to `busy_timeout` when another process
@@ -83,13 +84,13 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @max_candidate_lookups 24
 
-  # A zero from `PRAGMA busy_timeout` is ambiguous: a genuine zero timeout
-  # (reads fail fast, cannot block), or a busy policy/observer holding the
-  # connection's busy slot (the pragma then reports 0 while reads wait for
-  # policy-governed durations). The two are indistinguishable from here,
-  # so a zero-reported timeout gets this fixed budget: far above a healthy
-  # lookup (a 24-candidate pass measures ~0.4 ms uncontended), far below
-  # a policy's worst case multiplied across every candidate read.
+  # A zero from `PRAGMA busy_timeout` is ambiguous: a genuine zero timeout,
+  # a busy observer (contended reads fail immediately in both cases), or a
+  # busy policy holding the connection's busy slot (contended reads then
+  # wait policy-governed durations). The three are indistinguishable from
+  # here, so a zero-reported timeout gets this fixed budget: far above a
+  # healthy lookup (a 24-candidate pass measures ~0.4 ms uncontended), far
+  # below a policy's worst case multiplied across every candidate read.
   @zero_slot_budget_ms 500
 
   @doc """

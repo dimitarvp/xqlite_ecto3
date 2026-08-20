@@ -35,6 +35,13 @@ defmodule XqliteEcto3.FkDiagnostics do
   path then costs roughly two busy waits. This runs only after a
   violation and only under `rich_fk_diagnostics: true`.
 
+  One side effect survives the replay: SQLite does not undo
+  `last_insert_rowid()` on rollback, so after a replay the connection
+  reports the rowid of the rolled-back phantom row until the next
+  successful insert. The adapter itself never reads it (inserts use
+  `RETURNING`), but raw SQL or `with_xqlite/3` callers checking it
+  after a failed insert will see the phantom value.
+
   Every step is fallible; any failure degrades to the original blind
   error with `fk_diagnostics: {:unavailable, reason}` — the diagnosis
   never masks or replaces the error it is diagnosing.
