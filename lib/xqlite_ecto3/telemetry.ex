@@ -17,15 +17,35 @@ defmodule XqliteEcto3.Telemetry do
 
   ## Event surface
 
-  All time measurements are in nanoseconds via
-  `System.monotonic_time(:nanosecond)`. Span events follow
-  `:telemetry.span/3`: `:start` measures `%{monotonic_time, system_time}`
-  (no `duration`); `:stop` and `:exception` measure
-  `%{monotonic_time, duration}`. Every span event's metadata also carries
-  `telemetry_span_context`, the reference that pairs a `:start` with its
-  `:stop`. The blocks below list the adapter's own metadata keys; where a
-  block groups `:start | :stop | :exception`, its measurements line
-  describes the `:stop`/`:exception` shape.
+  The adapter's own single events (`:disconnect`, `:checkout` and the
+  statement-cache events) measure `monotonic_time` in nanoseconds, via
+  `System.monotonic_time(:nanosecond)`. Span events come from
+  `:telemetry.span/3`, which measures in the runtime's NATIVE time unit:
+  `:start` measures `%{monotonic_time, system_time}` (no `duration`);
+  `:stop` and `:exception` measure `%{monotonic_time, duration}`. Where
+  the native unit is a nanosecond — Linux, and every platform this
+  adapter is tested on — the two are the same number.
+  `System.convert_time_unit(1, :second, :native)` tells you what the
+  runtime you are on actually uses.
+
+  Every span event's metadata also carries `telemetry_span_context`, the
+  reference that pairs a `:start` with its `:stop`. The blocks below list
+  the adapter's own metadata keys; where a block groups
+  `:start | :stop | :exception`, its measurements line describes the
+  `:stop`/`:exception` shape.
+
+  ### The :exception phase carries other metadata
+
+  The metadata listed per event below is what `:start` and `:stop` carry.
+  An `:exception` event carries the `:start` metadata plus `kind`,
+  `reason` and `stacktrace` — and NOT `result_class` or `error_reason`,
+  which the adapter computes from a callback's return value and a raising
+  callback never produced.
+
+  `:telemetry` detaches any handler that raises, so a handler whose head
+  binds `%{result_class: class}` is removed from the whole VM the first
+  time an exception event reaches it — silently, taking every other event
+  it subscribed to with it. Give handler functions a catch-all clause.
 
   ### Connection lifecycle
 
@@ -47,6 +67,11 @@ defmodule XqliteEcto3.Telemetry do
         measurements: %{monotonic_time}
         metadata:     %{conn}
 
+  `:checkout` fires ONCE per connection, right after DBConnection opens
+  it — not once per pool checkout. DBConnection calls the driver's
+  checkout callback a single time, when the connection is established, so
+  this event counts connections opened, not queries served.
+
   ### Transaction lifecycle (DBConnection callbacks)
 
       [:xqlite_ecto3, :handle_begin, :start | :stop | :exception]
@@ -66,6 +91,16 @@ defmodule XqliteEcto3.Telemetry do
       [:xqlite_ecto3, :handle_deallocate, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
         metadata:     %{conn, cursor, result_class, error_reason}
+
+  ### Two shapes of error_reason
+
+  `error_reason` is normally the error the callback returned. When the
+  callback also told DBConnection to drop the connection — a statement
+  error that took the whole transaction with it, a failed COMMIT — it is
+  `{:disconnect, error}` instead: the same error, plus the fact that the
+  connection is going away. Match both shapes.
+  `XqliteEcto3.Telemetry.OpenTelemetry` looks inside the tuple, so
+  `error.type` names the error either way.
 
   ### Error-path diagnostics
 

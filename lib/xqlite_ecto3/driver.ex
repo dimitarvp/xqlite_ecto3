@@ -226,11 +226,13 @@ defmodule XqliteEcto3.Driver do
     :ok
   end
 
-  # Checkout can receive a connection whose state cache drifted: user code
-  # may have run raw BEGIN/COMMIT/ROLLBACK, or a prior checkout crashed.
-  # Sync transaction_status from SQLite and clear the savepoint counter —
-  # we only ever track our own managed savepoint stack, which is empty at
-  # every checkout boundary by construction.
+  # DBConnection calls this ONCE per connection, right after connect — not
+  # once per pool checkout. So it is the first read of SQLite's transaction
+  # state, not a repair pass that runs between clients: keeping the cached
+  # flag truthful afterwards belongs to handle_begin/commit/rollback and, for
+  # transaction control that arrives as ordinary SQL, to
+  # sync_after_transaction_control/2. The savepoint counter starts at 0
+  # because we only ever track our own managed savepoint stack.
   @impl DBConnection
   def checkout(state) do
     result =
@@ -432,7 +434,8 @@ defmodule XqliteEcto3.Driver do
       result =
         case exec_result do
           {:ok, %{columns: [], changes: changes} = result} ->
-            {:ok, query, %{result | num_rows: changes, rows: nil}, state}
+            {:ok, query, %{result | num_rows: changes, rows: nil},
+             sync_after_transaction_control(state, sql)}
 
           {:ok, result} ->
             {:ok, query, result, state}
@@ -471,6 +474,56 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp disconnect_if_rolled_back(wrapped, state), do: {:error, wrapped, state}
+
+  # BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE run as ordinary SQL (Repo.query,
+  # Ecto.Adapters.SQL.query) never reach handle_begin & friends, so without
+  # this the cached flag the guard above reads would stay stale for the whole
+  # life of the connection: checkout/1 syncs it once, right after connect, and
+  # DBConnection never calls it again. Re-read SQLite's real state after any
+  # columnless statement whose leading keyword is transaction control. A
+  # statement that returns columns never gets here at all, and for the ones
+  # that do, a statement not starting with one of these keywords' letters
+  # costs a single leading-byte test; the status read runs only on the
+  # handful of statements whose whole keyword matches.
+  @transaction_control ["BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"]
+  @transaction_control_initials [?B, ?C, ?E, ?R, ?S, ?b, ?c, ?e, ?r, ?s]
+  @longest_transaction_control 9
+
+  defp sync_after_transaction_control(state, sql) do
+    case leading_keyword(sql) do
+      keyword when keyword in @transaction_control -> refresh_transaction_status(state)
+      _other -> state
+    end
+  end
+
+  defp refresh_transaction_status(state) do
+    case NIF.transaction_status(state.conn) do
+      {:ok, true} -> %{state | transaction_status: :transaction}
+      {:ok, false} -> %{state | transaction_status: :idle}
+      {:error, _reason} -> state
+    end
+  end
+
+  defp leading_keyword(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r, ?\f] do
+    leading_keyword(rest)
+  end
+
+  defp leading_keyword(<<c, _rest::binary>> = sql) when c in @transaction_control_initials do
+    length = keyword_length(sql, 0)
+
+    sql
+    |> binary_part(0, length)
+    |> String.upcase()
+  end
+
+  defp leading_keyword(_sql), do: nil
+
+  defp keyword_length(<<c, rest::binary>>, length)
+       when length < @longest_transaction_control and (c in ?A..?Z or c in ?a..?z) do
+    keyword_length(rest, length + 1)
+  end
+
+  defp keyword_length(_rest, length), do: length
 
   # Statement cache: prepared statements live per connection, keyed by SQL
   # text, LRU-evicted beyond :statement_cache_size (0 disables). SQL that
@@ -696,11 +749,16 @@ defmodule XqliteEcto3.Driver do
 
               {:error, reason} ->
                 NIF.stream_close(handle)
-                {:error, XqliteEcto3.Error.wrap(reason), state}
+
+                reason
+                |> XqliteEcto3.Error.wrap()
+                |> disconnect_if_rolled_back(state)
             end
 
           {:error, reason} ->
-            {:error, XqliteEcto3.Error.wrap(reason), state}
+            reason
+            |> XqliteEcto3.Error.wrap()
+            |> disconnect_if_rolled_back(state)
         end
 
       classify_dbc(result, start_md)
@@ -727,7 +785,9 @@ defmodule XqliteEcto3.Driver do
             {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
 
           {:error, reason} ->
-            {:error, XqliteEcto3.Error.wrap(reason), state}
+            reason
+            |> XqliteEcto3.Error.wrap()
+            |> disconnect_if_rolled_back(state)
         end
 
       classify_dbc(result, start_md)

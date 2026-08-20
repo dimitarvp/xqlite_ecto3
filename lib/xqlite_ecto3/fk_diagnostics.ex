@@ -84,12 +84,19 @@ defmodule XqliteEcto3.FkDiagnostics do
   def wrap_at_commit(reason, _conn), do: Error.wrap(reason)
 
   defp enrich(%Error{details: %Constraint{} = details} = error, collect_fun, conn, mode) do
+    start_md = %{conn: conn, mode: mode}
+
     {status, violations} =
-      span_with_stop_metadata [:xqlite_ecto3, :fk_diagnostics], %{conn: conn, mode: mode} do
+      span_with_stop_metadata [:xqlite_ecto3, :fk_diagnostics], start_md do
         {status, violations} = run_collect(collect_fun)
 
-        {{status, violations},
-         %{violations_count: length(violations), diagnostics_status: diag_tag(status)}}
+        stop_md =
+          Map.merge(start_md, %{
+            violations_count: length(violations),
+            diagnostics_status: diag_tag(status)
+          })
+
+        {{status, violations}, stop_md}
       end
 
     %{error | details: %{details | fk_violations: violations, fk_diagnostics: status}}
@@ -152,18 +159,33 @@ defmodule XqliteEcto3.FkDiagnostics do
   # that pragma's `id` column. Multi-column FKs span several rows that
   # share an id and are ordered by seq.
   defp fk_definitions(conn, check_rows) do
-    check_rows
-    |> Enum.map(fn [child_table, _rowid, _parent, _fkid] -> child_table end)
-    |> Enum.uniq()
-    |> Enum.reduce_while({:ok, %{}}, fn child_table, {:ok, acc} ->
-      case NIF.query(conn, "PRAGMA foreign_key_list(#{quote_ident(child_table)})", []) do
-        {:ok, %{rows: rows}} ->
-          {:cont, {:ok, Map.put(acc, child_table, group_fk_rows(rows))}}
+    with {:ok, child_tables} <- child_tables(check_rows) do
+      Enum.reduce_while(child_tables, {:ok, %{}}, fn child_table, {:ok, acc} ->
+        case NIF.query(conn, "PRAGMA foreign_key_list(#{quote_ident(child_table)})", []) do
+          {:ok, %{rows: rows}} ->
+            {:cont, {:ok, Map.put(acc, child_table, group_fk_rows(rows))}}
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  # foreign_key_check columns: table (child), rowid, parent, fkid. A row of
+  # any other shape means the pragma is not what this code was written
+  # against — report it as an unavailable diagnosis instead of crashing the
+  # error path that is already handling a violation.
+  defp child_tables(check_rows) do
+    result =
+      Enum.reduce_while(check_rows, {:ok, []}, fn
+        [child_table, _rowid, _parent, _fkid], {:ok, acc} -> {:cont, {:ok, [child_table | acc]}}
+        row, {:ok, _acc} -> {:halt, {:error, {:unexpected_check_row, row}}}
+      end)
+
+    with {:ok, tables} <- result do
+      {:ok, tables |> Enum.reverse() |> Enum.uniq()}
+    end
   end
 
   # foreign_key_list columns: id, seq, table (parent), from, to,

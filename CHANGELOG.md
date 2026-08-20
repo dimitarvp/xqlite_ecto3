@@ -146,6 +146,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The rollback-disconnect guard now covers raw-SQL transactions and
+  streams.** SQLite rolls back the whole transaction when it rejects a
+  statement under `ON CONFLICT ROLLBACK` or when a write is cancelled;
+  the driver detects that and disconnects so later statements cannot
+  commit durably in autocommit inside a transaction that reported
+  failure. Two gaps closed: the detection depended on a cached flag
+  that a `BEGIN` issued through `Repo.query` never set (the driver now
+  re-reads SQLite's transaction state after any successful
+  transaction-control statement — a leading-keyword check costing
+  nanoseconds on ordinary statements), and the streaming callbacks
+  (`handle_declare` / `handle_fetch`) bypassed the guard entirely. A
+  raw transaction whose statements are not pinned to one connection
+  (`BEGIN` via `Repo.query` without `Repo.checkout` on a pool) remains
+  meaningless on any pooled adapter and cannot be protected.
+
+- **Telemetry contract corrections.** `[:xqlite_ecto3, :fk_diagnostics]`
+  `:stop` events now carry the documented `conn` and `mode` metadata
+  (the span returned only its counters, so a handler binding `mode`
+  was silently detached VM-wide on first fire). OTel's `error.type`
+  now reports the real error class for disconnecting errors instead
+  of the literal `"disconnect"`. The wiring guide's checkout row said
+  "per-call" — the event fires once per connection right after
+  connect; the guide also gained the three statement-cache event rows
+  and catch-all sample handlers. Both doc surfaces now state the
+  `:exception` phase's real metadata and that span measurements are
+  in the runtime's native time unit (the adapter's own emissions are
+  nanoseconds).
+
+- **`with_xqlite/3` hazard notes.** The connection-scoped-state
+  section now names two more standing hazards: enabling extension
+  loading also leaves the SQL-level `load_extension()` function
+  callable on that pooled connection for its lifetime (restore with
+  `Xqlite.enable_load_extension(conn, false)`), and a connection
+  whose busy slot fails fast is preferentially reused by the pool, so
+  one poisoned connection can absorb and fail most contended writes.
+
 - **Table-rebuild hardening, one review wave.** The opt-in
   ALTER-via-table-rebuild engine closed thirteen defects found by an
   adversarial review of its surface:

@@ -332,7 +332,7 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     {:error, _} = exec(pid, "INSERT INTO ch VALUES (1, 999)")
 
     assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :start], _,
-                    %{mode: :replay}}
+                    %{mode: :replay, conn: conn}}
 
     assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :stop], measurements,
                     metadata}
@@ -340,5 +340,10 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     assert is_integer(measurements.duration)
     assert metadata.violations_count == 1
     assert metadata.diagnostics_status == :ok
+
+    # :stop keeps everything :start announced — a handler that binds :mode or
+    # :conn must survive this event, not be detached by :telemetry for raising.
+    assert metadata.mode == :replay
+    assert metadata.conn == conn
   end
 end

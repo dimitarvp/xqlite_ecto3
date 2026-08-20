@@ -52,4 +52,22 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetryTest do
     assert %{"error.type" => "read_only_database"} =
              Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
   end
+
+  test "an error that also drops the connection is classified by the error inside" do
+    inner = {:constraint_violation, :constraint_unique, "UNIQUE constraint failed"}
+    metadata = %{result_class: :error, error_reason: {:disconnect, inner}}
+
+    assert %{"error.type" => "constraint_violation"} =
+             Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
+  end
+
+  test "a struct error that also drops the connection reports the struct" do
+    metadata = %{
+      result_class: :error,
+      error_reason: {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}}
+    }
+
+    assert %{"error.type" => "XqliteEcto3.Error"} =
+             Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
+  end
 end

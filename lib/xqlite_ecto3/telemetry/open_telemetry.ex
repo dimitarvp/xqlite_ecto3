@@ -38,6 +38,10 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   statement (DBConnection callback events), `db.namespace` from
   `:database` (connect events), and `error.type` for error results and
   exceptions.
+
+  An error that also dropped the connection arrives as
+  `error_reason: {:disconnect, error}`. `error.type` names the error
+  inside that tuple, so those errors stay classified by what failed.
   """
   @spec attributes([atom()], map(), map()) :: %{String.t() => String.t()}
   def attributes([:xqlite_ecto3 | _] = event, _measurements, metadata) when is_map(metadata) do
@@ -88,6 +92,11 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
 
   defp put_error(attrs, _metadata), do: attrs
 
+  # A statement error that also killed the transaction is reported as
+  # {:disconnect, error}: same error, plus the fact that the connection is
+  # being dropped. Naming that "disconnect" would file every such error under
+  # one name and hide what actually failed, so classify the error inside.
+  defp error_type({:disconnect, inner}), do: error_type(inner)
   defp error_type(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp error_type({tag, _}) when is_atom(tag), do: Atom.to_string(tag)
   defp error_type({tag, _, _}) when is_atom(tag), do: Atom.to_string(tag)

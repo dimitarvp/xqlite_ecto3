@@ -142,11 +142,18 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       assert is_integer(m1.monotonic_time)
 
       {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [2])
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :hit], m2, _}
+
+      # Handlers are process-global: filter to this cache's own events by SQL,
+      # else a concurrent connection's hit is measured instead of this one's.
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :hit], m2,
+                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+
       assert m2.cached_count == 1
 
       {_r, _state} = execute!(state, "SELECT x FROM t ORDER BY x", [])
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], _m3, _}
+
+      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], _m3,
+                      %{sql: "SELECT x FROM t ORDER BY x"}}
 
       assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :evicted], m4,
                       %{sql: "SELECT x FROM t WHERE x = ?1"}}

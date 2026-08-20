@@ -41,7 +41,7 @@ true
 |---|---|---|
 | `[:xqlite_ecto3, :connect, :*]` | DBConnection opens a connection | `:database`, `:result_class`, `:error_reason` |
 | `[:xqlite_ecto3, :disconnect]` | DBConnection tears a connection down (an operation error, a failed ping) | `:conn`, `:reason` |
-| `[:xqlite_ecto3, :checkout]` | A pool checkout (per-call) | `:conn` |
+| `[:xqlite_ecto3, :checkout]` | Once per connection, right after DBConnection opens it — NOT once per pool checkout | `:conn` |
 | `[:xqlite_ecto3, :handle_begin, :*]` | DBConnection.transaction starts | `:mode` (`:transaction` or `:savepoint`) |
 | `[:xqlite_ecto3, :handle_commit, :*]` | transaction committed | `:mode` |
 | `[:xqlite_ecto3, :handle_rollback, :*]` | transaction rolled back | `:mode` |
@@ -49,20 +49,57 @@ true
 | `[:xqlite_ecto3, :handle_declare, :*]` | a streaming cursor opens | `:sql`, `:query` |
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
-| `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count`, `:diagnostics_status` |
+| `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count`, `:diagnostics_status` |
+| `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:sql` |
+
+The three statement-cache events are not spans: each carries
+`monotonic_time` (ns) and `cached_count`, the number of cached
+statements BEFORE the event's own action.
 
 Every span event (`*, :start | :stop | :exception`) carries
-`monotonic_time` (ns) on `:start` and `monotonic_time` + `duration`
-(both ns) on `:stop`. `:telemetry.span/3` also adds `system_time` to
-every `:start`'s measurements and a `telemetry_span_context` reference
-to every span event's metadata — that reference is what pairs a
-`:start` with its `:stop`.
+`monotonic_time` on `:start` and `monotonic_time` + `duration` on
+`:stop`. Those come from `:telemetry.span/3` and are in the runtime's
+NATIVE time unit, not necessarily nanoseconds — on Linux a native unit
+IS a nanosecond, so the numbers coincide; `System.convert_time_unit(1,
+:second, :native)` tells you what your runtime uses. The adapter's own
+non-span events (`:disconnect`, `:checkout`, the statement-cache
+events) are always in nanoseconds.
+
+`:telemetry.span/3` also adds `system_time` to every `:start`'s
+measurements and a `telemetry_span_context` reference to every span
+event's metadata — that reference is what pairs a `:start` with its
+`:stop`.
 
 A graceful pool or application shutdown does NOT emit
 `[:xqlite_ecto3, :disconnect]`: the connection process exits before
 its terminate callback runs (DBConnection does not trap exits there).
 Do not treat connect and disconnect counts as a balanced pair — every
 clean deploy leaves the connect count ahead.
+
+### The `:exception` phase carries other metadata
+
+A span's `:exception` event carries the `:start` metadata plus `kind`,
+`reason` and `stacktrace`. It does NOT carry `result_class` or
+`error_reason`: the adapter builds those from a callback's return
+value, and a callback that raised never returned one.
+
+`:telemetry` detaches any handler that raises. A handler whose head
+binds `%{result_class: class}` therefore disappears from the whole VM
+the first time an exception event reaches it — silently, taking every
+other event that handler subscribed to with it. Give handler functions
+a catch-all clause, as the samples below do.
+
+### Two shapes of `error_reason`
+
+`error_reason` is normally the error the callback returned. When the
+callback also told DBConnection to drop the connection — a statement
+error that took the whole transaction with it, a failed COMMIT — it is
+`{:disconnect, error}` instead: the same error, plus the fact that the
+connection is going away. Match both shapes.
+`XqliteEcto3.Telemetry.OpenTelemetry` looks inside the tuple, so
+`error.type` names the error either way.
 
 ## Composing layers
 
@@ -98,8 +135,12 @@ Pick the layer that matches your observability question:
 :telemetry.attach(
   "myapp-repo-dashboard",
   [:my_app, :repo, :query],
-  fn _, %{total_time: t}, %{source: source}, _ ->
-    StatsD.histogram("myapp.repo.#{source}.duration_us", t)
+  fn
+    _, %{total_time: t}, %{source: source}, _ when is_binary(source) ->
+      StatsD.histogram("myapp.repo.#{source}.duration_us", t)
+
+    _, _, _, _ ->
+      :ok
   end,
   nil
 )
@@ -120,10 +161,18 @@ Pick the layer that matches your observability question:
 
     [:xqlite_ecto3, :disconnect], _, _, _ ->
       Telemetry.Metrics.Counter.inc("xqlite_ecto3.disconnects")
+
+    _name, _measurements, _metadata, _config ->
+      :ok
   end,
   nil
 )
 ```
+
+The last clause is what keeps this handler attached. Without it, a
+successful connect (`result_class: :ok`) or an `:exception` event —
+which carries no `result_class` at all — raises inside the handler, and
+`:telemetry` responds by detaching it for good.
 
 ### Detecting deadlock-like adapter behaviour
 
@@ -138,8 +187,12 @@ difference:
     [:xqlite_ecto3, :handle_execute, :stop],
     [:xqlite, :query, :stop]
   ],
-  fn name, %{duration: d}, _md, _ ->
-    Telemetry.Metrics.Distribution.observe("xqlite_layer.#{Enum.join(name, ".")}", d)
+  fn
+    name, %{duration: d}, _md, _ ->
+      Telemetry.Metrics.Distribution.observe("xqlite_layer.#{Enum.join(name, ".")}", d)
+
+    _name, _measurements, _md, _ ->
+      :ok
   end,
   nil
 )

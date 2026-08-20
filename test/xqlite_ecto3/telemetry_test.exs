@@ -12,6 +12,7 @@ defmodule XqliteEcto3.TelemetryTest do
 
   use ExUnit.Case, async: true
 
+  alias Ecto.Integration.PoolRepo
   alias XqliteEcto3.Driver
 
   setup do
@@ -116,6 +117,46 @@ defmodule XqliteEcto3.TelemetryTest do
       assert_receive {:telemetry_event, [:xqlite_ecto3, :checkout], _, %{conn: _}}
 
       :telemetry.detach(handler_id)
+    end
+
+    test "a warm pool serves queries without firing checkout again" do
+      # DBConnection calls checkout/1 once, when the connection is opened.
+      # Warm the pool first so that one event is behind us.
+      PoolRepo.query!("SELECT 1")
+
+      handler_id = "test-pool-checkout-#{:erlang.unique_integer([:positive])}"
+
+      attach_capture(handler_id, [
+        [:xqlite_ecto3, :checkout],
+        [:xqlite_ecto3, :handle_execute, :stop]
+      ])
+
+      # One checkout of the pool, ten statements on the connection it holds.
+      # The marker makes these ten identifiable among concurrent tests' events.
+      marker = "SELECT #{:erlang.unique_integer([:positive])} AS warm_pool_probe"
+
+      PoolRepo.checkout(fn ->
+        for _ <- 1..10, do: PoolRepo.query!(marker)
+      end)
+
+      :telemetry.detach(handler_id)
+      events = drain_events()
+
+      mine =
+        Enum.filter(events, fn {name, metadata} ->
+          name == [:xqlite_ecto3, :handle_execute, :stop] and metadata[:sql] == marker
+        end)
+
+      assert length(mine) == 10
+
+      [{_name, %{conn: conn}} | _rest] = mine
+
+      checkouts =
+        Enum.count(events, fn {name, metadata} ->
+          name == [:xqlite_ecto3, :checkout] and metadata[:conn] == conn
+        end)
+
+      assert checkouts == 0
     end
   end
 
@@ -232,6 +273,45 @@ defmodule XqliteEcto3.TelemetryTest do
 
       :telemetry.detach(handler_id)
     end
+
+    test "an error that also drops the connection keeps its own class", %{state: state} do
+      {:ok, _} =
+        XqliteNIF.query(
+          state.conn,
+          "CREATE TABLE tel_ocr(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = XqliteNIF.query(state.conn, "INSERT INTO tel_ocr(email) VALUES ('a@x')", [])
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      handler_id = "test-exec-disc-#{:erlang.unique_integer([:positive])}"
+      attach_capture(handler_id, [[:xqlite_ecto3, :handle_execute, :stop]])
+
+      sql = "INSERT INTO tel_ocr(email) VALUES ('a@x')"
+      dup = %XqliteEcto3.Query{statement: sql, ref: nil}
+
+      {:disconnect, _error, _state2} = Driver.handle_execute(dup, [], [], state)
+
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_execute, :stop], _,
+                      %{sql: ^sql} = metadata}
+
+      assert metadata.result_class == :error
+
+      assert {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}} =
+               metadata.error_reason
+
+      attributes =
+        XqliteEcto3.Telemetry.OpenTelemetry.attributes(
+          [:xqlite_ecto3, :handle_execute, :stop],
+          %{},
+          metadata
+        )
+
+      assert attributes["error.type"] == "XqliteEcto3.Error"
+
+      :telemetry.detach(handler_id)
+    end
   end
 
   describe "cursor lifecycle telemetry" do
@@ -273,6 +353,16 @@ defmodule XqliteEcto3.TelemetryTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  # Handlers are process-global, so the mailbox can hold events from other
+  # tests running concurrently. Take everything captured so far, then filter.
+  defp drain_events(acc \\ []) do
+    receive do
+      {:telemetry_event, name, _measurements, metadata} -> drain_events([{name, metadata} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
 
   defp attach_capture(handler_id, events) do
     test_pid = self()

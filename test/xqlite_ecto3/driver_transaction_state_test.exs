@@ -243,6 +243,78 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
     end
   end
 
+  describe "transaction control that runs as an ordinary statement" do
+    test "BEGIN through handle_execute updates the cached flag", %{state: state} do
+      begin = %XqliteEcto3.Query{statement: "BEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+      assert state.transaction_status == :transaction
+    end
+
+    test "leading whitespace and lower case are recognised", %{state: state} do
+      begin = %XqliteEcto3.Query{statement: "  \n begin "}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+      assert state.transaction_status == :transaction
+    end
+
+    test "COMMIT through handle_execute updates the cached flag", %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      commit = %XqliteEcto3.Query{statement: "COMMIT"}
+      {:ok, _query, _result, state} = Driver.handle_execute(commit, [], [], state)
+      assert state.transaction_status == :idle
+    end
+
+    test "ROLLBACK through handle_execute updates the cached flag", %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      rollback = %XqliteEcto3.Query{statement: "ROLLBACK"}
+      {:ok, _query, _result, state} = Driver.handle_execute(rollback, [], [], state)
+      assert state.transaction_status == :idle
+    end
+
+    test "a SAVEPOINT outside a transaction opens one and updates the flag", %{state: state} do
+      savepoint = %XqliteEcto3.Query{statement: "SAVEPOINT user_sp"}
+      {:ok, _query, _result, state} = Driver.handle_execute(savepoint, [], [], state)
+      assert state.transaction_status == :transaction
+    end
+
+    test "an ordinary statement never touches the cached flag", %{state: state} do
+      {:ok, _} = NIF.query(state.conn, "CREATE TABLE tc(x INTEGER)", [])
+      {:ok, _} = NIF.query(state.conn, "BEGIN", [])
+      insert = %XqliteEcto3.Query{statement: "INSERT INTO tc(x) VALUES (1)"}
+
+      {:ok, _query, _result, state} = Driver.handle_execute(insert, [], [], state)
+
+      assert state.transaction_status == :idle
+    end
+
+    test "a keyword that only starts like transaction control is not one", %{state: state} do
+      {:ok, _} = NIF.query(state.conn, "BEGIN", [])
+      create = %XqliteEcto3.Query{statement: "CREATE TABLE ends_like_end(x INTEGER)"}
+
+      {:ok, _query, _result, state} = Driver.handle_execute(create, [], [], state)
+
+      assert state.transaction_status == :idle
+    end
+
+    test "a raw BEGIN makes a later rollback-class violation disconnect", %{state: state} do
+      {:ok, _} =
+        NIF.query(
+          state.conn,
+          "CREATE TABLE tc_ocr(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO tc_ocr(email) VALUES ('a@x')", [])
+
+      begin = %XqliteEcto3.Query{statement: "BEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO tc_ocr(email) VALUES ('a@x')"}
+
+      assert {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+    end
+  end
+
   describe "disconnect/2 resets transient state fields" do
     test "returns :ok after closing", %{state: state} do
       assert :ok = Driver.disconnect(nil, state)

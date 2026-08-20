@@ -345,6 +345,22 @@ defmodule XqliteEcto3 do
   `Xqlite.busy_timeout/2` with the repo's configured value before the
   callback returns.
 
+  One connection left in that state does more damage than its share of
+  the pool suggests. Failing immediately instead of waiting is the
+  fastest way to finish a statement, so that connection is idle — and
+  therefore first in line — far more often than the ones that wait out
+  their busy timeout. It can end up absorbing and failing most of your
+  contended writes.
+
+  Extension loading needs the same care.
+  `Xqlite.enable_load_extension(conn, true)` does not only unlock the
+  C-API load you are about to do: it also makes the SQL function
+  `load_extension()` callable on that connection, for the rest of that
+  connection's life. Any later query on it — including one built from
+  user input — can then load a shared library from disk. Call
+  `Xqlite.enable_load_extension(conn, false)` before the callback
+  returns.
+
   ## Options
 
   Forwarded to `DBConnection.run/3` — most usefully `:timeout` for the
@@ -779,8 +795,9 @@ defmodule XqliteEcto3 do
     # Repo.transaction, or the SQL Sandbox already provide one; when none is
     # open (@disable_ddl_transaction, a raw Ecto.Migration.Runner drive),
     # open one for the dance and roll it back on any mid-dance failure. Raw
-    # BEGIN/COMMIT via query is safe here: the driver's handle_status asks
-    # SQLite itself, so transaction bookkeeping cannot drift.
+    # BEGIN/COMMIT via query is safe here: the driver re-reads SQLite's real
+    # transaction state after every transaction-control statement that runs as
+    # ordinary SQL, so its bookkeeping follows this dance instead of drifting.
     self_wrap? = not in_wrapping_transaction?(meta, opts)
 
     on_one_connection(meta, self_wrap?, opts, fn ->
