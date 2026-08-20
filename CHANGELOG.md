@@ -146,6 +146,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `busy_timeout` of 0 no longer disables unique-index-name
+  resolution.** The lookup that resolves real unique index names on a
+  UNIQUE violation reuses the connection's `busy_timeout` as its
+  wall-clock budget; a zero timeout (fail-fast config, or a busy
+  policy/observer installed through `with_xqlite/3`) was read as "no
+  time at all" and intermittently halted the lookup, so changesets
+  declaring the real index name could raise `Ecto.ConstraintError`
+  instead of converting. Zero now disables the wall-clock check: reads
+  that cannot block have no lock-wait cost to cap, and the
+  24-candidate cap alone bounds the work.
+
+- **The xqlite dependency bound is patch-level (`~> 0.11.0`).**
+  xqlite is pre-1.0, so a minor bump is its break slot; the previous
+  `~> 0.11` bound admitted any future 0.x minor. Each adapter release
+  pins exactly one xqlite minor series, and both READMEs now state
+  the pairing.
+
 - **Connect-time pragmas accepted by the URL parser are now honored.**
   `auto_vacuum`, `wal_autocheckpoint`, and `mmap_size` — parsed and
   type-coerced since the URL feature shipped — were silently dropped
