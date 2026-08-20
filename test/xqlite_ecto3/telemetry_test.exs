@@ -308,7 +308,7 @@ defmodule XqliteEcto3.TelemetryTest do
           metadata
         )
 
-      assert attributes["error.type"] == "XqliteEcto3.Error"
+      assert attributes["error.type"] == "constraint_violation"
 
       :telemetry.detach(handler_id)
     end

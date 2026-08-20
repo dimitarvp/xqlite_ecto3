@@ -61,13 +61,40 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetryTest do
              Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
   end
 
-  test "a struct error that also drops the connection reports the struct" do
+  test "a wrapped adapter error is classified by its typed field" do
+    metadata = %{
+      result_class: :error,
+      error_reason: %XqliteEcto3.Error{type: :constraint_violation}
+    }
+
+    assert %{"error.type" => "constraint_violation"} =
+             Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
+  end
+
+  test "a wrapped error that also drops the connection keeps its typed field" do
     metadata = %{
       result_class: :error,
       error_reason: {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}}
     }
 
+    assert %{"error.type" => "constraint_violation"} =
+             Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
+  end
+
+  test "a wrapped error with no typed field falls back to the struct name" do
+    metadata = %{result_class: :error, error_reason: %XqliteEcto3.Error{type: nil}}
+
     assert %{"error.type" => "XqliteEcto3.Error"} =
+             Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
+  end
+
+  test "a foreign struct error still reports the struct name" do
+    metadata = %{
+      result_class: :error,
+      error_reason: %DBConnection.ConnectionError{message: "boom", reason: :error}
+    }
+
+    assert %{"error.type" => "DBConnection.ConnectionError"} =
              Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
   end
 end

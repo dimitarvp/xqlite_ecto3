@@ -308,6 +308,39 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert state.transaction_status == :idle
     end
 
+    test "a BOM-prefixed BEGIN updates the cached flag", %{state: state} do
+      begin = %XqliteEcto3.Query{statement: "\uFEFFBEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+      assert state.transaction_status == :transaction
+    end
+
+    test "a semicolon-prefixed COMMIT updates the cached flag", %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      commit = %XqliteEcto3.Query{statement: "; COMMIT"}
+      {:ok, _query, _result, state} = Driver.handle_execute(commit, [], [], state)
+      assert state.transaction_status == :idle
+    end
+
+    test "a BOM-prefixed BEGIN makes a later rollback-class violation disconnect",
+         %{state: state} do
+      {:ok, _} =
+        NIF.query(
+          state.conn,
+          "CREATE TABLE tc_bom(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO tc_bom(email) VALUES ('a@x')", [])
+
+      begin = %XqliteEcto3.Query{statement: "\uFEFFBEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO tc_bom(email) VALUES ('a@x')"}
+
+      assert {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+    end
+
     test "a comment-prefixed BEGIN makes a later rollback-class violation disconnect",
          %{state: state} do
       {:ok, _} =

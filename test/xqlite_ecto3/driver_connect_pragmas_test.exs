@@ -81,6 +81,49 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end
   end
 
+  describe "pragma-bound config validation" do
+    # SQLite's pragma parser silently falls back to a default on any
+    # unrecognized value (journal_mode: :walk means DELETE mode,
+    # foreign_keys: :nonsense means enforcement OFF), so the adapter is
+    # the only loud layer.
+    test "invalid values are structured connect errors, never silent fallbacks" do
+      rejections = [
+        {:journal_mode, :walk, :invalid_journal_mode},
+        {:journal_mode, "wal", :invalid_journal_mode},
+        {:synchronous, :ful, :invalid_synchronous},
+        {:synchronous, 2, :invalid_synchronous},
+        {:temp_store, :mem, :invalid_temp_store},
+        {:foreign_keys, :nonsense, :invalid_foreign_keys},
+        {:foreign_keys, "true", :invalid_foreign_keys},
+        {:cache_size, :lots, :invalid_cache_size},
+        {:cache_size, 1.5, :invalid_cache_size},
+        {:auto_vacuum, :ful, :invalid_auto_vacuum},
+        {:wal_autocheckpoint, -1, :invalid_wal_autocheckpoint},
+        {:mmap_size, 1.5, :invalid_mmap_size},
+        {:rich_fk_diagnostics, "true", :invalid_rich_fk_diagnostics},
+        {:rich_fk_diagnostics, 1, :invalid_rich_fk_diagnostics}
+      ]
+
+      for {key, bad, type} <- rejections do
+        assert {:error, %XqliteEcto3.Error{type: ^type}} =
+                 Driver.connect([{:database, tmp_db!("cfg_bad")}, {key, bad}])
+      end
+    end
+
+    test "config-only enum values the URL parser does not offer still connect" do
+      state =
+        connect!(
+          database: tmp_db!("cfg_persist"),
+          journal_mode: :persist,
+          auto_vacuum: :none,
+          rich_fk_diagnostics: true
+        )
+
+      assert pragma!(state.conn, "journal_mode") == "persist"
+      assert state.rich_fk_diagnostics == true
+    end
+  end
+
   describe "URL round-trip" do
     test "every pragma the URL parser accepts takes effect at connect" do
       # The URL string stays platform-neutral: Windows absolute paths

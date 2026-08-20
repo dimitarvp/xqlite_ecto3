@@ -56,6 +56,15 @@ defmodule XqliteEcto3.Driver do
         with {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
              {:ok, stmt_cache_size} <- validate_statement_cache_size(statement_cache_size),
              {:ok, busy_timeout_ms} <- validate_busy_timeout(busy_timeout),
+             {:ok, journal_mode} <- validate_journal_mode(journal_mode),
+             {:ok, synchronous} <- validate_synchronous(synchronous),
+             {:ok, temp_store} <- validate_temp_store(temp_store),
+             {:ok, foreign_keys} <- validate_foreign_keys(foreign_keys),
+             {:ok, cache_size} <- validate_cache_size(cache_size),
+             {:ok, auto_vacuum} <- validate_auto_vacuum(auto_vacuum),
+             {:ok, wal_autocheckpoint} <- validate_wal_autocheckpoint(wal_autocheckpoint),
+             {:ok, mmap_size} <- validate_mmap_size(mmap_size),
+             {:ok, rich_fk_diagnostics} <- validate_rich_fk_diagnostics(rich_fk_diagnostics),
              {:ok, conn} <- open_database(database, mode),
              # auto_vacuum only sticks while the database file has no pages;
              # journal_mode=wal below writes the header, so this must go first
@@ -113,6 +122,55 @@ defmodule XqliteEcto3.Driver do
   defp validate_busy_timeout(other) do
     {:error, {:invalid_busy_timeout, other}}
   end
+
+  # SQLite's pragma parser never errors on an unrecognized value — it picks a
+  # default instead (`journal_mode: :walk` means DELETE mode,
+  # `foreign_keys: :nonsense` means enforcement OFF, orphan rows accepted).
+  # Every config value the adapter forwards to a pragma is validated here
+  # first; this layer is the only loud one. The URL parser's allowlist
+  # produces the same typed values, so both config paths pass. auto_vacuum,
+  # wal_autocheckpoint, and mmap_size keep nil as "leave SQLite's default".
+  @journal_modes [:delete, :truncate, :persist, :memory, :wal, :off]
+  @synchronous_levels [:off, :normal, :full, :extra]
+  @temp_stores [:default, :file, :memory]
+  @auto_vacuum_modes [:none, :full, :incremental]
+
+  defp validate_journal_mode(mode) when mode in @journal_modes, do: {:ok, mode}
+  defp validate_journal_mode(other), do: {:error, {:invalid_journal_mode, other}}
+
+  defp validate_synchronous(level) when level in @synchronous_levels, do: {:ok, level}
+  defp validate_synchronous(other), do: {:error, {:invalid_synchronous, other}}
+
+  defp validate_temp_store(store) when store in @temp_stores, do: {:ok, store}
+  defp validate_temp_store(other), do: {:error, {:invalid_temp_store, other}}
+
+  defp validate_foreign_keys(flag) when is_boolean(flag), do: {:ok, flag}
+  defp validate_foreign_keys(other), do: {:error, {:invalid_foreign_keys, other}}
+
+  # Negative cache_size is meaningful (-N = N KiB), so any integer passes.
+  defp validate_cache_size(size) when is_integer(size), do: {:ok, size}
+  defp validate_cache_size(other), do: {:error, {:invalid_cache_size, other}}
+
+  defp validate_auto_vacuum(nil), do: {:ok, nil}
+  defp validate_auto_vacuum(mode) when mode in @auto_vacuum_modes, do: {:ok, mode}
+  defp validate_auto_vacuum(other), do: {:error, {:invalid_auto_vacuum, other}}
+
+  defp validate_wal_autocheckpoint(nil), do: {:ok, nil}
+
+  defp validate_wal_autocheckpoint(pages) when is_integer(pages) and pages >= 0 do
+    {:ok, pages}
+  end
+
+  defp validate_wal_autocheckpoint(other), do: {:error, {:invalid_wal_autocheckpoint, other}}
+
+  defp validate_mmap_size(nil), do: {:ok, nil}
+  defp validate_mmap_size(bytes) when is_integer(bytes) and bytes >= 0, do: {:ok, bytes}
+  defp validate_mmap_size(other), do: {:error, {:invalid_mmap_size, other}}
+
+  # Not a pragma — a struct pattern match consumes it, so any value other
+  # than the atom true silently disabled the feature.
+  defp validate_rich_fk_diagnostics(flag) when is_boolean(flag), do: {:ok, flag}
+  defp validate_rich_fk_diagnostics(other), do: {:error, {:invalid_rich_fk_diagnostics, other}}
 
   # Repo-config hook subscribers: registered NAMES (not pids — config
   # survives restarts, pids don't), resolved at connect time, installed
@@ -557,7 +615,15 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  defp leading_keyword(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r, ?\f] do
+  # A leading semicolon is an empty statement SQLite steps over, and a UTF-8
+  # BOM (what Windows editors put at the start of a .sql file) is skipped by
+  # SQLite's tokenizer — both must not hide the transaction keyword behind
+  # them from this sync.
+  defp leading_keyword(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r, ?\f, ?;] do
+    leading_keyword(rest)
+  end
+
+  defp leading_keyword(<<0xEF, 0xBB, 0xBF, rest::binary>>) do
     leading_keyword(rest)
   end
 
@@ -608,7 +674,7 @@ defmodule XqliteEcto3.Driver do
             monotonic_time: System.monotonic_time(:nanosecond),
             cached_count: map_size(state.stmt_cache)
           },
-          %{sql: sql}
+          %{conn: state.conn, sql: sql}
         )
 
         {:ok, stmt, touch_stmt(state, sql)}
@@ -620,7 +686,7 @@ defmodule XqliteEcto3.Driver do
             monotonic_time: System.monotonic_time(:nanosecond),
             cached_count: map_size(state.stmt_cache)
           },
-          %{sql: sql}
+          %{conn: state.conn, sql: sql}
         )
 
         prepare_and_cache(state, sql)
@@ -662,7 +728,7 @@ defmodule XqliteEcto3.Driver do
           monotonic_time: System.monotonic_time(:nanosecond),
           cached_count: map_size(state.stmt_cache)
         },
-        %{sql: evicted_key}
+        %{conn: state.conn, sql: evicted_key}
       )
 
       %{state | stmt_cache: cache, stmt_cache_keys: kept_keys}

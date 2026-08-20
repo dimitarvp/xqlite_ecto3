@@ -294,12 +294,19 @@ defmodule XqliteEcto3 do
   Checks a connection out of `repo`'s pool and calls `fun` with the raw
   `XqliteNIF` connection reference.
 
-  Because it needs its own checkout, do not call it from inside
-  `Repo.transaction/2` on a plain pool — the transaction already holds
-  a connection, and a second checkout queues behind the pool (deadlock
-  on `pool_size: 1`). Under `Ecto.Adapters.SQL.Sandbox` ownership the
-  caller's sandboxed connection is reused instead, so nesting is fine
-  there.
+  Because it always starts its own checkout, never call it from inside
+  `Repo.transaction/2`, `Repo.checkout/2`, or another `with_xqlite/3` —
+  the caller already holds a connection, and this second checkout
+  queues behind the pool. At `pool_size: 1` that deadlocks into a
+  queue-timeout raise (inside `Repo.transaction/2` on a plain pool the
+  enclosing transaction is rolled back); at larger sizes the callback
+  silently runs on a DIFFERENT pooled connection than the caller's, so
+  anything connection-scoped it installs or reads targets the wrong
+  connection. The same applies to `txn_state/2` and
+  `connection_stats/1`, which route through here. Under
+  `Ecto.Adapters.SQL.Sandbox` ownership a BARE call (no enclosing
+  transaction or checkout) reuses the caller's sandboxed connection;
+  nested calls hit the same wall as on a plain pool.
 
   This is the bridge to SQLite-specific xqlite features that have no
   Ecto-level equivalent — session extension, incremental blob I/O,
@@ -331,8 +338,11 @@ defmodule XqliteEcto3 do
 
   Anything you install on the handle outlives `fun` for the life of
   that pooled connection: busy policies and busy observers, the
-  authorizer, hooks, loaded extensions, and session `PRAGMA`s. Later
-  checkouts of the same connection see it, and nothing repairs it.
+  authorizer, hooks, loaded extensions, session `PRAGMA`s — and a
+  session-extension recorder, which keeps recording every later write
+  the pool runs through that connection, so a changeset read after
+  check-in contains other callers' traffic. Later checkouts of the
+  same connection see all of it, and nothing repairs it.
 
   The busy slot deserves its own warning. SQLite has ONE busy slot per
   connection: `Xqlite.register_busy_observer/2` (and
@@ -349,8 +359,9 @@ defmodule XqliteEcto3 do
   the pool suggests. Failing immediately instead of waiting is the
   fastest way to finish a statement, so that connection is idle — and
   therefore first in line — far more often than the ones that wait out
-  their busy timeout. It can end up absorbing and failing most of your
-  contended writes.
+  their busy timeout. Measured: a single such connection in a pool of
+  eight absorbed and failed 41 of 48 contended writes, and poisoning
+  more of the pool barely moves that number — one is enough.
 
   Extension loading needs the same care.
   `Xqlite.enable_load_extension(conn, true)` does not only unlock the

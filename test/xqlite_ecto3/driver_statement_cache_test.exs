@@ -136,8 +136,10 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [1])
 
       assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], m1,
-                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+                      %{conn: miss_conn, sql: "SELECT x FROM t WHERE x = ?1"}}
 
+      # The cache is per connection; :conn is the discriminator.
+      assert miss_conn == state.conn
       assert m1.cached_count == 0
       assert is_integer(m1.monotonic_time)
 

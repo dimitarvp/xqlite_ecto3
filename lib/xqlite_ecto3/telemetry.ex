@@ -118,16 +118,20 @@ defmodule XqliteEcto3.Telemetry do
 
       [:xqlite_ecto3, :statement_cache, :hit | :miss]
         measurements: %{monotonic_time, cached_count}
-        metadata:     %{sql}
+        metadata:     %{conn, sql}
 
       [:xqlite_ecto3, :statement_cache, :evicted]
         measurements: %{monotonic_time, cached_count}
-        metadata:     %{sql}
+        metadata:     %{conn, sql}
 
   `:miss` fires whenever the statement is absent from the cache —
   including statements that then fall back to the uncached path
   (multi-statement SQL). `:evicted` names the LRU statement removed
   to make room; `cached_count` is the size BEFORE the event's action.
+  The cache is PER CONNECTION (`conn` is the discriminator): each
+  pooled connection misses once per distinct statement, and a
+  pool-wide `cached_count` series interleaves `pool_size` independent
+  counters.
 
   ## Composing with Ecto's own telemetry
 

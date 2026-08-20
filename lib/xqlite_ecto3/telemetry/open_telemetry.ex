@@ -42,6 +42,9 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   An error that also dropped the connection arrives as
   `error_reason: {:disconnect, error}`. `error.type` names the error
   inside that tuple, so those errors stay classified by what failed.
+  Adapter errors are `%XqliteEcto3.Error{}` structs, and `error.type`
+  carries the struct's typed `:type` atom (`"constraint_violation"`,
+  `"database_busy_or_locked"`, …) — never the bare struct name.
   """
   @spec attributes([atom()], map(), map()) :: %{String.t() => String.t()}
   def attributes([:xqlite_ecto3 | _] = event, _measurements, metadata) when is_map(metadata) do
@@ -97,6 +100,15 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   # being dropped. Naming that "disconnect" would file every such error under
   # one name and hide what actually failed, so classify the error inside.
   defp error_type({:disconnect, inner}), do: error_type(inner)
+
+  # Every adapter error arrives wrapped as %XqliteEcto3.Error{}; naming the
+  # struct would give the attribute exactly one value across the adapter, so
+  # classify by its typed :type field instead. A nil type (the wrap fallback
+  # for unrecognized reasons) falls through to the struct name.
+  defp error_type(%XqliteEcto3.Error{type: type}) when is_atom(type) and not is_nil(type) do
+    Atom.to_string(type)
+  end
+
   defp error_type(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp error_type({tag, _}) when is_atom(tag), do: Atom.to_string(tag)
   defp error_type({tag, _, _}) when is_atom(tag), do: Atom.to_string(tag)
