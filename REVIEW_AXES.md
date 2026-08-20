@@ -447,6 +447,42 @@ text (and the loader to `stored_decimal/1`); `connection.ex`
 — dead code or second door?); decimal WHERE comparisons against
 INTEGER-stored values; `-0` sign loss; collections of unencodable structs;
 the int64-boundary fast-accept adversarially.
+COVERING RE-RUN (Run 31, 2026-08-20 — lap-4 closer, paired with B8;
+`types/`/`query.ex`/`decimal_precision.ex` had NEVER been covered since
+Run 25's own fixes, and two S1s sat exactly there). **F-B4-6 (S1,
+FIXED, RED→green):** decimal params bound as TEXT — affinity-less
+operands (`HAVING sum(...)`, arithmetic fragments, `coalesce`)
+compared storage classes and returned WRONG ROWS silently (float
+controls correct); fixed by `bind_form/1` binding the guard-proven
+numeric form (int64 integer, else lossless float); accept/refuse
+verdicts unchanged by construction; four TEXT-bind pins re-pinned;
+bind-exactness property added. **F-B4-7 (S1, FIXED):** the `is_map`
+default clause matched every struct — `default: Decimal.new("1.5")`
+stored `DEFAULT ('"1.5"')` and later reads RAISED (postgres refuses
+loudly). **F-B4-8 (S3, adjudicated + landed):** five bare-crash
+default classes across all three renderers → one
+`UnsupportedDefaultError` (value/reason/column/type/cause) via a
+shared refusal, map clauses struct-gated, charlists refused; closes
+[F-B2-18-adjacent] too. **F-B4-5 (S2, FIXED):** the Run-25
+fast-accept is column-blind — REAL-affinity columns (via the atom
+passthrough `add :v, :real`, or legacy files) silently truncated
+what the pre-fix model refused loudly (fix-creates-next-finding
+instance three); `:real`/`:double`/`:double_precision` now map to
+NUMERIC; README gotcha for legacy REAL columns. **F-B4-9 (S3,
+settled + fixed):** `expr(%Decimal{})` unreachable from ordinary
+Ecto (five routes probed), now guard-routed anyway. CLEAN:
+predicate/bind drift zero pre-fix; unencodable collections fully
+structured with positions; `json_default/1` unification
+byte-identical (11 classes, RED control); signed-zero pinned
+(sign lost, numerically equal); int64 boundary exact. DRYNESS: two
+S1 + S2 — **B4 resets to 0 of 2, NOT DRY**. Re-wets ALSO on:
+`bind_form/1`/`encode_param/2`, `column_type/2`'s float family,
+`UnsupportedDefaultError` + the three renderer tails,
+`expr(%Decimal{})`. Next-pass seeds: the `:decimal` LOADER side
+(BLOB + NULL-in-aggregate); `precision:/scale:` vs SQLite; decimals
+in `:map` fields / `insert_all placeholders` / `on_conflict set:`;
+`{:array, :decimal}`; `json_default` under a non-Jason
+`:json_library`; the migration-helper `default:` entry points.
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
@@ -1032,6 +1068,43 @@ deltas); `handle_status/2` accurate mid-cancellation. DRYNESS: an S1 —
 writes (`handle_rollback(:savepoint)`); SQL Sandbox × cancelled write;
 streams in a sibling-rolled-back transaction; F-B8-5 through a
 multi-connection pool; the guard's status read under dirty saturation.
+RE-WET (2026-08-20): Runs 27+29 churned the flagship's own surface
+(lookup budget; the txn-control sync + declare/fetch guard routing).
+COVERING RE-RUN (Run 31, 2026-08-20 — lap-4 closer, paired with B4):
+every seeded S0-S2 question CLEAN with controls — savepoint-nested
+cancelled write atomic (the OUTER flag is what the guard reads); SQL
+Sandbox × cancelled write leaks NOTHING (RED leak-detector control),
+with the DX fact pinned + documented: that test's ownership is gone
+afterward (`OwnershipError`, `checkin` → `:not_found`); streams ×
+cancelled sibling clean BOTH orders; guard verdict identical under
+dirty saturation; a cancelled `BEGIN`/`COMMIT` effectively
+unreachable (400k-row COMMIT = 8 ms) and safe by construction; the
+cancelled branch skips `wrap_execute_error/4` (no enrichment on a
+doomed connection). SEED ANSWERED: cancellation is NOT worse than
+the plain-error path — identical damage both branches, both `BEGIN`
+spellings; the sync blind spot is WIDER than filed (leading `--`
+line comments defeat `leading_keyword/1` like `/* */`) — handed to
+B3's owed keyword-sync pass. **F-B8-6 (S3, docs, FIXED):** a pool
+does not bound the F-B8-5 overshoot (141×/285× measured; saturation
+lives on the dirty schedulers); pool EXHAUSTION is a third case,
+`queue_target`/`queue_interval`-governed, distinguishable by
+`reason: :queue_timeout` — README + drafts now say all three. New
+committed tests: nested-cancel, sandbox-cancel (new file),
+stream×cancel both orders, queue_timeout-shape (deterministic).
+DRYNESS: **0 of 2, NOT DRY — GATE RULING:** the reviewer proposed
+1-of-2 (S3-docs-only, the F-B8-3/Run-7 precedent); overruled for
+consistency with the hardened rule applied every run since Run 12
+(any finding-run breaks the chain); the old precedent predates the
+rule and was a ruled not-a-defect. Honest note: every S0-S2 leg was
+clean — B8 is the closest axis to dry. Re-wet triggers UNCHANGED
+plus `sync_after_transaction_control/2`/`leading_keyword/1` (shared
+with B3). Next-pass seeds: `Repo.transaction(mode: :savepoint)` at
+top level (savepoint with no enclosing transaction — the guard
+clause cannot match); `{:shared, owner}` sandbox × cancelled write;
+ATTACH/TEMP targets; `Ecto.Multi` with a cancelled step; the
+`disconnect` telemetry `reason` on the cancelled branch (with B9);
+adversarial queuing of the guard's DirtyIo status read; F-B8-2's
+stream cancellation (blocked on xqlite `stream_fetch_cancellable`).
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

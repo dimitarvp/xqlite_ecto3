@@ -4148,3 +4148,144 @@ the narrowed list verified by the census flipping to **440 passed /
   untestable only in that fixing the encoder would not make the tests
   pass); make the line-pointer sweep mechanical (one loop comparing
   requested vs reported lines — it found F-B2-19 in seconds).
+
+---
+
+## Run 31 — 2026-08-20 — dryness lap 4, batch 5 (the lap closer): B4 + B8 paired
+
+Single Opus reviewer at `c0c6fea`, xqlite `2700446`. Churn
+git-confirmed: B4's covering range held ONE commit (Run 28's
+renderer touch); `types/`, `query.ex`, `decimal_precision.ex` had
+NEVER been covered since Run 25's own fixes — and two of the three
+findings sit exactly there. B8's range = the Run 27 budget + Run 29
+guard commits. Gate: finding probes re-driven pre-fix (one
+tmp-name-collision harness artifact on the unification probe,
+re-run clean, disposition-noted); one Opus implementation batch;
+final matrix re-driven; stash-RED 53/69 → 69/69; verify green.
+
+### B4 — Run 25's uncovered fixes held the lap's last two S1s
+
+- **F-B4-6 (S1, CONFIRMED, FIXED, RED→green).** Decimal parameters
+  bound as TEXT (`Decimal.to_string(:normal)`): a direct column
+  comparison is rescued by column affinity, but affinity-LESS
+  operands — `HAVING sum(col) > ^decimal`, arithmetic fragments,
+  `coalesce` — compare storage classes, and every number sorts below
+  every text: wrong rows, silently (float controls correct in the
+  identical queries; raw-SQL pair pins it at the SQLite level). FIX:
+  new `DecimalPrecision.bind_form/1` (`{:integer, i} | {:float, f} |
+  :error`; `representable?/1` is now `bind_form != :error`, so
+  accept/refuse verdicts unchanged BY CONSTRUCTION); `encode_param/2`
+  binds the proven-exact numeric form; rejects raise unchanged.
+  BLOB-affinity consequence probed: decimals there stored TEXT
+  before, numbers now — round-trips stay exact, comparisons improve;
+  no shipped type targets BLOB with decimals. Four TEXT-bind test
+  pins re-pinned to the numeric contract; bind-exactness property
+  added (2000 runs). Probe dispositions: the text==bind drift probe
+  is SUPERSEDED (FAIL BY DESIGN post-fix); signed-zero pins
+  unchanged (3/3 signs still lost, numerically equal).
+- **F-B4-7 (S1, CONFIRMED, FIXED) + F-B4-8 (S3, court item
+  ADJUDICATED + landed).** `default_expr/1`'s `is_map` clause
+  matched every struct: `default: Decimal.new("1.5")` persisted
+  `DEFAULT ('"1.5"')` and ordinary reads then RAISED
+  `Decimal.Error`; postgres type-gates and refuses loudly (contract
+  divergence, not inheritance). The sweep found five bare-crash
+  classes across ALL THREE renderers (plain / rebuild `default_spec`
+  / model `rendered_default`): non-boolean atoms, non-fragment
+  tuples, 3-tuples, non-byte-aligned bitstrings (the filed
+  [F-B2-18-adjacent] class CONFIRMED), Jason-less structs — and
+  charlists silently rendered as int arrays. FIX (one design closes
+  F-B4-7 + F-B4-8 + [F-B2-18-adjacent]): new
+  `XqliteEcto3.UnsupportedDefaultError` (value, reason
+  `:unsupported_shape | :unencodable`, column, type, + cause
+  carrying the encoder's exception); map clauses gated
+  `not is_struct`; catch-all tails in all three renderers through
+  one shared `DataType.unsupported_default!/3`; printable charlists
+  refused; plain map/list rendering byte-identical on every path
+  (unification probe still green). The B2 exclusion note updated:
+  `bs_with_default` now raises the structured error.
+- **F-B4-5 (S2, CONFIRMED, FIXED).** Run 25's rendered-form
+  fast-accept assumes NUMERIC affinity but is column-blind: on
+  REAL-affinity columns (reachable via `column_type/2`'s atom
+  passthrough — `add :v, :real` — and via adopted legacy files)
+  int64-exact decimals silently truncated past 2^53, where the
+  PRE-fix float64 model refused LOUDLY — the fix had traded a loud
+  refusal for silent truncation on that column shape (the third
+  fix-creates-the-next-finding instance after Runs 26→27). FIX:
+  `:real`/`:double`/`:double_precision` map to `NUMERIC` (as
+  `:float` already did) — the adapter now emits no REAL-affinity
+  columns at all; README Known-limitations line for legacy REAL
+  columns (drafts folded). The fast-accept itself untouched
+  (correct for every affinity the adapter emits); the raw-SQL REAL
+  probe legs remain red BY DESIGN (SQLite's affinity, not our bind).
+- **F-B4-9 (S3, SETTLED + FIXED).** `expr(%Decimal{}, ...)`
+  unreachable from every ordinary Ecto construction (five routes
+  probed — all parameterize); a hand-built AST reached it and
+  inlined an unguarded decimal. Now routed through the guard;
+  rejects raise `DecimalPrecisionError` with `index: nil`.
+- **CLEAN (controls):** zero predicate/bind drift pre-fix over 16
+  samples read from the encoder itself; unencodable collections
+  fully structured with exact positions (11 cases, 2 controls);
+  Run 28's `json_default/1` unification byte-identical (11 classes,
+  RED control); signed-zero pinned; int64 boundary exact both sides.
+
+### B8 — the flagship's sharp questions all came back clean; one docs S3
+
+- **F-B8-6 (S3, docs, CONFIRMED, FIXED as docs).** A pool does NOT
+  bound the F-B8-5 overshoot (141× at pool 3, 285× at pool 5 —
+  saturation lives on the dirty schedulers, not the pool), and the
+  overshot cancel is indistinguishable from a prompt one; pool
+  EXHAUSTION is a third case (46×), governed by
+  `queue_target`/`queue_interval` and DISTINGUISHABLE by
+  `reason: :queue_timeout` vs `:error`. README cancel section +
+  drafts now say all three; plus the sandbox DX pin (below).
+- **CLEAN (controls; the flagship earns its 0-of-2 honestly):** core
+  cancel at 151 ms/150 ms; savepoint-nested cancelled write atomic
+  (outer `{:error, :rollback}`, no survivor row —
+  `handle_begin(:savepoint)` never sets the flag; the OUTER flag is
+  what the guard reads); SQL Sandbox × cancelled write leaks NOTHING
+  (RED leak-detector control) with the DX fact pinned: ownership is
+  gone for the rest of that test (`OwnershipError`, `checkin` →
+  `:not_found`) — coherent, deliberate, now documented; streams ×
+  cancelled sibling clean BOTH orders; the guard's verdict identical
+  under dirty saturation; a cancelled `BEGIN`/`COMMIT` effectively
+  unreachable (400k-row COMMIT = 8 ms) and safe by construction; the
+  cancelled branch SKIPS `wrap_execute_error/4`, so the
+  enrichment-on-doomed-connection concern never reaches it. SEED 14
+  ANSWERED: cancellation is NOT worse than the plain-error path —
+  identical damage both branches for both `BEGIN` spellings; the
+  sync's blind spot is WIDER than filed (a leading `--` line comment
+  defeats `leading_keyword/1` like `/* */` does) — HANDED to B3's
+  owed keyword-sync pass with the six-line comment-skip remedy
+  sketch, not filed here.
+- New committed tests: comparison matrix + bind-exactness property +
+  refusal sweep + `:real`→NUMERIC proof + nested-cancel /
+  sandbox-cancel (new file) / stream×cancel / queue_timeout-shape
+  tests (deterministic, no timing asserts; one DBConnection
+  holder-retirement flake tamed with a dedicated pool).
+
+### Dryness (lap 4 closes)
+
+**B4: an S1 pair + S2 — resets to 0 of 2, NOT DRY.** Re-wets ALSO:
+`bind_form/1`/`encode_param/2`, `column_type/2`'s float family,
+`UnsupportedDefaultError` + the three renderer tails,
+`expr(%Decimal{})`. **B8: 0 of 2, NOT DRY — gate ruling:** the
+reviewer proposed 1-of-2 (S3-docs-only run, the old F-B8-3/Run-7
+precedent); OVERRULED for consistency with the hardened rule every
+run since Run 12 has applied (any finding-run breaks the chain —
+B9/Run 12, B3/B9 Run 29); the F-B8-3 case predates the rule and was
+a ruled not-a-defect. Honest note: B8's finding is docs-class and
+every S0-S2 question was clean — it is the closest axis to dry.
+- Completeness critic (next passes): B4 — the `:decimal` LOADER side
+  (BLOB-affinity + NULL-in-aggregate results); `precision:/scale:`
+  options vs SQLite's ignored scale; decimals inside `:map` fields /
+  `insert_all placeholders` / `on_conflict set:`; `{:array,
+  :decimal}`; `json_default` under a non-Jason `:json_library`; the
+  migration-helper `default:` entry points directly. B8 —
+  `Repo.transaction(mode: :savepoint)` at top level (savepoint with
+  no enclosing transaction — the guard's clause cannot match);
+  `{:shared, owner}` sandbox × cancelled write; ATTACH/TEMP targets;
+  `Ecto.Multi` with a cancelled step; the `disconnect` telemetry
+  `reason` on the cancelled branch (B9 wants the same); the guard's
+  DirtyIo status read under adversarial queuing; F-B8-2's stream
+  cancellation (still blocked on an xqlite `stream_fetch_cancellable`).
+

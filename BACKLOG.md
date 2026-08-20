@@ -55,16 +55,15 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
-- [F-B2-18-adjacent] (S3, B4 court, from Run 30)
-  `Connection.default_expr/1` falls off the end of a private function
-  on a default it has no clause for — a non-byte-aligned bitstring
-  default raises a bare `FunctionClauseError` from inside a MIGRATION
-  (which is how the `:bitstring_type` exclusion crashes the whole
-  vendored suite when lifted). It should end in a structured refusal
-  naming the column and value (`UnsupportedTypeError`-shaped), per the
-  errors-carry-maximum-structure rule — same pattern as the
-  `F-B2-14-adjacent` → `UnencodableParameterError` closure. (Run 30,
-  B2 → B4 court)
+- [F-B2-18-adjacent] (S3, B4 court, from Run 30) CLOSED at Run 31's
+  gate: all THREE default renderers (plain `default_expr`, rebuild
+  `default_spec`, model `rendered_default`) now end in a shared
+  structured refusal — `XqliteEcto3.UnsupportedDefaultError` with
+  value/reason/column/type (+ cause for encoder failures) — and the
+  map clauses are struct-gated. The bitstring-default class, struct
+  defaults, non-boolean atoms, non-fragment tuples, and printable
+  charlists all refuse structurally now. (Run 30 filed → Run 31
+  landed, with F-B4-7/F-B4-8.)
 - [F-B9-13] (S3, from Run 29) `fk_diagnostics_test.exs`'s telemetry
   assertion fails under the `XQLITE_ECTO3_TELEMETRY=off` build
   (pre-existing; invisible in CI because the `telemetry_disabled`
