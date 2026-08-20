@@ -102,6 +102,18 @@ after the S0–S2 burn-down.
   rebuild engine (which recreates the table and is unaffected), or
   refuse them loudly pre-flight so dev and prod fail the same way.
   Feature-taste call. (Run 34, B6 → B7)
+  Evidence (Run 36): routing works TODAY with zero engine changes —
+  bundling the add with any modify already rebuilds a populated
+  table correctly; only `requires_rebuild?/1` (:modify-only) stands
+  between the outcomes. But the rebuild materializes the fragment
+  ONCE at migration time (probe: every pre-existing row got the
+  identical `datetime('now')` timestamp), where the empty-table
+  path evaluates per-insert — routing turns a loud failure into a
+  quiet semantic surprise, plus O(table) cost and every rebuild
+  refusal inherited. Recommendation: refuse pre-flight, naming the
+  fragment default and both honest workarounds (constant default +
+  `execute` UPDATE, or deliberately bundle with a modify — probed
+  working). (Run 36, B7)
 - [R35-handoff-config-validation] (seed, B3/B8 court, from Run 35's
   gate) `driver.ex` reads a dozen repo-config values (`cache_size`,
   `mmap_size`, `wal_autocheckpoint`, `journal_mode`, `synchronous`,
@@ -142,6 +154,18 @@ after the S0–S2 burn-down.
   refusal exception struct carrying a reason atom (+ construct/column
   fields), then migrate the prose-matching tests. Until ruled, new
   refusal tests assert type + state only. (Run 28, B7)
+  Evidence (Run 36): 13 bare `ArgumentError` sites in
+  `lib/xqlite_ecto3.ex` (+1 more since Run 36's fix), 13 committed
+  tests regex the prose, PLUS a plain `RuntimeError` at the
+  `foreign_key_check` failure (post-dance, carries the violations
+  only as `inspect` inside a string — the worst of the set).
+  Refuse-before-touch verified across seven refusal flavours (stored
+  SQL and rows byte-identical, no transient table); the struct is a
+  diagnostics/testability call, not a safety one.
+  `RebuildVerificationError` already sets the in-tree precedent.
+  Recommendation: implement, with a `reason` atom + table/construct/
+  column fields, and fold the `RuntimeError` in with the violation
+  rows as a field.
 
 - [F-B5-14-fork] (maintainer menu; the S2 itself is FIXED in-run with a
   fixed 500 ms budget when the pragma reports zero). The lookup budget's
@@ -338,6 +362,19 @@ after the S0–S2 burn-down.
   monotonic_time/duration ns. Add the guide row + moduledoc entry with
   it. Decide together with the bridge RawConn checkout's missing
   event.
+- [F-B7-46] (S3) A rebuild silently rewrites a typeless column's
+  declared type to `BLOB`: `existing_to_column/4` substitutes "BLOB"
+  when the stored type is nil/empty, the verification model's
+  `rebuilt_type/1` makes the SAME substitution, so the post-check
+  compares two agreeing wrong readings and is blind to it. Affinity
+  is identical (typeless = BLOB affinity) and stored values keep
+  their storage classes (probed) — the cost is that a rebuild
+  advertised as structure-preserving changes the schema text every
+  diff/dump/introspection tool reads. Remedy direction: carry the
+  empty type through both halves and emit the column with no type
+  token; or document the rewrite. The blind-spot CLASS is wider —
+  every helper both halves share is a candidate; the next B7 pass
+  owns the systematic enumeration. (Run 36, B7)
 - [F-B7-27] (S3) A table rebuild drops the table's `sqlite_stat1` rows
   (DROP TABLE deletes them; nothing restores them, and the re-created
   indexes start unanalyzed), so the query planner falls back to built-in
@@ -527,6 +564,18 @@ after the S0–S2 burn-down.
   matches. The COMMENT half stays accepted-as-limitation, now with
   live consequence evidence on record (ledger Run 28): the comment
   evasion silently drops AUTOINCREMENT and re-hands a freed id.
+  CLOSED ENTIRELY (Run 36): the Run-28 blanking pass had itself
+  opened a worse door — an apostrophe inside a comment paired with
+  the next literal's opening quote and erased real DDL from the scan
+  (F-B7-42, S1: silent CHECK and AUTOINCREMENT loss on tables with
+  an English contraction in a schema comment). The fix teaches the
+  same one-pass alternation the two comment forms, blanking each to
+  one space — which simultaneously makes comment-interleaved
+  keywords (`ON /* c */ CONFLICT`, `PRIMARY /* c */ KEY`) visible to
+  the scans, closing this entry's comment half: the ruling's
+  "comment must sit BETWEEN the keywords" bound had stopped
+  describing the class anyway. No fine-print docs line owed anymore;
+  the honesty-ledger entry is superseded.
 - 2026-07-21 [F-B3-3] (S2) A rebuild migration under
   `Ecto.Adapters.SQL.Sandbox` leaked `defer_foreign_keys = ON`,
   silently disabling FK enforcement for the rest of the sandbox

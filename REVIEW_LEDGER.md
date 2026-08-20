@@ -4835,3 +4835,160 @@ every bad value) → 15/15 green.
   the F-B5-19 population's real shape.
 
 FIFTEEN straight finding runs.
+
+## Run 36 — 2026-08-21 — lap 5, batch 5: B7 solo (the Run-28 re-anchor + its nine seeds)
+
+Single Opus reviewer at `23d9524`; xqlite 0.11.0 (hex), SQLite 3.53.2
+probe-confirmed. Engine churn since Run 28's `a2239cb` established
+git-file-by-file: only the F-B6-5 default-refusal threading touched
+engine files; the dance, refusal sites, snapshot reader, and
+post-check comparison were byte-identical when the cover began. Gate:
+six probes re-driven by the orchestrator (p02/p03/p05/p10/p09/p07 —
+rc matched the manifest, outputs read line-by-line); fixes implemented
+BY THE ORCHESTRATOR; the temp-trigger fix was caught HALF-WIRED by
+the post-check itself mid-gate (see F-B7-43); stash-RED 7 red
+(exactly the predicted seven) → 151/151 green.
+
+- **F-B7-42 (S1, CONFIRMED, FIXED, RED→green).** An apostrophe inside
+  a `--` or `/* */` comment desynchronized the Run-28 literal-blanking
+  pass: SQLite's lexer opens no literal inside a comment, but the
+  blanking regex knew only the four quote forms, so a comment
+  apostrophe paired with the NEXT real literal's opening quote and
+  erased everything between them from the scan — silently dropping a
+  CHECK constraint (probed: `-- don't allow` + CHECK + `DEFAULT 'x'`
+  rebuilt green, then accepted the violating insert) and
+  AUTOINCREMENT (freed id re-handed, F-B7-17's exact class through a
+  door F-B7-35 opened; `autoincrement_declared?` is the SHARED
+  predicate, so the post-check was blind by design — Run 28's seed-4
+  shared blind spot, realized). Reachability: `execute/1` DDL or an
+  externally-created database with an English contraction in a schema
+  comment — the exact population the opt-in rebuild serves. FIX: the
+  one-pass alternation now recognizes both comment forms (leftmost
+  match keeps a comment inside a literal literal, an apostrophe
+  inside a comment commented; unterminated block comment runs to end
+  of text per SQLite's lexer), each blanked to ONE SPACE — which is
+  what SQLite treats a comment as, so comment-INTERLEAVED keywords
+  (`ON /* c */ CONFLICT`, `PRIMARY /* c */ KEY AUTOINCREMENT`)
+  became VISIBLE to every scan. That CLOSES F-B7-6's comment half
+  outright (its "comment must sit BETWEEN the keywords" ruling bound
+  had stopped describing the class; the accepted-limitation entry is
+  superseded, honesty-ledger item 11 struck, the STE draft's
+  fine-print line removed). Unit-checked over nine shapes pre-repo;
+  committed pins (table_rebuild +4): apostrophe-comment CHECK
+  refusal, comment-interleaved ON CONFLICT refusal, apostrophe-
+  comment AUTOINCREMENT preservation, comment-interleaved
+  PRIMARY-KEY-AUTOINCREMENT preservation.
+- **F-B7-43 (S1, CONFIRMED, FIXED, RED→green).** Every schema-object
+  read queried `sqlite_schema` only; a TEMP trigger on the target
+  (same connection — `after_connect`, sandbox, or pool_size 1) was
+  invisible to `fetch_table_triggers!`, died with the dropped table,
+  and the migration reported success (probed: audit log stopped
+  growing; main-schema twin survives). FIX in three parts, the third
+  forced by the gate: (1) the trigger fetch unions
+  `sqlite_temp_schema`; (2) re-creation reinstates the TEMP keyword —
+  probed fact: SQLite canonicalizes stored temp-trigger SQL to a bare
+  `CREATE TRIGGER` prefix across the TEMP/TEMPORARY/temp.-qualified
+  spellings, so verbatim replay would land the trigger in MAIN (the
+  post-check caught exactly that on the first committed pin run —
+  "expected [], got [rb_ttrig_ai]" — the defense-in-depth layer
+  catching the gate's own half-fix); an unexpected stored prefix
+  refuses loudly rather than guessing; (3) the verifier's trigger
+  snapshot is now schema-tagged (`{schema, name}` from a union read),
+  so a trigger MIGRATING between schemas is a structure mismatch —
+  the F-B7-46 blind-spot class shrunk by one shared fact. TEMP
+  indexes need no union (SQLite refuses a TEMP index on a non-TEMP
+  table). Committed pins: temp trigger survives INTO temp schema and
+  fires (+ the verifier-side migration mismatch pin).
+- **F-B7-44 (S2, CONFIRMED, FIXED, same union).** A TEMP view naming
+  the target slipped past `refuse_dependent_schema_objects!` (main-
+  schema read) and killed the dance mid-way with raw SQLite prose
+  ("error in view ts_view: no such table" — the F-B7-13 misleading-
+  error class; rollback clean, no data loss). The dependents read
+  now unions both schemas with a schema marker, and
+  `rewritten_dependents` re-reads both keyed `{schema, name}` (name
+  collisions across schemas would otherwise collapse the map).
+  Probed post-fix: the TEMP view now gets the same named pre-flight
+  refusal as the main-schema control. Committed pin: temp view →
+  ArgumentError + table intact.
+- **F-B7-45 (S2, CONFIRMED, FIXED).** `encode_default/2`'s rescue
+  built `UnsupportedDefaultError` with the raw context column, so
+  the `:unencodable` path carried an ATOM on plain ADD where Run 34
+  normalized every other door to string — one matcher could not
+  cover the one error, the exact F-B6-5 contract re-broken on the
+  fourth door. Fixed via `normalize_column/1` (the same one-word
+  remedy); committed pin extends the unencodable test with the
+  string assertion.
+- **F-B7-46 (S3, CONFIRMED, FILED + docs).** `existing_to_column/4`
+  and the model's `rebuilt_type/1` BOTH substitute "BLOB" for a
+  nil/empty stored type, so the post-check compares two agreeing
+  wrong readings and a typeless column comes back declared BLOB
+  (affinity identical, storage classes probed unharmed; the RED
+  control — a comma-spliced type the halves read DIFFERENTLY —
+  aborted `{:post_check_abort, :columns}` and rolled back byte-
+  identical, proving the verification fires when the halves
+  disagree). Filed with the carry-empty-type remedy direction +
+  README caveat line landed; the shared-helper enumeration (every
+  function both halves call) seeded to the next pass.
+- **Menu evidence gathered (maintainer court, NOT implemented):**
+  [F-B7-41-menu] — 13 bare ArgumentError sites + 13 prose-matching
+  tests + a post-dance bare RuntimeError carrying violations only as
+  inspect-in-string; refuse-before-touch verified over seven
+  flavours; recommendation: implement the struct,
+  RebuildVerificationError as precedent, fold the RuntimeError in.
+  [F-B6-6-menu] — routing add-with-fragment-default through the
+  rebuild works TODAY (only `requires_rebuild?/1` gates it) but
+  materializes the fragment ONCE for all existing rows (probed:
+  identical timestamps), inherits every rebuild refusal, and costs
+  O(table); recommendation: refuse pre-flight naming both honest
+  workarounds (both probed working). Both entries enriched in
+  BACKLOG.
+- **Filed sweep:** F-B7-27 HOLDS (1 stat1 + 9 stat4 → 0/0; doc line
+  still owed to Gate 3). F-B7-6 comment half HELD, then CLOSED by
+  the F-B7-42 fix (its three by-design probe legs flipped green
+  post-fix). F-B7-25-feature HOLDS. F-B7-29/30/31/32/36 all hold
+  live (DESC+NULL-key with rowid RED control; fts5 refusal;
+  checkout-pinning at pool_size 3 with clean pool; trigger-word-scan
+  with kept-column control; savepointed confirm). F-B6-5 held on 3
+  of 4 doors (the fourth = F-B7-45). F-B6-4's rebuild reach
+  ESTABLISHED as fact: untouched columns carry stored type text
+  verbatim, modified/added columns re-render through `column_type/2`
+  (a no-op-looking `modify :x, :real` changes the declared type to
+  NUMERIC) — README caveat landed.
+- **Clean census (controls named; reviewer's, re-driven
+  selectively):** cancel-mid-dance CLEAN 13/13 (cancel at 125 ms on
+  both transaction shapes: 400k rows intact, no transient table, no
+  savepoint/defer leakage, pool writable; reachability bound
+  established — `Ecto.Migration.Runner`/`Migrator` drive DDL at
+  `timeout: :infinity` so only a direct `execute_ddl/3` with a
+  finite timeout reaches it); external-content fts5 CLEAN 7/7
+  (MATCH + fts5 integrity-check post-rebuild, rowids carried;
+  dropping an fts5-indexed column matches plain SQLite's own
+  verdict); composite-PK raw-name compare LATENT-clean 18/18 (both
+  sides carry stored spellings on every reachable path);
+  savepoint-confirm adversarial lap CLEAN (transient-name collision
+  loud on both doors, no savepoint leakage on three exits × both
+  transaction shapes); `grants_own_key?` case-variance CLEAN
+  (`same_column?/2` folds both sides). Observed-not-proven: the 7B
+  refusal names the view, not the also-standing transient-name
+  collision (true-but-incomplete message; safe).
+- Dryness: two S1 + two S2 — **B7 stays 0 of 2, NOT DRY**; the fixes
+  re-wet `without_string_literals/1`/`@quoted_text`/`blanked/1`, the
+  trigger fetch + `recreate_trigger_sql/3`, the dependents
+  read + `rewritten_dependents/3`, the verifier's `read_triggers/2`
+  + snapshot trigger shape, and the `:unencodable` rescue.
+  Completeness critic (next B7 pass): property test the blanking
+  over generated texts mixing all six token kinds (BLOB literals,
+  unbalanced quotes in identifiers, comments inside defaults, nested
+  block-comment attempts, odd apostrophe counts); ATTACHed schemas —
+  the THIRD namespace all four reads still miss (aux view = the
+  F-B7-44 shape one door out; `resolve_stored_table_name!` under
+  main-vs-aux name clashes); cancel landing on chosen dance
+  statements (the DROP→RENAME window especially) via a deterministic
+  hook; the Sandbox × ownership × confirm-savepoint three-way; the
+  systematic shared-helper enumeration for F-B7-46's class
+  (`strip_outer_parens`, `carried_default`, `word_pattern`,
+  `primary_key_members`); `down`/rollback migrations through the
+  rebuild; COLLATE/DEFERRABLE live-consequence legs for the comment
+  door (severity was argued from CHECK/AUTOINCREMENT alone).
+
+SIXTEEN straight finding runs.

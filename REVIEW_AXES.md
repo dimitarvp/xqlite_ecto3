@@ -1068,6 +1068,55 @@ disagree on); loud-but-bare second pass; `composite_pk_clause`'s
 raw-name compare; the savepoint-confirm's own adversarial lap; the
 literal-blanking vs SQLite's lexer corners; the refusal-exception
 struct (menu); `grants_own_key?` under case-varied spellings.
+COVERING RE-RUN (Run 36, 2026-08-21 — lap 5, batch 5: the Run-28
+re-anchor + its nine seeds; engine byte-identical since Run 28 except
+the F-B6-5 threading, git-established): **F-B7-42 (S1, FIXED,
+RED→green)** — an apostrophe inside a comment desynced the Run-28
+literal blanking (comments were not tokens), pairing with the next
+literal's quote and erasing real DDL from the scans: silent CHECK
+drop + silent AUTOINCREMENT drop (freed id re-handed), post-check
+blind because `autoincrement_declared?` is the shared predicate —
+Run 28's seed-4 shared blind spot realized. Fix: the blanking
+alternation now knows both comment forms, each → one space, which
+also makes comment-INTERLEAVED keywords visible — **F-B7-6's comment
+half CLOSED outright** (ruling superseded, honesty-ledger item
+struck, STE fine-print removed). **F-B7-43 (S1, FIXED)** — TEMP
+triggers on the target (sqlite_temp_schema) were invisible to the
+capture and died silently with the dropped table; fix = union read +
+TEMP-keyword reinstatement on replay (SQLite canonicalizes stored
+temp SQL to a bare CREATE TRIGGER prefix — probed over three
+spellings; the post-check itself caught the gate's half-fix
+re-creating into MAIN) + schema-tagged `{schema, name}` trigger
+snapshots so schema migration is a structure mismatch. **F-B7-44
+(S2, FIXED)** — TEMP views defeated the dependents pre-flight and
+killed the dance with raw SQLite prose; same union (+ `{schema,
+name}`-keyed rewritten_dependents). **F-B7-45 (S2, FIXED)** — the
+`:unencodable` rescue carried an atom column on plain ADD (F-B6-5's
+fourth door); normalize_column. **F-B7-46 (S3, FILED + docs)** —
+typeless column → declared BLOB, both halves agree so the post-check
+is blind (values/affinity unharmed; the comma-splice RED control
+proved the check fires on disagreement). Menus ENRICHED with
+evidence + recommendations (F-B7-41: implement the refusal struct,
+fold the post-dance RuntimeError in; F-B6-6: refuse pre-flight —
+routing would freeze fragment defaults to one migration-time value,
+probed). Filed sweep: F-B7-27 holds (doc line owed);
+F-B7-25/29/30/31/32/36 hold live; F-B6-4's rebuild reach established
+(modified/added columns re-render — README caveat landed). CLEAN:
+cancel-mid-dance 13/13 (+ the migrator-drives-at-infinity
+reachability bound), external-content fts5 7/7, composite-PK compare
+latent-clean, savepoint-confirm adversarial lap, grants_own_key?
+case variance. Stash-RED 7 (predicted exactly) → 151/151. DRYNESS:
+2 S1 + 2 S2 — **B7 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`@quoted_text`/`blanked/1`, `recreate_trigger_sql/3` + the trigger
+fetch, the dependents read + `rewritten_dependents/3`,
+`read_triggers/2` + the snapshot trigger shape, the `:unencodable`
+rescue. Next-pass seeds: property-test the blanking over generated
+six-token-kind texts; ATTACHed schemas (the third namespace all four
+reads still miss); cancel landing on chosen dance statements
+(DROP→RENAME window); the Sandbox × ownership × confirm-savepoint
+three-way; the shared-helper enumeration (F-B7-46's class); down/
+rollback migrations; COLLATE/DEFERRABLE live legs for the comment
+door.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
