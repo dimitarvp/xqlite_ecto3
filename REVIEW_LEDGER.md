@@ -2570,3 +2570,42 @@ event-surface probe 9/9, OTel path unchanged.
   both `quote_ident` copies, `escape_json_key` + the runtime JSON
   escaping. All seven green at HEAD. `mix verify` GREEN (exit-file), file
   budget ~10s in-suite.
+
+---
+
+## Run 19 — 2026-08-20 — property/law layer, item 3: type round-trip laws
+
+- Base: `120850d`. Opus implementer (resumed once after a transient
+  server-side termination — transcript salvage, no rework); orchestrator
+  gate: fresh-seed re-runs (7, 20260820 — untouched by the implementer,
+  30/30 each), one self-run MUTATION check (flipping the boolean
+  stored-value law failed exactly that one property and nothing else —
+  the laws bite under my hand, not just in the report), own `mix verify`
+  (exit-file). Gate stumble owned: `git checkout --` cannot restore an
+  UNTRACKED file, so the mutation had to be reversed by hand — caught by
+  the re-run, not by assumption.
+- **The layer:** `types_law_test.exs` — 24 properties + 6 pinned example
+  projections over EVERY shipped type (base Ecto scalars/temporals/
+  JSON/arrays/UUIDs + the adapter's Duration, Instant, TimestampTZ,
+  Array, UUID custom types), ~25,300 generated cases per seed, driven
+  through a real repo so dumpers and loaders engage. Two-way types pin
+  identity on BOTH the loaded value and the stored form; one-way types
+  pin the DOCUMENTED projection exactly (Decimal's stored-number
+  equality, Instant's floor-to-µs load, TimestampTZ's offset-preserving
+  store + UTC load with the microsecond tuple intact, Array float
+  widening, -0.0 sign loss, atom-keys-to-string-keys).
+- **Findings: NO bugs** at 1100 runs/property across 7 seeds total.
+  Three shipped behaviors filed for the maintainer's eye (none broken):
+  the THREE UUID paths have three different case behaviors
+  (`Types.UUID` normalizes on the way in; `Ecto.UUID` on the way out;
+  `:binary_id` in NEITHER direction — upper-case in, upper-case stored,
+  upper-case back), with `:binary_id`'s pass-through deliberately left
+  unpinned pending a ruling (BACKLOG); float -0.0 loses its sign through
+  NUMERIC storage (pinned as documented projection); the second-precision
+  temporals raise on microsecond-carrying values in Ecto itself,
+  upstream of the adapter.
+- Coverage boundaries stated honestly: `:id` exercised by every case as
+  the pk; migration-only column spellings have no field to round-trip;
+  `binary_id_storage: :binary` is a global env (racy to flip under
+  async) — its BLOB shape is lawed via `Types.UUID storage: :binary`
+  instead. `mix verify` GREEN (exit-file); file budget ~11s in-suite.

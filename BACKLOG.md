@@ -142,6 +142,16 @@ after the S0–S2 burn-down.
   index being built does not exist yet) all collapse into the same
   silent derived-name fallback. Reporting gap only; refine the status
   shape when a consumer materializes. (Run 14, B5)
+- [UUID-case] (maintainer menu, from Run 19) The three shipped UUID
+  paths have three different case behaviors: `Types.UUID` normalizes
+  an upper-case UUID to lower on the way IN (stored and read lower);
+  `Ecto.UUID` keeps the stored text as written and lower-cases on the
+  way OUT; `:binary_id` normalizes in NEITHER direction (upper in,
+  upper stored, upper back — an undocumented pass-through, left
+  unpinned in the law suite on purpose). Recommendation: document all
+  three in the UUID docs and then pin `:binary_id`'s behavior as a
+  law — or, while unpublished, unify on normalize-on-in everywhere.
+  (Run 19, B4-adjacent)
 - [F-B2-7-code] (maintainer menu) `modify` with a `references(...)`
   type dies in `DataType.column_type/2` (no clause for
   `%Ecto.Migration.Reference{}`) even though the rebuild engine
