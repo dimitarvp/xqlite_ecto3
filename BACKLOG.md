@@ -55,6 +55,52 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B5-14-fork] (maintainer menu; the S2 itself is FIXED in-run with a
+  fixed 500 ms budget when the pragma reports zero). The lookup budget's
+  source of truth is still `PRAGMA busy_timeout`, which cannot tell a
+  genuine zero timeout from a policy/observer-held slot. Larger designs
+  the maintainer may prefer: budget from the caller's remaining checkout
+  deadline (touches the cancel-token surface); a per-repo
+  `:unique_index_lookup_budget_ms` option; an xqlite API exposing busy
+  slot occupancy (cross-repo, same surface as the busy-slot pair). Fold
+  in: the FK-diagnostics replay has NO budget at all (F-B5-16) and
+  should take whatever lands here. (Run 27, B5)
+- [F-B5-15] (S3) Streamed DML (`Ecto.Adapters.SQL.stream/4` with
+  `INSERT … RETURNING`) skips unique-index-name resolution: the
+  `handle_declare`/`handle_fetch` error branches call `Error.wrap/1`
+  alone, so the same violation reports `unique_index_lookup: :ok` +
+  the real name through `handle_execute` and `:not_run` + `[]` through
+  the stream. Classification stays correct and no changeset traverses
+  a stream, hence S3. The false path comment ("a declared query is a
+  SELECT and cannot raise a UNIQUE violation") was corrected in-run;
+  the behavior decision — pipe `UniqueIndexNames.resolve/2` onto those
+  branches vs document the gap — is the maintainer's. (Run 27, B5)
+- [F-B5-16] (S3) The rich-FK-diagnostics replay is a WRITE, so it
+  contends for WAL's single write lock where the unique lookup's reads
+  do not: measured a replay blocking 3,006 ms against a 3,000 ms
+  `busy_timeout` on top of the failing statement's own 2,731 ms —
+  the opt-in error path costs up to two full busy waits. Cost note
+  added to the moduledoc in-run; a budget for the replay folds into
+  [F-B5-14-fork]. Cleanup verified clean under contention (no open
+  txn, `defer_foreign_keys` reset). (Run 27, B5)
+- [F-B5-17] (S3) `wrap_execute_error/4` (FK replay + unique lookup)
+  runs BEFORE `disconnect_if_rolled_back/2`, so enrichment work runs
+  on a connection the driver may be about to destroy, and under
+  `ON CONFLICT ROLLBACK` inside a transaction the recovered names
+  never reach a changeset (`Repo.transaction` yields
+  `{:error, :rollback}`). Remedy — decide the disconnect first, skip
+  enrichment on a doomed connection — interacts with the Run 23/25
+  disconnect-at-damage guard; sequence any change with that surface.
+  (Run 27, B5)
+- [F-B5-18] (S3, config footgun — public gotcha owed) `driver.ex`
+  accepts `busy_timeout` unvalidated, and SQLite clamps negatives and
+  anything past int32 to 0 at the PRAGMA level: `busy_timeout:
+  3_000_000_000` ("wait basically forever") silently means NO busy
+  handler at all — and, pre-Run-27, also "no lookup budget". Validate
+  the range at connect (structured error) or document the clamp; the
+  int32 ceiling belongs in a public gotcha line. `:infinity` and
+  non-integer values still unprobed. (Run 27, B5)
+
 - [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
   write — `busy_timeout` dominates. Two handles on one file: A holds
   `BEGIN IMMEDIATE`, B (`busy_timeout: 3000`) INSERTs with a 300 ms cancel

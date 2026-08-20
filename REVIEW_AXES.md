@@ -509,6 +509,50 @@ churn `c6bfdb9..787ea23`, dep churn 0.10.0→0.11.0 (`constraint_parse.rs` /
 finding-run — **B5 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
 `busy_budget/1` / `within_budget?/3` / `unique_index/1` origin set / the
 autoindex emission clause in `unique_constraints/1`.
+RE-WET (2026-08-20): Run 26's F-X2-2 fix churned `within_budget?/3` /
+`busy_budget/1` — the listed re-wetters.
+COVERING RE-RUN (Run 27, 2026-08-20 — lap 4, the post-budget-fix pass):
+**F-B5-14 (S2, FIXED, RED→green)** — Run 26's zero-disables-the-budget
+rule held for a genuine zero timeout but NOT for the other two states
+that also make `PRAGMA busy_timeout` report 0 (busy policy / observer
+holding the slot): under a policy the candidate reads wait
+policy-governed durations and the multiplication the budget existed to
+stop came back (measured: 88/200 lookups blocking ≥2 of 25 reads; a
+single 11,313 ms lookup; RED's policy leg unbounded at gate, 9,811 ms
+max, 0/20 halts). Fixed: zero-reported timeout → fixed 500 ms budget
+(`lookup_budget_ms/1`; healthy lookup ~409 µs; unexpected-shape branch
+same budget); post-fix halts 12/20 on the policy leg, residual = 500 ms
++ ONE non-preemptible policy read (the F-B8-1 single-lock-wait class;
+ceiling 25×`max_elapsed_ms` → 500 ms + 1×). Design fork FILED
+[F-B5-14-fork] (deadline budget / repo option / xqlite slot-occupancy
+API / replay budget). **F-B5-15 (S3, FILED, comment fixed)** — streamed
+DML skips resolution (`:not_run` vs the execute path's `:ok` + real
+name, probe-proven); the "declared query cannot violate UNIQUE" comment
+was false, now states the real contract. **F-B5-16 (S3, FILED, cost
+note added)** — the FK replay is a WRITE and blocks in default-WAL up
+to a full `busy_timeout` on top of the statement's own (3,006 + 2,731
+ms measured); moduledoc now says so; cleanup CLEAN under contention.
+**F-B5-17 (S3, FILED)** — enrichment runs before
+`disconnect_if_rolled_back/2`; under ON-CONFLICT-ROLLBACK in-txn the
+names never reach a changeset; remedy sequenced with the disconnect
+guard. **F-B5-18 (S3, FILED, gotcha owed)** — SQLite clamps
+out-of-int32/negative `busy_timeout` to 0; repo config unvalidated.
+F-B5-7 sweep DONE (exhaustive: all empty-read paths → `{:ok, []}`;
+only a dead connection yields a status). CLEAN legs (RED-controlled,
+orchestrator-re-driven): positive halt live at 402 ms; zero-budget
+counts 2-24 all clean; match modes `:exact`/`:suffix`/`:prefix`/regex
+9/9; insert_all/update_all; in-txn resolution; invisible-enforcer
+CLOSED (rowid-PK duplicates → `:constraint_primary_key`, lookup never
+runs); tests 23/23. DRYNESS: an S2 — **B5 stays 0 of 2, NOT DRY**; the
+fix re-wets again. Re-wets ALSO on: `lookup_budget_ms/1` /
+`@zero_slot_budget_ms`, `handle_declare`/`handle_fetch` error branches,
+`FkDiagnostics.replay/3`, the `wrap_execute_error/4` ordering vs the
+disconnect guard. Next-pass seeds: the fork's landing; the
+OBSERVER-only post-fix case (reads fail fast → contended violations all
+degrade — measure, judge vs pre-Run-26); FK replay under a policy +
+in-sandbox under contention; streamed FK/CHECK/NOT-NULL subtypes;
+last_insert_rowid after replay rollback (lead); ATTACH-schema lookup;
+the 24-cap autoindex boundary; busy_timeout validation.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

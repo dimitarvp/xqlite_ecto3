@@ -3511,3 +3511,135 @@ non-integer, `:infinity` unprobed). Probe scripts under the session
 scratchpad `x1x2_cover/` (wall-clock-named, listed per finding);
 ledger describes every probe + verdict, so loss to tmp cleanup is
 acceptable.
+
+---
+
+## Run 27 — 2026-08-20 — dryness lap 4, batch 1: B5 (post-budget-fix adversarial pass)
+
+Single Opus reviewer, read-only; fixes by the orchestrator at gate.
+Adapter `f472315`, xqlite `2700446`; deps = hex tarball 0.11.0,
+`XQLITE_PATH` unset throughout. Reviewer numbering self-corrected to
+start at F-B5-14 (F-B5-11..13 already taken — verified at gate). Gate:
+orchestrator re-drove the deciding probes personally (busy-slot facts
+7/7; the budget-hole RED; the stream divergence; the emission matrix
+9/9 + RED; the invisible-enforcer probe + RED; the failure sweep 8/8;
+FK-replay default mix with clean cleanup legs; the positive-halt live
+probe), implemented the fix, stash-RED 22/23 → 23/23.
+
+### B5 — the Run 26 fix's own hole, found by its seeded question
+
+- **F-B5-14 (S2, CONFIRMED, FIXED, RED→green).** Run 26 made a
+  zero-reported `busy_timeout` DISABLE the lookup's wall-clock budget
+  on the justification "reads that cannot block need no time cap" —
+  but `PRAGMA busy_timeout` reports 0 in THREE states, and the
+  justification holds in only one: a genuine zero timeout. A busy
+  POLICY or OBSERVER holding the slot also zeroes the pragma
+  (measured 7/7: neither removal nor unregister restores it), and
+  under a policy the pragma reads DO wait, for policy-governed
+  durations — with the budget gone, the wait multiplies across up to
+  25 candidate reads, the exact multiplication the budget was built
+  to stop. Measured pre-fix: 88/200 lookups blocked on ≥2 reads under
+  rollback-journal contention (max 6 blocks, 10,841 ms total read
+  time against a 2,000 ms per-read cap); a single lookup burned
+  11,313 ms under a patient policy; the deciding RED's policy leg ran
+  unbounded (orchestrator re-drive: max 9,811 ms, 0/20 budget halts,
+  vs a plain-timeout control that stays bounded). Reachable via the
+  adapter's own documented composition (`with_xqlite/3` +
+  `Xqlite.set_busy_policy/2`, which persists on the pooled
+  connection); needs a rollback-journal `journal_mode` (supported
+  option, not default) + cross-process write contention; structural
+  ceiling 25 × `max_elapsed_ms`. FIX: a zero-reported timeout now
+  gets a FIXED 500 ms budget (`lookup_budget_ms/1` +
+  `@zero_slot_budget_ms`) — a healthy 24-candidate lookup measures
+  ~409 µs uncontended (1000× headroom), and the unexpected-pragma-
+  shape branch takes the same fixed budget (it had silently flipped
+  from fail-closed to fail-open in Run 26 — now neither extreme).
+  Run 26's `within_budget?/3` zero clause removed (dead);
+  CHANGELOG'S Run-26 entry amended to the final rule. POST-FIX
+  verification (orchestrator): the policy leg's budget halts went
+  0/20 → 12/20 and the blocked-read multiplication is gone; the
+  residual worst case is 500 ms + ONE policy-governed read the budget
+  cannot preempt — the same single-lock-wait class as filed F-B8-1
+  (a caller's own policy choice for any statement; the ceiling drops
+  from 25 × `max_elapsed_ms` to 500 ms + 1 ×). The probe's strict
+  "bounded under policy" check therefore prints FAIL BY DESIGN
+  post-fix, same disposition class as Run 25/26's inverted probes;
+  the halt-fires check on the plain-timeout leg is timing-window
+  dependent (0/20 on the gate machine) — the halt itself is proven
+  live by the contention probe (`{:unavailable,
+  {:lookup_budget_exceeded, 402}}` at a 400 ms timeout). Stash-RED:
+  22/23 (the budget pin fails on the old lib) → 23/23 restored.
+  The larger design fork (deadline-derived budget / per-repo option /
+  xqlite slot-occupancy API; plus a budget for the FK replay) is
+  FILED as [F-B5-14-fork], maintainer menu.
+- **F-B5-15 (S3, FILED; comment falsehood FIXED in-run).** Streamed
+  DML (`Ecto.Adapters.SQL.stream/4` with `INSERT … RETURNING`) skips
+  unique-name resolution — `handle_declare`/`handle_fetch` error
+  branches call `Error.wrap/1` alone; the identical violation reports
+  `:ok` + the real name through `handle_execute` and `:not_run` + `[]`
+  through the stream (orchestrator re-drove the divergence probe,
+  exit 1). Classification stays correct, no changeset traverses a
+  stream — S3. The path comment claiming "a declared query is a
+  SELECT and cannot raise a UNIQUE violation" was FALSE; corrected
+  in-run to state the real contract. The behavior decision (enrich
+  those branches vs keep the documented gap) is the maintainer's.
+- **F-B5-16 (S3, FILED; cost note FIXED in-run).** The
+  rich-FK-diagnostics replay is a WRITE — it contends for WAL's
+  single write lock where the unique lookup's reads do not: measured
+  up to 3,006 ms replay block against a 3,000 ms `busy_timeout` ON
+  TOP of the failing statement's own 2,731 ms wait (two busy waits on
+  one error path). The moduledoc now states the cost; a replay budget
+  folds into [F-B5-14-fork]. Cleanup CLEAN under contention on the
+  orchestrator's re-drive (no open txn, `defer_foreign_keys` reset).
+- **F-B5-17 (S3, FILED).** `wrap_execute_error/4` runs BEFORE
+  `disconnect_if_rolled_back/2` (code-verified at gate), so both
+  enrichment reads run on a connection the driver may destroy;
+  under `ON CONFLICT ROLLBACK` inside a transaction the resolved
+  names never reach a changeset. Remedy interacts with the Run 23/25
+  disconnect guard — filed with that sequencing note.
+- **F-B5-18 (S3, FILED — config footgun, public gotcha owed).**
+  SQLite clamps `busy_timeout` settings past int32 (and negatives) to
+  0 at the PRAGMA level, and `driver.ex` passes repo config through
+  unvalidated: `busy_timeout: 3_000_000_000` ("wait forever")
+  silently means NO busy handler. Discharges part of Run 26's
+  `driver.ex:37` seed; `:infinity`/non-integer still unprobed.
+- **F-B5-7 sweep DONE (the enumeration Run 21 owed):** every way a
+  pragma read comes back empty collapses to `{:ok, []}` + derived
+  name — dropped/absent table, VIEW target, no covering index,
+  first-dot-split table name (the F-B5-5 shape), and an index
+  vanishing between `index_list` and `index_info` (dropped silently);
+  only a failing connection yields a status
+  (`{:unavailable, :connection_closed}`). Exhaustive, no new class.
+- **CLEAN (RED-controlled; orchestrator re-drove each):** the
+  positive-budget halt survives end to end (live 402 ms halt); zero
+  budget at candidate counts 2-24 × 20 trials = 0 degradations
+  (Run 26's seed 6 moot and stays moot); Ecto match modes `:exact` /
+  `:suffix` / `:prefix` / `%Regex{}` all convert against resolved
+  real names, derived-name declarations correctly raise, 9/9 + RED;
+  `insert_all`/`update_all` raise `XqliteEcto3.Error` (no changeset
+  to convert) — unchanged by emission; resolution inside an explicit
+  transaction converts and the repo answers after; the
+  invisible-enforcer shape is CLOSED (rowid-PK duplicates classify
+  `:constraint_primary_key`, the lookup never runs, innocence of the
+  named sibling proven by dropping it); `unique_index_names_test.exs`
+  23/23 at gate.
+- Dryness: an S2 — **B5 stays 0 of 2, NOT DRY**; the fix re-wets its
+  own surface again. Re-wet triggers ALSO: `lookup_budget_ms/1` /
+  `@zero_slot_budget_ms`, the `handle_declare`/`handle_fetch` error
+  branches, `FkDiagnostics.replay/3`, and the
+  `wrap_execute_error/4`-vs-`disconnect_if_rolled_back/2` ordering.
+- Completeness critic (next B5 pass): whatever lands for
+  [F-B5-14-fork] needs its own lap (a deadline-derived budget touches
+  the cancel-token surface); the OBSERVER-only case post-fix was
+  reasoned, not measured (slot answers "give up" → reads fail fast →
+  every contended violation degrades to the derived name — measure
+  it, and judge against the pre-Run-26 behavior); the FK replay under
+  a busy POLICY and inside a long-lived outer transaction (the
+  sandbox case) under contention; streamed DML for the FK / CHECK /
+  NOT NULL subtypes + `handle_declare`'s own error branch;
+  `sqlite3_last_insert_rowid()` surviving the replay's savepoint
+  rollback (adapter never reads it — a `with_xqlite` caller would;
+  lead only); ATTACH-schema resolution under the post-fix budget;
+  the 24-cap boundary with autoindexes counted (24 named + 1
+  autoindex = refusal where 24 named alone resolves);
+  `busy_timeout` validation (`:infinity`, non-integer).
