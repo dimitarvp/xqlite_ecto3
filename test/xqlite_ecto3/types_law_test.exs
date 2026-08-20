@@ -725,16 +725,22 @@ defmodule XqliteEcto3.TypesLawTest do
     ])
   end
 
-  # Fifteen significant digits is the width a float64 always round-trips
-  # exactly, so every decimal this builds is one the adapter accepts.
+  # A value the adapter's own guard accepts — the guard is the oracle, so
+  # this generator stays correct however the guard tightens. The old
+  # premise ("15 significant digits always round-trip") was false once the
+  # exponent scaled the value into integer territory: a 15-digit
+  # coefficient times 10^3 is an 18-digit integer float64 cannot hold, and
+  # SQLite's integer demotion surfaces the rounding.
   defp representable_decimal do
     gen all(
           sign <- member_of([1, -1]),
           ndigits <- integer(1..15),
           coefficient <- integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
-          exponent <- integer(-15..15)
+          exponent <- integer(-15..15),
+          dec = Decimal.new(sign, coefficient, exponent),
+          DecimalPrecision.representable?(dec)
         ) do
-      Decimal.new(sign, coefficient, exponent)
+      dec
     end
   end
 
