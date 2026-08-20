@@ -60,6 +60,28 @@ return they never previously produced (contract-valid per
 DBConnection, but the verified conformance facts moved). **B1 back to
 0 of 2**; next cover re-audits the callback return inventory +
 the `sync_after_transaction_control` addition inside handle_execute.
+COVERING RE-RUN (Run 33, 2026-08-20 — lap 5, batch 2): the return-shape
+re-audit over the Runs-25/29/32 churn + the F-B8-8 court. Full
+14-callback return inventory verified against db_connection 2.10.2
+source; the moved surfaces probed live (disconnect returns from
+execute/declare/fetch incl. teardown order and cursor cleanup;
+savepoint-arm lifecycles with a RED control; the keyword sync
+adversarially). FOUR findings — F-B1-2 (S2, FIXED): comment-prefixed
+transaction control invisible to the keyword sync, the cached flag
+lies both directions (a fourth durable-leak door + pool
+over-disconnect on ordinary autocommit violations); F-B1-3 (S3,
+FIXED): connect/1 put bare tuples where the contract wants
+Exception.t (ArgumentError + lost reason under backoff_type: :stop);
+F-B1-4 (S3, FIXED): dead reset line in disconnect/2; F-B1-5 (S3,
+FILED → B9 court). F-B8-8 adjudicated DOCUMENT (README bullet landed;
+the Sandbox injects mode: :savepoint into every out-of-transaction
+statement, and SQLite's ABORT default + ROLLBACK-destroys-savepoints
+make the wrap moot on every reachable class; FAIL + insert_all the
+lone real one, hand-DDL only). DRYNESS: findings — **B1 stays 0 of 2,
+NOT DRY**. Re-wet triggers GROW: any change to `leading_keyword/1`
+(comment clauses included), the connect error path
+(`Error.wrap/1` arm + its cannot_open_database clause), plus the
+standing list.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.

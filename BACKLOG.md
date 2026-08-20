@@ -64,16 +64,36 @@ after the S0–S2 burn-down.
   defaults, non-boolean atoms, non-fragment tuples, and printable
   charlists all refuse structurally now. (Run 30 filed → Run 31
   landed, with F-B4-7/F-B4-8.)
-- [F-B8-8-handoff] (S3, B1/B2 court, from Run 32)
-  `Repo.insert(changeset, mode: :savepoint)` — documented by Ecto,
-  implemented by Postgrex inside `handle_execute` (a savepoint around
-  the single statement) — is silently INERT on this adapter:
-  `handle_execute` reads only `:timeout` from opts. Mostly harmless
-  on SQLite (a failed statement does not poison the enclosing
-  transaction the way Postgres does), but an unclaimed contract
-  divergence: implement the per-statement savepoint wrap, or document
-  the inertness in the divergence docs and the exclusion rationales
-  if an upstream test ever exercises it. (Run 32, B8 → B1/B2)
+- [F-B8-8-handoff] (S3, B1/B2 court, from Run 32) CLOSED at Run 33's
+  gate: adjudicated DOCUMENT. Live-probed — SQLite's ABORT default
+  makes a per-statement savepoint a no-op, ON CONFLICT ROLLBACK
+  destroys the transaction together with any open savepoint, and the
+  one class the wrap would change (ON CONFLICT FAIL + multi-row
+  insert_all) needs hand-written DDL; meanwhile the Sandbox injects
+  `mode: :savepoint` into every out-of-transaction statement, so
+  implementing would wrap essentially all sandboxed traffic for
+  nothing. README Known-limitations bullet landed (+ STE draft
+  mirror); B2's share verified — the lone upstream test touching the
+  option (alter.exs:60) is already excluded for unrelated reasons and
+  could not detect inertness anyway; no exclusion change owed.
+- [F-B1-5] (S3, B9 court, from Run 33) `handle_deallocate/4` discards
+  `NIF.stream_close/1` failures (`_ =`) and returns
+  `{:ok, nil, state}` unconditionally, so a failed statement release
+  reports success and telemetry records `result_class: :ok`.
+  Conservative remedy (do NOT change the return shape — it feeds
+  Stream.resource's after-fun): carry the close result into the stop
+  event's metadata so failures are at least observable. Touches the
+  locked telemetry surface — deliberate B9-court pass, not a
+  gate-side edit. (Run 33, B1 → B9)
+- [F-B1-menu-connect-error-details] (maintainer menu, from Run 33's
+  gate) Connect config-error payloads (unregistered hook subscriber
+  NAME, malformed pragma entry, invalid mode atom) now live only in
+  the wrapped exception's message (inspect) — the tag-tuple family of
+  `Error.wrap/1` is deliberately details-less (error_wrap_test pins
+  `details: nil`). Giving that family a structured payload field is a
+  designed-shape decision for the whole error surface, not a local
+  patch; `cannot_open_database` already got its specific clause
+  (path + code in details) as the Run-33 precedent. (Run 33, B1)
 - [F-B8-9-docs] (S3, docs, from Run 32) The
   `[:xqlite_ecto3, :disconnect]` event cannot distinguish our cancel
   from DBConnection's own checkout-deadline recycle — both carry

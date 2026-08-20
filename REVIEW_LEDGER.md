@@ -4435,3 +4435,151 @@ the holder holds), receive window widened. 5/5 local. Same lesson
 as the sandbox saga, sharpened: a test that configures the pool to
 fail fast must retry ITS OWN setup traffic through that same pool.
 
+
+## Run 33 — 2026-08-20 — lap 5, batch 2: B1 solo (return-shape re-audit + the F-B8-8 court)
+
+Single Opus reviewer at `df30885`; xqlite 0.11.0 (hex), db_connection
+2.10.2, ecto 3.14.1, ecto_sql 3.14.0. postgrex NOT vendored — the
+`:mode` contract was derived from ecto/ecto_sql source only, stated
+where it matters. Gate: all twelve probes re-driven by the
+orchestrator pre-fix (rc=0 each, outputs read line-by-line); fixes
+implemented BY THE ORCHESTRATOR; stash-RED 9 red (fixes stashed,
+exactly the predicted nine) → 108/108 green (fixes applied).
+
+- **F-B1-2 (S2, CONFIRMED, FIXED, RED→green).** A leading SQL comment
+  made raw transaction control invisible to the Run-29 keyword sync:
+  `leading_keyword/1` skipped only whitespace, so `-- x\nBEGIN` /
+  `/* x */ COMMIT` never re-synced the cached flag, which then lied
+  in BOTH directions. Stale `:idle` under an open transaction = the
+  rollback guard blind = the F-B8-7 durable-leak shape through a
+  FOURTH door (after raw BEGIN F-B3-7, streams F-B3-8, top-level
+  savepoints F-B8-7) — probed to disk: post-failure write durable,
+  rollback answered `{:error, …}` where the plain-BEGIN control
+  answered `{:disconnect, …}`. Stale `:transaction` after a
+  comment-prefixed COMMIT = over-disconnect: a plain autocommit
+  UNIQUE violation destroyed the pooled connection (db_connection's
+  own connection_listeners saw [:disconnected, :connected]; the RED
+  control on plain COMMIT saw []). Reachability: any raw SQL with a
+  leading comment — sqlcommenter-style tags, SQL kept in files. FIX:
+  two clauses ahead of the whitespace skip — line comment to the next
+  newline, block comment to the FIRST `*/` (SQLite's own rule, never
+  nested); either kind may instead run to end of input, where no
+  statement executes and nil/no-sync is correct. Remedy validated
+  standalone 18/18 (vs 15/18 for the old rule) BEFORE touching the
+  repo. Committed tests (driver_transaction_state_test +4): both
+  flag-sync directions + both consequence directions (rollback-class
+  violation still disconnects; autocommit violation stays an error).
+  Shut doors recorded so the next cover skips them: a vertical tab
+  before the keyword is rejected by SQLite itself; multi-statement
+  strings are refused (`:multiple_statements`) so no hidden tail
+  COMMIT; keyword-prefix false positives cost one truthful status
+  read and nothing else.
+- **F-B1-3 (S3, CONFIRMED, FIXED in-run anyway, RED→green).**
+  `connect/1` returned bare reason tuples in the `{:error, _}` slot;
+  the DBConnection contract is `{:error, Exception.t()}`
+  (db_connection.ex:175). Probed consequence: default backoff logs
+  the reason inside an ErlangError wrapper; `backoff_type: :stop`
+  crashes `raise err` at connection.ex:121 with ArgumentError and the
+  real reason survives nowhere but the log line. Six of eight connect
+  failure shapes affected — `cannot_open_database` (errno 14, the
+  most ordinary operator failure) included. Grade kept S3
+  (diagnostics-only) but fixed at the gate: one `else` arm routes the
+  with-chain's failure through `XqliteEcto3.Error.wrap/1` (total,
+  type-preserving), and `wrap/1` grew ONE specific clause —
+  `{:cannot_open_database, path, code, msg}` → message: msg,
+  details: %{path, code} — because an existing test pins the path and
+  the doctrine says the struct carries what tests match. Nine
+  pre-existing bare-tuple assertions across six test files flipped to
+  struct pins (four found by grep pre-fix, five surfaced as post-fix
+  reds — the same demonstration from the other side).
+- **F-B1-4 (S3, CONFIRMED, FIXED).** disconnect/2 built and discarded
+  `%{state | transaction_status: :idle, savepoint: 0}` under a
+  comment claiming earlier captors would "read post-close values" —
+  nothing can observe a discarded map. Line + comment deleted; the
+  test file's stale describe title renamed.
+- **F-B1-5 (S3, FILED → backlog).** handle_deallocate/4 discards
+  `NIF.stream_close/1` failures (`_ =`) and returns `{:ok, nil,
+  state}` unconditionally — telemetry records result_class: :ok even
+  when the close failed. Remedy deliberately NOT applied at the gate:
+  the conservative fix (carry the close result into stop metadata,
+  keep the return shape) touches the LOCKED telemetry surface — B9
+  court.
+- **Clean census (controls named):** all 14 DBConnection callbacks'
+  produced return shapes verified branch-by-branch against
+  db_connection 2.10.2 source cites; every minted err is a real
+  exception (wrap/1 total; ConnectionError struct literals carry the
+  :severity/:reason defaults connection.ex:146 reads). Bare-term RED
+  control: a non-exception err is tolerated on the execute path but
+  ArgumentErrors on declare/fetch — ours satisfy it everywhere
+  post-F-B1-3. The new `{:disconnect, err, state}` returns from
+  execute/declare/fetch traced through source + a live probe driver:
+  teardown order right, no double stream close (declare's error arm
+  closes its own handle; the fetch-disconnect path SKIPS
+  handle_deallocate via holder.ex:157's status short-circuit —
+  Stream.resource's after-fun still runs, the second
+  Holder.disconnect is absorbed) — and disconnect/2 with an orphan
+  open stream is benign at 0.11.0 (structured refusals, clean
+  reopen). Run-32 savepoint arms: four lifecycles truthful
+  step-by-step (flag = handle_status = SQLite truth), the RED control
+  (hand-corrupted flag) detected; released_savepoint_state keeps the
+  old value only when the status read itself errors — conservative in
+  the leak direction. sync_after_transaction_control sits only in the
+  zero-column SUCCESS branch: transaction control that ERRORS never
+  syncs — argued harmless today, unpinned (critic seed).
+  handle_prepare's single %Query{} clause is safe on today's call
+  graph (RawConn reaches the driver only via execute; its encode
+  returns [] and cannot raise, so the EncodeError re-prepare path
+  cannot route RawConn there). Ecto-side behaviour surface
+  byte-unmoved since Run 9 (git-verified: def/@impl/@behaviour lines
+  of xqlite_ecto3.ex / connection.ex / migration.ex).
+- **F-B8-8 ADJUDICATED — DOCUMENT, S3 (reviewer verdict accepted).**
+  (a) `:mode` documented at ecto repo.ex:2495 for single ops, opaque
+  to ecto_sql and db_connection — the wrap is the driver's job; the
+  Sandbox proxy INJECTS `mode: :savepoint` into every statement
+  outside an explicit transaction (sandbox.ex:404-410, live-traced
+  into our handle_execute opts, with the ABSENT control inside
+  Repo.transaction). (b) Live SQLite matrix
+  (ABORT/ROLLBACK/FAIL/IGNORE/REPLACE × a faithful wrap): ABORT — the
+  default — makes the wrap a no-op (statement-level undo, transaction
+  stays usable; the Ecto doc's premise is Postgres-only); ON CONFLICT
+  ROLLBACK destroys the transaction WITH any open savepoint — the
+  wrap provably cannot help; ON CONFLICT FAIL + multi-row insert_all
+  is the ONE class where the wrap changes outcomes (pre-conflict rows
+  kept vs undone) and needs hand-written DDL to reach. (c) Exactly
+  one upstream test passes the option on a single op
+  (ecto_sql alter.exs:60) — already excluded for an unrelated Decimal
+  reason, and its try/rescue/else asserts a correct result on EITHER
+  branch, so it could not detect inertness even unexcluded. B2's
+  share: NO exclusion-list change owed. Implementing would wrap
+  roughly every sandboxed statement in SAVEPOINT/RELEASE for a
+  semantic SQLite makes moot — rejected. DOCUMENTED: README
+  Known-limitations bullet (STE draft mirrored in its voice);
+  honesty-ledger line appended; backlog handoff closed.
+- **Run-32 CI addendum:** `df30885`'s run came back RED on one cell
+  (macos-latest, 1.19, OTP 28) — the VENDORED ecto_sql sandbox test
+  (sandbox.exs:174, hardcoded 100 ms assert_receive) at second one of
+  the suite on the 3-core runner. Triaged before disposition: the
+  test's trace never touches the savepoint arms 6bc7d00 changed
+  (checkout → plain BEGIN → insert → three SELECTs in a Task; no
+  Repo.transaction), our three new savepoint tests were green on that
+  same runner in that same red run, and the same cell was green an
+  hour earlier. Re-run: GREEN. Cold-start flake of an upstream test
+  we cannot edit — the Run-31 slow-runner class; nothing owed.
+- Dryness: an S2 — **B1 stays 0 of 2, NOT DRY**; the fix re-wets the
+  keyword-sync surface (leading_keyword's comment clauses) and the
+  connect error path (the wrap arm + wrap/1's new clause).
+  Completeness critic (next B1 pass): the guard's `_open_or_unknown`
+  fail-open fallback (now the only thing between a stale flag and a
+  leak — unpinned); declare/fetch under a top-level savepoint;
+  `mode: :savepoint` via repo CONFIG; the sync's failure branch
+  (unpinned); a caller's raw ROLLBACK leaving the managed counter
+  non-zero (next managed RELEASE disconnects — arguably correct,
+  unprobed); handle_begin(:transaction) not resetting state.savepoint
+  (asymmetry vs commit/rollback; no reachable divergence found);
+  `:disconnect_and_retry` never produced (and a bad return through
+  declare/fetch's handle_common_result if ever added). MENU (filed):
+  connect config-error payloads (hook names, pragma entries) live
+  only in the wrap message — a details field for the tag-tuple family
+  is a designed-shape decision (error_wrap_test pins details: nil).
+
+THIRTEEN straight finding runs.
