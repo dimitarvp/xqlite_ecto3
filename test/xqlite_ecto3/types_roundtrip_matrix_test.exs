@@ -162,6 +162,24 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
       assert Decimal.equal?(err.value, dec)
     end
 
+    # A 17-digit integral value can round to a float64 neighbor whose
+    # SHORTEST printing echoes the original digits — the old guard compared
+    # against that printing and accepted. NUMERIC affinity then demotes the
+    # integral float to INTEGER, which reads back with the true rounded
+    # digits, off by two. Found by the boundary property at 2000 runs.
+    test "an integral value that rounds to a float64 neighbor is refused" do
+      dec = Decimal.new("20700317912310410.0")
+
+      refute XqliteEcto3.DecimalPrecision.representable?(dec)
+
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          roundtrip(:dec_field, dec)
+        end
+
+      assert Decimal.equal?(err.value, dec)
+    end
+
     # Fuzz the ~15–17 significant-digit boundary where the accept/reject verdict
     # flips. The invariant is total: for ANY finite Decimal, an insert either
     # stores a value equal to it or raises the precision error — there is no

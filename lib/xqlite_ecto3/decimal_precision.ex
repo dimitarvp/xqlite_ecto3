@@ -18,13 +18,16 @@ defmodule XqliteEcto3.DecimalPrecision do
   @dbl_min Decimal.new("2.2250738585072014E-308")
 
   @doc """
-  Whether a `Decimal` survives a float64 round-trip unchanged, i.e. whether
-  SQLite's NUMERIC affinity can store it as REAL without rounding it.
+  Whether a `Decimal` survives storage under NUMERIC affinity unchanged —
+  float64 conversion at bind time, then SQLite's own storage rules.
 
-  The check is `Decimal -> float64 -> shortest round-trip string -> Decimal`,
-  compared to the original normalized value. This accepts typical money and
-  anything exact within ~15 significant digits (including large float-exact
-  integers) and rejects only values whose magnitude changes through float64.
+  The check mirrors what a SELECT actually returns: the value is converted
+  to float64, then compared as SQLite would hand it back — an integral
+  float within int64 range demotes to INTEGER and reads back with exact
+  digits, anything else stays REAL and reads back through shortest-
+  representation printing. This accepts typical money and anything exact
+  within ~15 significant digits (including large float-exact integers) and
+  rejects any value whose stored form would differ from the original.
   """
   @spec representable?(Decimal.t()) :: boolean()
   def representable?(%Decimal{} = d) do
@@ -46,10 +49,31 @@ defmodule XqliteEcto3.DecimalPrecision do
     back =
       d
       |> Decimal.to_float()
-      |> Float.to_string()
-      |> Decimal.new()
+      |> stored_decimal()
 
     Decimal.equal?(Decimal.normalize(d), Decimal.normalize(back))
+  end
+
+  # What a SELECT returns after NUMERIC affinity stores the bound float.
+  # SQLite demotes an integral REAL within int64 range to an INTEGER, which
+  # reads back with its exact digits; everything else stays REAL and reads
+  # back through the same shortest-representation printing the :decimal
+  # loader uses. The old check compared against the shortest printing alone,
+  # which can echo the original digits even after the float rounded — the
+  # integer demotion then surfaced the true rounded value (a 17-digit
+  # integer stored as its float64 neighbor was accepted and came back off
+  # by two).
+  @int64_min -9_223_372_036_854_775_808
+  @int64_max 9_223_372_036_854_775_807
+
+  defp stored_decimal(f) do
+    t = trunc(f)
+
+    if t + 0.0 == f and t >= @int64_min and t <= @int64_max do
+      Decimal.new(t)
+    else
+      Decimal.from_float(f)
+    end
   end
 end
 
