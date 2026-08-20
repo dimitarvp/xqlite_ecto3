@@ -438,7 +438,10 @@ defmodule XqliteEcto3.Driver do
             {:ok, query, result, state}
 
           {:error, :operation_cancelled} ->
-            {:error, %DBConnection.ConnectionError{message: "query timed out"}, state}
+            disconnect_if_rolled_back(
+              %DBConnection.ConnectionError{message: "query timed out"},
+              state
+            )
 
           {:error, reason} ->
             reason
@@ -451,9 +454,10 @@ defmodule XqliteEcto3.Driver do
   end
 
   # A statement error can take the whole transaction with it: a constraint
-  # declared ON CONFLICT ROLLBACK (or an OR ROLLBACK statement) makes
-  # SQLite roll back and return to autocommit while the driver still
-  # believes a transaction is open. Letting the body continue would run
+  # declared ON CONFLICT ROLLBACK, an OR ROLLBACK statement, or a CANCELLED
+  # write (SQLite rolls back the whole transaction when it interrupts an
+  # INSERT/UPDATE/DELETE) makes SQLite roll back and return to autocommit
+  # while the driver still believes a transaction is open. Letting the body continue would run
   # its statements in autocommit — durably committing writes inside a
   # transaction that will report failure. Disconnect at the point of
   # damage instead, so DBConnection tears the transaction down and no

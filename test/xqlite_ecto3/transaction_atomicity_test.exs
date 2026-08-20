@@ -36,4 +36,30 @@ defmodule XqliteEcto3.TransactionAtomicityTest do
     refute outcome == {:ok, :carried_on}
     assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM ta_ocr_log")
   end
+
+  test "no body write after a cancelled write survives a failed transaction" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_canc")
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_canc_log")
+    PoolRepo.query!("CREATE TABLE ta_canc(x INTEGER)")
+    PoolRepo.query!("CREATE TABLE ta_canc_log(note TEXT)")
+
+    slow =
+      "INSERT INTO ta_canc SELECT x FROM (WITH RECURSIVE c(x) AS " <>
+        "(SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) SELECT x FROM c)"
+
+    outcome =
+      try do
+        PoolRepo.transaction(fn ->
+          {:ok, _} = PoolRepo.query("INSERT INTO ta_canc_log(note) VALUES ('pre')")
+          {:error, _cancelled} = PoolRepo.query(slow, [], timeout: 50)
+          _post = PoolRepo.query("INSERT INTO ta_canc_log(note) VALUES ('post')")
+          :carried_on
+        end)
+      rescue
+        e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:raised, e.__struct__}
+      end
+
+    refute outcome == {:ok, :carried_on}
+    assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM ta_canc_log")
+  end
 end

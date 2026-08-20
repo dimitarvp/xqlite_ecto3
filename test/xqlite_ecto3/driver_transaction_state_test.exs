@@ -103,6 +103,37 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert {:error, %XqliteEcto3.Error{}, state} = Driver.handle_execute(bad, [], [], state)
       assert {:transaction, _state} = Driver.handle_status([], state)
     end
+
+    test "a cancelled write inside a transaction disconnects at the point of damage",
+         %{state: state} do
+      {:ok, _} = NIF.query(state.conn, "CREATE TABLE canc(x INTEGER)", [])
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      slow = %XqliteEcto3.Query{
+        statement:
+          "INSERT INTO canc SELECT x FROM (WITH RECURSIVE c(x) AS " <>
+            "(SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) SELECT x FROM c)"
+      }
+
+      assert {:disconnect, %DBConnection.ConnectionError{}, _state} =
+               Driver.handle_execute(slow, [], [timeout: 50], state)
+    end
+
+    test "a cancelled read inside a transaction stays an error with the transaction open",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      slow = %XqliteEcto3.Query{
+        statement:
+          "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) " <>
+            "SELECT count(*) FROM c"
+      }
+
+      assert {:error, %DBConnection.ConnectionError{}, state} =
+               Driver.handle_execute(slow, [], [timeout: 50], state)
+
+      assert {:transaction, _state} = Driver.handle_status([], state)
+    end
   end
 
   describe "savepoint counter lifecycle" do

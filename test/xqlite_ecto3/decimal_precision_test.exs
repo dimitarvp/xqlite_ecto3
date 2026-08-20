@@ -22,7 +22,13 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
           "3.141592653589793",
           "9007199254740992",
           "10000000000000000000",
-          "1E308"
+          "1E308",
+          "9007199254740993",
+          "123456789012345678",
+          "1234567890123456789",
+          "9223372036854775807",
+          "-9223372036854775808",
+          "20700317912310409"
         ] do
       test "accepts #{str}" do
         assert DecimalPrecision.representable?(Decimal.new(unquote(str)))
@@ -41,7 +47,8 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
           "18446744073709551615",
           "0.12345678901234567",
           "1E400",
-          "1E-320"
+          "1E-320",
+          "20700317912310410.0"
         ] do
       test "refuses #{str}" do
         refute DecimalPrecision.representable?(Decimal.new(unquote(str)))
@@ -52,6 +59,26 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
       refute DecimalPrecision.representable?(Decimal.new("Inf"))
       refute DecimalPrecision.representable?(Decimal.new("-Inf"))
       refute DecimalPrecision.representable?(Decimal.new("NaN"))
+    end
+  end
+
+  # The bind path sends the decimal as text. NUMERIC affinity stores a
+  # plain integer literal that fits in int64 as an exact INTEGER — no
+  # float64 in the path — which is why whole numbers past 2^53 are
+  # accepted. The same digits rendered with a decimal point parse as a
+  # REAL and stay under the float64 model.
+  describe "integer-literal storage ground truth" do
+    test "an int64 whole number binds as text and stores as an exact INTEGER" do
+      {:ok, conn} = Xqlite.open_in_memory()
+      {:ok, _} = XqliteNIF.execute(conn, "CREATE TABLE t(d NUMERIC)", [])
+
+      text = Decimal.to_string(Decimal.new("123456789012345678"), :normal)
+      {:ok, 1} = XqliteNIF.execute(conn, "INSERT INTO t(d) VALUES (?1)", [text])
+
+      assert {:ok, %{rows: [["integer", 123_456_789_012_345_678]]}} =
+               XqliteNIF.query(conn, "SELECT typeof(d), d FROM t", [])
+
+      :ok = XqliteNIF.close(conn)
     end
   end
 

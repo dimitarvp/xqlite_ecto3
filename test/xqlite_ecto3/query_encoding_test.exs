@@ -142,6 +142,52 @@ defmodule XqliteEcto3.QueryEncodingTest do
     end
   end
 
+  describe "unencodable parameters refuse with structure" do
+    test "a struct without a JSON form raises with value, position, and cause" do
+      err =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+          encode([1, %Version{major: 1, minor: 2, patch: 3}])
+        end
+
+      assert %Version{} = err.value
+      assert err.index == 2
+      assert %Protocol.UndefinedError{} = err.reason
+    end
+
+    test "a map that JSON cannot represent raises with the failure attached" do
+      err =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+          encode([%{a: <<0xFF, 0xFE>>}])
+        end
+
+      assert err.index == 1
+      assert %Jason.EncodeError{} = err.reason
+    end
+
+    test "a struct nested inside a plain map raises structured, not a protocol error" do
+      err =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+          encode([%{v: %Version{major: 1, minor: 0, patch: 0}}])
+        end
+
+      assert err.index == 1
+      assert %Protocol.UndefinedError{} = err.reason
+    end
+
+    test "a plain map still encodes to JSON" do
+      assert encode([%{a: 1}]) == [~s({"a":1})]
+    end
+
+    test "the decimal refusal carries its parameter position" do
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          encode([Decimal.new("1"), Decimal.new("0.12345678901234567")])
+        end
+
+      assert err.index == 2
+    end
+  end
+
   describe "String.Chars protocol" do
     test "to_string returns the SQL statement" do
       q = %Query{statement: "SELECT 1"}
