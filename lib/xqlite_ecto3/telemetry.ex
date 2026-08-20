@@ -18,7 +18,14 @@ defmodule XqliteEcto3.Telemetry do
   ## Event surface
 
   All time measurements are in nanoseconds via
-  `System.monotonic_time(:nanosecond)`.
+  `System.monotonic_time(:nanosecond)`. Span events follow
+  `:telemetry.span/3`: `:start` measures `%{monotonic_time, system_time}`
+  (no `duration`); `:stop` and `:exception` measure
+  `%{monotonic_time, duration}`. Every span event's metadata also carries
+  `telemetry_span_context`, the reference that pairs a `:start` with its
+  `:stop`. The blocks below list the adapter's own metadata keys; where a
+  block groups `:start | :stop | :exception`, its measurements line
+  describes the `:stop`/`:exception` shape.
 
   ### Connection lifecycle
 
@@ -29,6 +36,12 @@ defmodule XqliteEcto3.Telemetry do
       [:xqlite_ecto3, :disconnect]
         measurements: %{monotonic_time}
         metadata:     %{conn, reason}
+
+  `:disconnect` fires when DBConnection tears a connection down after an
+  operation error or a failed ping. A graceful pool or application
+  shutdown does NOT emit it (the connection process exits before its
+  terminate callback runs), so connect and disconnect counts are not a
+  balanced pair.
 
       [:xqlite_ecto3, :checkout]
         measurements: %{monotonic_time}
@@ -53,6 +66,18 @@ defmodule XqliteEcto3.Telemetry do
       [:xqlite_ecto3, :handle_deallocate, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
         metadata:     %{conn, cursor, result_class, error_reason}
+
+  ### Error-path diagnostics
+
+      [:xqlite_ecto3, :fk_diagnostics, :start | :stop | :exception]
+        measurements: %{monotonic_time, duration}
+        metadata:     %{conn, mode}; on :stop also
+                      %{violations_count, diagnostics_status}
+
+  Fires only when `rich_fk_diagnostics: true` and a foreign-key
+  violation triggered the replay. The unique-index-name lookup (the
+  sibling error-path read) has no span of its own today; its cost lands
+  inside `handle_execute`.
 
   ### Statement cache
 

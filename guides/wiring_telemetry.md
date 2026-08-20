@@ -40,7 +40,7 @@ true
 | Event | Trigger | Key metadata |
 |---|---|---|
 | `[:xqlite_ecto3, :connect, :*]` | DBConnection opens a connection | `:database`, `:result_class`, `:error_reason` |
-| `[:xqlite_ecto3, :disconnect]` | Pool closes a connection | `:conn` |
+| `[:xqlite_ecto3, :disconnect]` | DBConnection tears a connection down (an operation error, a failed ping) | `:conn`, `:reason` |
 | `[:xqlite_ecto3, :checkout]` | A pool checkout (per-call) | `:conn` |
 | `[:xqlite_ecto3, :handle_begin, :*]` | DBConnection.transaction starts | `:mode` (`:transaction` or `:savepoint`) |
 | `[:xqlite_ecto3, :handle_commit, :*]` | transaction committed | `:mode` |
@@ -53,7 +53,16 @@ true
 
 Every span event (`*, :start | :stop | :exception`) carries
 `monotonic_time` (ns) on `:start` and `monotonic_time` + `duration`
-(both ns) on `:stop`.
+(both ns) on `:stop`. `:telemetry.span/3` also adds `system_time` to
+every `:start`'s measurements and a `telemetry_span_context` reference
+to every span event's metadata — that reference is what pairs a
+`:start` with its `:stop`.
+
+A graceful pool or application shutdown does NOT emit
+`[:xqlite_ecto3, :disconnect]`: the connection process exits before
+its terminate callback runs (DBConnection does not trap exits there).
+Do not treat connect and disconnect counts as a balanced pair — every
+clean deploy leaves the connect count ahead.
 
 ## Composing layers
 
@@ -72,8 +81,12 @@ Pick the layer that matches your observability question:
   Highest-level, includes Ecto-side decode/encode time.
 * **"Is the slow query the adapter or the driver?"** →
   `[:xqlite_ecto3, :handle_execute]` vs `[:xqlite, :query]`.
-  The difference is xqlite_ecto3's own glue (timeout setup, error
-  classification).
+  The difference is xqlite_ecto3's own glue: timeout setup, error
+  classification, and — on failed statements only — the error-path
+  reads (the `fk_diagnostics` replay, which has its own span, and the
+  unique-index-name lookup, which currently does not; under write
+  contention on a rollback-journal database that lookup can wait up
+  to one `busy_timeout`).
 * **"How long is the actual SQLite call?"** → `[:xqlite, :query]`.
   Closest to wall-clock SQLite time, excluding adapter glue.
 

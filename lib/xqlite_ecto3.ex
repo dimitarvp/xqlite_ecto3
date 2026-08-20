@@ -326,6 +326,24 @@ defmodule XqliteEcto3 do
   pool users at the application level: statements interleave with
   whatever the pool is running.
 
+  ## Connection-scoped state persists after the callback
+
+  Anything you install on the handle outlives `fun` for the life of
+  that pooled connection: busy policies and busy observers, the
+  authorizer, hooks, loaded extensions, and session `PRAGMA`s. Later
+  checkouts of the same connection see it, and nothing repairs it.
+
+  The busy slot deserves its own warning. SQLite has ONE busy slot per
+  connection: `Xqlite.register_busy_observer/2` (and
+  `Xqlite.set_busy_policy/2`) replaces the plain `busy_timeout` the
+  adapter configured, and with no retry policy installed the connection
+  stops waiting on contention entirely — writes that used to wait out
+  `busy_timeout` fail immediately with `:database_busy_or_locked`.
+  Unregistering the observer empties the slot without restoring the
+  timeout. To get the configured behavior back, call
+  `Xqlite.busy_timeout/2` with the repo's configured value before the
+  callback returns.
+
   ## Options
 
   Forwarded to `DBConnection.run/3` — most usefully `:timeout` for the

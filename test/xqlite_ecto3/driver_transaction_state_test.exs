@@ -77,6 +77,34 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
     end
   end
 
+  describe "a statement that destroys the transaction underneath the driver" do
+    test "disconnects at the point of damage instead of continuing", %{state: state} do
+      {:ok, _} =
+        NIF.query(
+          state.conn,
+          "CREATE TABLE ocr(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO ocr(email) VALUES ('a@x')", [])
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO ocr(email) VALUES ('a@x')"}
+
+      assert {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+    end
+
+    test "an ordinary statement error inside a live transaction stays an error", %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      bad = %XqliteEcto3.Query{statement: "INSERT INTO missing_table(x) VALUES (1)"}
+
+      assert {:error, %XqliteEcto3.Error{}, state} = Driver.handle_execute(bad, [], [], state)
+      assert {:transaction, _state} = Driver.handle_status([], state)
+    end
+  end
+
   describe "savepoint counter lifecycle" do
     test "fresh connection has savepoint counter 0", %{state: state} do
       assert state.savepoint == 0
