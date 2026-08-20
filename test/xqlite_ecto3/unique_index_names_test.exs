@@ -79,6 +79,31 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     def changeset(struct, attrs), do: cast(struct, attrs, [:v])
   end
 
+  defmodule Auto do
+    use Ecto.Schema
+
+    import Ecto.Changeset
+
+    schema "uix_autos" do
+      field(:v, :string)
+      field(:active, :integer)
+    end
+
+    def changeset(struct, attrs), do: cast(struct, attrs, [:v, :active])
+  end
+
+  defmodule AutoColl do
+    use Ecto.Schema
+
+    import Ecto.Changeset
+
+    schema "uix_autocolls" do
+      field(:v, :string)
+    end
+
+    def changeset(struct, attrs), do: cast(struct, attrs, [:v])
+  end
+
   defmodule Expr do
     use Ecto.Schema
 
@@ -159,6 +184,18 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       ]
     )
 
+    create_table!(
+      "uix_autos",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT, active INTEGER, UNIQUE(v)",
+      ["CREATE UNIQUE INDEX IF NOT EXISTS auto_live ON uix_autos(v) WHERE active = 1"]
+    )
+
+    create_table!(
+      "uix_autocolls",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT, UNIQUE(v)",
+      ["CREATE UNIQUE INDEX IF NOT EXISTS autocoll_nocase ON uix_autocolls(v COLLATE NOCASE)"]
+    )
+
     cap_columns = Enum.map_join(0..24, ", ", fn i -> "c#{i} TEXT" end)
 
     create_table!(
@@ -177,6 +214,8 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       "uix_pairs",
       "uix_sibs",
       "uix_colls",
+      "uix_autos",
+      "uix_autocolls",
       "uix_caps"
     ])
   end
@@ -324,6 +363,51 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     assert opts[:constraint_name] == "uix_colls_v_index"
   end
 
+  test "an autoindex firing beside an innocent named partial sibling stays ambiguous" do
+    {:ok, _} = Repo.insert(Auto.changeset(%Auto{}, %{v: "p", active: 0}))
+
+    assert {:error, %Error{} = err} =
+             Repo.query("INSERT INTO uix_autos(v, active) VALUES ('p', 0)", [])
+
+    assert %Constraint{unique_index_names: ["auto_live", "sqlite_autoindex_uix_autos_1"]} =
+             err.details
+
+    assert Conn.to_constraints(err, []) == [unique: "uix_autos_v_index"]
+
+    result =
+      %Auto{}
+      |> Auto.changeset(%{v: "p", active: 0})
+      |> unique_constraint(:v)
+      |> Repo.insert()
+
+    assert {:error, changeset} = result
+    assert [{:v, {_msg, opts}}] = changeset.errors
+    assert opts[:constraint_name] == "uix_autos_v_index"
+  end
+
+  test "an autoindex firing beside a named collation sibling stays ambiguous" do
+    {:ok, _} = Repo.insert(AutoColl.changeset(%AutoColl{}, %{v: "c"}))
+
+    assert {:error, %Error{} = err} =
+             Repo.query("INSERT INTO uix_autocolls(v) VALUES ('c')", [])
+
+    assert %Constraint{
+             unique_index_names: ["autocoll_nocase", "sqlite_autoindex_uix_autocolls_1"]
+           } = err.details
+
+    assert Conn.to_constraints(err, []) == [unique: "uix_autocolls_v_index"]
+
+    result =
+      %AutoColl{}
+      |> AutoColl.changeset(%{v: "c"})
+      |> unique_constraint(:v)
+      |> Repo.insert()
+
+    assert {:error, changeset} = result
+    assert [{:v, {_msg, opts}}] = changeset.errors
+    assert opts[:constraint_name] == "uix_autocolls_v_index"
+  end
+
   test "more named unique indexes than the lookup cap degrade to the derived name" do
     {:ok, _} = Repo.query("INSERT INTO uix_caps(c0) VALUES ('x')", [])
 
@@ -377,8 +461,13 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     assert {:error, %Error{} = err} =
              Repo.query("INSERT INTO uix_items(sku) VALUES ('shape')", [])
 
-    # The backing sqlite_autoindex_* name is never offered as a candidate.
-    assert %Constraint{unique_index_names: [], unique_index_lookup: :ok} = err.details
+    # The backing sqlite_autoindex_* is recorded as the matching index,
+    # but no changeset can declare it, so the derived name is emitted.
+    assert %Constraint{
+             unique_index_names: ["sqlite_autoindex_uix_items_1"],
+             unique_index_lookup: :ok
+           } = err.details
+
     assert Conn.to_constraints(err, []) == [unique: "uix_items_sku_index"]
   end
 
@@ -409,6 +498,21 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
            } = err.details
 
     assert Conn.to_constraints(err, []) == [unique: "expr_lower_unique"]
+  end
+
+  # ---------------------------------------------------------------------------
+  # Lookup budget
+  # ---------------------------------------------------------------------------
+
+  test "elapsed time at or under the budget stays within it" do
+    assert XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_050)
+    assert XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_000)
+    assert XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 0, 1_000)
+  end
+
+  test "elapsed time over the budget is out" do
+    refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_051)
+    refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 0, 1_001)
   end
 
   # ---------------------------------------------------------------------------

@@ -82,13 +82,15 @@ defmodule XqliteEcto3.Error do
     (every unique index except one built over an expression, which
     SQLite names directly in `index_name`), `unique_index_names`
     carries the real names of the unique indexes covering those
-    columns, read back from the database by
+    columns — `sqlite_autoindex_*` backers of table-level UNIQUE and
+    PRIMARY KEY included — read back from the database by
     `XqliteEcto3.UniqueIndexNames`. `unique_index_lookup` reports
     whether that read ran: `:not_run` (a violation of another kind, or
     one that already names its index), `:ok`, or `{:unavailable,
-    reason}`. A single candidate is what the constraint mapping emits;
-    several stay readable here while the mapping falls back to the
-    conventional derived name (SQLite never says which index fired).
+    reason}`. A single non-autoindex candidate is what the constraint
+    mapping emits; anything else stays readable here while the mapping
+    falls back to the conventional derived name (SQLite never says
+    which index fired, and no changeset declares an autoindex).
     """
 
     defstruct [

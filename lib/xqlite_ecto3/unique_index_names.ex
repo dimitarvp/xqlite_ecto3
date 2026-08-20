@@ -20,31 +20,55 @@ defmodule XqliteEcto3.UniqueIndexNames do
      order
 
   A unique index whose columns match the violated columns exactly is
-  a candidate. Only `CREATE INDEX` carries a name somebody chose;
-  table-level `UNIQUE` and `PRIMARY KEY` are backed by
-  `sqlite_autoindex_*` names that no changeset would declare, so
-  those keep using the conventional derived name.
+  a candidate, whatever its origin. `sqlite_autoindex_*` names — the
+  backing indexes of table-level `UNIQUE` and `PRIMARY KEY` — are
+  recorded like any other candidate (the `sqlite_` prefix is reserved
+  by SQLite, so they are unmistakable), but they are never emitted as
+  a constraint name: no changeset declares them, so a lone autoindex
+  candidate falls back to the conventional derived name.
 
   Several unique indexes can cover the same columns — including ones
   that provably did not fire, such as a partial index whose condition
-  excludes the row, or a sibling under another collation — and SQLite
-  never says which one it hit. Every candidate is recorded on the
-  error struct, but the constraint mapping emits a real name only
-  when exactly one candidate exists: Ecto raises
-  `Ecto.ConstraintError` for every emitted name a changeset did not
-  declare, so emitting several would break by-the-book changesets the
-  moment a sibling index appears. With zero or several candidates the
-  conventional derived `"<table>_<cols>_index"` name is emitted
-  instead, exactly as before the lookup existed.
+  excludes the row, an autoindex beside a named sibling, or a sibling
+  under another collation — and SQLite never says which one it hit.
+  Every candidate is recorded on the error struct, but the constraint
+  mapping emits a real name only when exactly one candidate exists
+  and it is not an autoindex: Ecto raises `Ecto.ConstraintError` for
+  every emitted name a changeset did not declare, so emitting several
+  would break by-the-book changesets the moment a sibling index
+  appears. With zero or several candidates the conventional derived
+  `"<table>_<cols>_index"` name is emitted instead, exactly as before
+  the lookup existed.
+
+  An expression unique index is the one case SQLite names directly in
+  its message, and that name is emitted as reported — the lookup
+  never runs. A table that carries both an expression unique index
+  and a plain unique index over the same value can violate both in
+  one statement, and SQLite reports whichever it checked first. A
+  changeset on such a table must declare both names (one
+  `unique_constraint/3` per name) to convert either outcome.
 
   The lookup runs on the caller's checked-out connection inside the
-  caller's timeout, so its work is bounded: one `index_info` read per
-  named unique index on the table, refused outright past 24 of them
-  (`{:unavailable, {:too_many_unique_indexes, n}}`).
+  caller's timeout, so its work is bounded three ways: one
+  `index_info` read per unique index on the table; refused outright
+  past 24 of them (`{:unavailable, {:too_many_unique_indexes, n}}`);
+  and a wall-clock budget equal to the connection's `busy_timeout`,
+  checked before every read
+  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). A single
+  read can still block for up to `busy_timeout` when another process
+  holds a write lock on a rollback-journal database — the same worst
+  case any statement pays under that contention; WAL databases do not
+  block these reads. Past the cap or the budget the emitted name
+  reverts to the conventional derived one, so a changeset that
+  declares a custom index name on such a table must declare the
+  derived name too.
 
   Both pragmas are fallible. Any failure leaves the names empty and
   records `{:unavailable, reason}`; the conventional derived name
-  then applies exactly as it did before.
+  then applies exactly as it did before. The names are read after the
+  statement failed, so concurrent DDL (an index renamed, a table
+  rebuilt) can make them reflect the schema as of the read rather
+  than as of the violation.
   """
 
   alias XqliteEcto3.Error
@@ -67,6 +91,12 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   def resolve(error, _conn), do: error
 
+  @doc false
+  @spec within_budget?(integer(), non_neg_integer(), integer()) :: boolean()
+  def within_budget?(started_at_ms, budget_ms, now_ms) do
+    now_ms - started_at_ms <= budget_ms
+  end
+
   defp resolve_details(
          %Constraint{
            subtype: :constraint_unique,
@@ -86,40 +116,75 @@ defmodule XqliteEcto3.UniqueIndexNames do
   defp resolve_details(details, _conn), do: details
 
   defp candidates(conn, table, columns) do
+    case busy_budget(conn) do
+      {:ok, budget_ms} -> listed_candidates(conn, table, columns, budget_ms)
+      {:error, _reason} = err -> err
+    end
+  end
+
+  defp listed_candidates(conn, table, columns, budget_ms) do
+    started_at_ms = System.monotonic_time(:millisecond)
+
     case NIF.query(conn, "PRAGMA index_list(#{quote_ident(table)})", []) do
       {:ok, %{rows: rows}} ->
         rows
-        |> Enum.flat_map(&named_unique_index/1)
-        |> capped_matching_indexes(conn, columns)
+        |> Enum.flat_map(&unique_index/1)
+        |> capped_matching_indexes(conn, columns, started_at_ms, budget_ms)
 
       {:error, _reason} = err ->
         err
     end
   end
 
+  # The budget equals the connection's busy timeout: one blocked read
+  # already costs that much, so the budget stops further reads from
+  # multiplying the price across every candidate.
+  defp busy_budget(conn) do
+    case NIF.query(conn, "PRAGMA busy_timeout", []) do
+      {:ok, %{rows: [[ms] | _]}} when is_integer(ms) and ms >= 0 -> {:ok, ms}
+      {:ok, _unexpected_shape} -> {:ok, 0}
+      {:error, _reason} = err -> err
+    end
+  end
+
   # The lookup bills its cost to the caller's checkout deadline, so the
   # per-index reads must stay bounded no matter what the schema holds.
-  defp capped_matching_indexes(names, conn, columns) do
+  defp capped_matching_indexes(names, conn, columns, started_at_ms, budget_ms) do
     count = length(names)
 
     if count > @max_candidate_lookups do
       {:error, {:too_many_unique_indexes, count}}
     else
-      matching_indexes(names, conn, columns)
+      matching_indexes(names, conn, columns, started_at_ms, budget_ms)
     end
   end
 
-  # index_list columns: seq, name, unique, origin, partial.
-  defp named_unique_index([_seq, name, 1, "c" | _]) when is_binary(name), do: [name]
-  defp named_unique_index(_row), do: []
+  # index_list columns: seq, name, unique, origin, partial. Autoindexes
+  # (origin "u" and "pk") count as candidates so a named sibling cannot
+  # be blamed for a violation the autoindex caused.
+  defp unique_index([_seq, name, 1, origin | _])
+       when is_binary(name) and origin in ["c", "u", "pk"], do: [name]
 
-  defp matching_indexes(names, conn, columns) do
+  defp unique_index(_row), do: []
+
+  defp matching_indexes(names, conn, columns, started_at_ms, budget_ms) do
     names
-    |> Enum.reduce_while({:ok, []}, fn name, acc -> collect_match(conn, columns, name, acc) end)
+    |> Enum.reduce_while({:ok, []}, fn name, acc ->
+      collect_match(conn, columns, name, acc, started_at_ms, budget_ms)
+    end)
     |> deduplicate()
   end
 
-  defp collect_match(conn, columns, name, {:ok, acc}) do
+  defp collect_match(conn, columns, name, {:ok, acc}, started_at_ms, budget_ms) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    case within_budget?(started_at_ms, budget_ms, now_ms) do
+      true -> budgeted_match(conn, columns, name, acc)
+      false -> {:halt, {:error, {:lookup_budget_exceeded, now_ms - started_at_ms}}}
+    end
+  end
+
+  defp budgeted_match(conn, columns, name, acc) do
     case index_columns(conn, name) do
       {:ok, ^columns} -> {:cont, {:ok, [name | acc]}}
       {:ok, _other_columns} -> {:cont, {:ok, acc}}

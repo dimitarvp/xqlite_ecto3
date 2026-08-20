@@ -169,6 +169,17 @@ defmodule XqliteEcto3.Connection do
   # every emitted name a changeset did not declare. Ambiguity therefore
   # falls back to the conventional derived name; the candidates stay
   # readable on the error struct.
+  #
+  # A lone autoindex candidate means a table-level UNIQUE or the
+  # primary key fired. SQLite reserves the sqlite_ prefix, so no user
+  # index can carry this name — and no changeset declares it, so the
+  # conventional derived name applies.
+  defp unique_constraints(
+         %XqliteEcto3.Error.Constraint{unique_index_names: ["sqlite_autoindex_" <> _]} = d
+       ) do
+    [unique: unique_index_name(d)]
+  end
+
   defp unique_constraints(%XqliteEcto3.Error.Constraint{unique_index_names: [name]}) do
     [unique: name]
   end
