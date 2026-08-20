@@ -48,29 +48,33 @@ excludes = [
   # SQLite has no SQL-standard isolation levels
   :transaction_isolation,
 
-  # SQLite multi-row VALUES requires all rows to have the same columns
-  :insert_cell_wise_defaults,
+  # repo.exs:864 "insert all": SQLite multi-row VALUES requires all rows
+  # to have the same columns, and Ecto pads a missing cell with NULL — so
+  # the column DEFAULT never applies. Only this one upstream test inserts
+  # uneven rows; the other seven tagged :insert_cell_wise_defaults use
+  # uniform rows, pass, and now run.
+  {:location, {"deps/ecto/integration_test/cases/repo.exs", 864}},
 
   # JSON stored as TEXT; without schema Ecto cannot invoke JSON decoder
   :map_type_schemaless,
 
-  # (permanent SQLite limit) no advisory lock mechanism — single-writer
-  # already enforces mutual exclusion, so the concept does not exist.
-  # Covers deps/ecto_sql/integration_test/sql/lock.exs scenarios.
+  # Our lock_for_migrations/3 is a deliberate no-op passthrough
+  # (single-writer SQLite needs no advisory migration lock), so Ecto never
+  # raises its pool-size-below-2 MigrationError. The one tagged test —
+  # deps/ecto_sql/integration_test/sql/migrator.exs:197 — expects that
+  # raise.
   :lock_for_migrations,
 
   # (permanent SQLite limit) no schema/namespace concept; ATTACH DATABASE
   # is the closest approximation but it is deliberately not wired up.
   :prefix,
 
-  # (permanent SQLite limit) no ALTER TABLE ... ALTER COLUMN; adding a
-  # PRIMARY KEY column to an existing table is structurally impossible
-  # without a full table rebuild. Covered by deps/ecto_sql/integration_test/
-  # sql/alter.exs.
+  # The table rebuild engages for these, but `modify` with a
+  # `references(...)` type has no DataType.column_type clause yet — an
+  # ADAPTER gap (see BACKLOG), not a SQLite limit. One :alter_primary_key
+  # test additionally hits a genuine SQLite limit: a PRIMARY KEY column
+  # cannot be ADDED to an existing table.
   :alter_primary_key,
-
-  # (permanent SQLite limit) no ALTER TABLE ... ALTER COLUMN for FK
-  # constraints — same rebuild-required story as :alter_primary_key.
   :alter_foreign_key,
 
   # SQLite ON DELETE SET NULL/DEFAULT applies to all FK columns; no column-list syntax
@@ -83,11 +87,15 @@ excludes = [
   # SQLite has no native duration/interval type
   :duration_type,
 
-  # (permanent SQLite limit) single-writer architecture — two concurrent
-  # transactions from separate processes on the same file deadlock. WAL
-  # mode relaxes concurrency for readers only; a second writer has to
-  # wait or time out. The test expects true parallelism that SQLite
-  # cannot provide by design.
+  # transaction.exs:161 "transactions are not shared in repo" runs two
+  # concurrent transactions from separate processes. It fails from two
+  # ADAPTER-SUITE settings, not a SQLite limit: this helper pins PoolRepo
+  # to pool_size 1 (the second process never gets a connection), and the
+  # driver's default_transaction_mode: :immediate promotes the parent's
+  # read-only transaction to a writer holding the write lock. The same
+  # test passes against the same SQLite at pool_size >= 2 with :deferred
+  # mode. Kept excluded because the suite keeps pool_size 1 on purpose
+  # and :immediate is the safer production default.
   {:location, {"deps/ecto_sql/integration_test/sql/transaction.exs", 161}},
 
   # alter.exs:44 "reset cache on returning query after alter column
@@ -132,8 +140,10 @@ excludes = [
   :microsecond_precision,
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
-  # :assigns_id_type but actually uses ALTER COLUMN (SQLite limitation).
-  # The 3 other :assigns_id_type tests pass, so narrow the exclusion.
+  # :assigns_id_type but really fails on `modify` with a `references(...)`
+  # type — the same DataType.column_type adapter gap as :alter_foreign_key
+  # (see BACKLOG), not a SQLite limit. The 3 other :assigns_id_type tests
+  # pass, so the exclusion stays narrowed to this line.
   {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}}
 ]
 

@@ -1,24 +1,26 @@
 # Ecto Integration Test Tags
 
-Status of every exclusion tag from the shared ecto/ecto_sql integration test suite.
-Bundled SQLite version: **3.53.2**. Shared files loaded: **16/18**.
+Status of every exclusion from the shared ecto/ecto_sql integration test
+suite — the tag table first, then the location-scoped single-test
+exclusions. Bundled SQLite version: **3.53.2**. Shared files loaded:
+**16/18**.
 
 | Tag | Status | Notes |
 |-----|--------|-------|
 | `:add_column_if_not_exists` | supported | adapter checks `PRAGMA table_info()` per alter block; filters no-ops |
-| `:alter_foreign_key` | excluded | SQLite has no ALTER TABLE MODIFY COLUMN for FK constraints |
-| `:alter_primary_key` | excluded | SQLite cannot add a PRIMARY KEY column via ALTER TABLE |
+| `:alter_foreign_key` | excluded | the table rebuild engages, but `modify` with a `references(...)` type has no `DataType.column_type` clause yet — an adapter gap (backlog), not a SQLite limit |
+| `:alter_primary_key` | excluded | one test hits the same modify-with-references adapter gap (backlog); the other hits a genuine SQLite limit — a PRIMARY KEY column cannot be ADDED to an existing table |
 | `:array_type` | excluded | SQLite has no native array column type |
-| `:assigns_id_type` | needs adapter work | user-assigned PKs work in SQLite; may need PK handling adjustments |
+| `:assigns_id_type` | supported (3/4) | user-assigned PKs work; the tag's one failing test is `migration.exs:664`, location-excluded — the modify-with-references adapter gap, nothing to do with PK handling |
 | `:bitstring_type` | excluded | SQLite has no native bitstring type |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
 | `:delete_with_join` | supported | conservative rewrite to `DELETE FROM t WHERE pk IN (SELECT …)`; raises `Ecto.QueryError` on shapes we can't safely transform |
 | `:duration_type` | excluded | SQLite has no native duration/interval type |
 | `:foreign_key_constraint` | supported | not excluded and all 6 pass (`--only foreign_key_constraint` ⇒ 6 passed); rich FK diagnostics (opt-in `rich_fk_diagnostics: true`) synthesize the `<table>_<col>_fkey` name that `foreign_key_constraint/3` matches on |
-| `:insert_cell_wise_defaults` | excluded | SQLite multi-row VALUES requires all rows to have the same columns |
+| `:insert_cell_wise_defaults` | supported (7/8) | only `repo.exs:864` actually inserts uneven rows (location-excluded): Ecto pads the missing cell with NULL, so the column DEFAULT never applies. The other seven tagged tests pass and run |
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
-| `:json_extract_path` | needs adapter work | `json_extract` returns 1/0 for booleans; adapter needs coercion layer |
-| `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands (`:binary` stores as `BLOB`), so both tagged `type.exs` tests pass un-excluded |
+| `:json_extract_path` | supported (4/5, one permanent location exclusion) | untyped boolean SELECTs return 1/0 by design — no load hook exists for untyped selects, so no coercion layer is coming; `type.exs:362` is location-excluded and the sanctioned fix is explicit `type(..., :boolean)` (see json_extract_path_test.exs) |
+| `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands, so both tagged `type.exs` tests pass un-excluded. (`:binary` columns are declared BLOB — no affinity — and the storage class follows the value: text for valid UTF-8, blob otherwise; LIKE matches both) |
 | `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
 | `:microsecond_precision` | excluded (permanent) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. |
@@ -38,3 +40,17 @@ Bundled SQLite version: **3.53.2**. Shared files loaded: **16/18**.
 | `:transaction_checkout_raises` | supported | not excluded and passes (`--only transaction_checkout_raises` ⇒ 1 passed): `checkout` raises `DBConnection.ConnectionError` on a raw `BEGIN` |
 | `:transaction_isolation` | excluded | SQLite has no SQL-standard isolation levels |
 | `:values_list` | supported | not excluded and all 5 subtests pass (`--only values_list` ⇒ 5 passed); `delete_all` works via the DELETE+JOIN rewrite |
+
+## Location-scoped exclusions
+
+Individual upstream tests excluded by `{:location, {file, line}}`; the
+full rationales live next to each tuple in `test/test_helper.exs`.
+
+| File:line | Why |
+|-----------|-----|
+| `ecto_sql .../sql/transaction.exs:161` | fails from two adapter-suite settings (test pool_size 1 + the driver's BEGIN IMMEDIATE default), not a SQLite limit — passes at pool ≥ 2 with `:deferred` mode |
+| `ecto_sql .../sql/alter.exs:44` | a schemaless SELECT after `modify :numeric` returns the storage value (INTEGER 1), never `%Decimal{}` — types live at the Ecto schema layer by design |
+| `ecto_sql .../sql/logging.exs:74` | UUIDs are stored as TEXT by default, so query-telemetry params carry the 36-char string, not Postgres's 16-byte binary |
+| `ecto .../cases/type.exs:362` | untyped boolean SELECT returns 1/0 (no load hook on untyped selects); use `type(..., :boolean)` |
+| `ecto_sql .../sql/migration.exs:664` | `modify` with a `references(...)` type — adapter gap (backlog), not a SQLite limit |
+| `ecto .../cases/repo.exs:864` | uneven `insert_all` rows: the NULL Ecto pads in suppresses the column DEFAULT |
