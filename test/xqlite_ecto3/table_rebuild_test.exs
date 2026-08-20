@@ -314,6 +314,64 @@ defmodule XqliteEcto3.TableRebuildTest do
       end
     end
 
+    test "removing every primary-key column refuses, leaving the table intact" do
+      create(
+        "CREATE TABLE rb_pk_all(tenant INTEGER, code TEXT, label TEXT, PRIMARY KEY (tenant, code))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_pk_all(tenant, code, label) VALUES (1, 'x', 'a')")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_pk_all, [
+          {:modify, :label, :string, [null: true]},
+          {:remove, :tenant, :integer, []},
+          {:remove, :code, :string, []}
+        ])
+      end
+
+      assert %{rows: [[1, "x", "a"]]} =
+               TestRepo.query!("SELECT tenant, code, label FROM rb_pk_all")
+
+      %{rows: key} =
+        TestRepo.query!("SELECT name, pk FROM pragma_table_xinfo('rb_pk_all') WHERE pk > 0")
+
+      assert Enum.sort_by(key, fn [_name, position] -> position end) ==
+               [["tenant", 1], ["code", 2]]
+    end
+
+    test "removing the only column of a single-column key refuses" do
+      create("CREATE TABLE rb_pk_one(id INTEGER PRIMARY KEY, name TEXT)")
+      TestRepo.query!("INSERT INTO rb_pk_one(id, name) VALUES (1, 'a')")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_pk_one, [
+          {:modify, :name, :string, [null: true]},
+          {:remove, :id, :integer, []}
+        ])
+      end
+
+      assert %{rows: [[1, "a"]]} = TestRepo.query!("SELECT id, name FROM rb_pk_one")
+    end
+
+    test "removing one member of a composite key narrows it to the survivor" do
+      create(
+        "CREATE TABLE rb_pk_some(tenant INTEGER, code TEXT, label TEXT, PRIMARY KEY (tenant, code))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_pk_some(tenant, code, label) VALUES (1, 'x', 'a')")
+
+      assert {:ok, []} =
+               run_alter(:rb_pk_some, [
+                 {:modify, :label, :string, [null: true]},
+                 {:remove, :tenant, :integer, []}
+               ])
+
+      %{rows: key} =
+        TestRepo.query!("SELECT name, pk FROM pragma_table_xinfo('rb_pk_some') WHERE pk > 0")
+
+      assert key == [["code", 1]]
+    end
+
     test "defer_foreign_keys is restored when the rebuild fails mid-dance" do
       create("CREATE TABLE rb_dfr_parent(id INTEGER PRIMARY KEY)")
 

@@ -702,14 +702,18 @@ defmodule XqliteEcto3 do
     refuse_dependent_schema_objects!(meta, table, opts)
 
     existing_columns = fetch_full_column_info!(meta, table, opts)
+    refuse_removed_primary_key!(table, existing_columns, changes)
+
+    before_structure = snapshot_structure!(meta, table, opts)
     foreign_keys = fetch_foreign_keys!(meta, table, opts)
     unique_constraints = fetch_unique_constraints!(meta, table, opts)
     indexes = fetch_user_indexes!(meta, table, opts)
     triggers = fetch_table_triggers!(meta, table, opts)
-    autoincrement = fetch_autoincrement_value!(meta, table, opts)
+    autoincrement? = fetch_autoincrement_flag!(meta, table, opts)
+    sequence_value = fetch_autoincrement_value!(meta, table, opts)
 
     {new_columns, copy_pairs, primary_key} =
-      plan_new_schema(existing_columns, changes, autoincrement: not is_nil(autoincrement))
+      plan_new_schema(existing_columns, changes, autoincrement: autoincrement?)
 
     table_constraints = primary_key ++ foreign_keys ++ unique_constraints
 
@@ -721,7 +725,7 @@ defmodule XqliteEcto3 do
         "DROP TABLE #{quote_name(table.name)}",
         "ALTER TABLE " <>
           quote_name(transient_name(table.name)) <> " RENAME TO " <> quote_name(table.name),
-        restore_autoincrement_sql(table, autoincrement)
+        restore_autoincrement_sql(table, sequence_value)
       ] ++
         Enum.map(indexes, & &1.sql) ++
         Enum.map(triggers, & &1.sql)
@@ -757,6 +761,8 @@ defmodule XqliteEcto3 do
              opts
            ) do
         %{rows: []} ->
+          verify_structure!(meta, table, before_structure, changes, opts)
+
           if self_wrap? do
             Ecto.Adapters.SQL.query!(meta, "COMMIT", [], opts)
           end
@@ -863,6 +869,34 @@ defmodule XqliteEcto3 do
       "reference(s) it, and the rebuild's final RENAME would fail after the table was " <>
       "already dropped. Drop the dependent objects first, run this migration, then " <>
       "recreate them."
+  end
+
+  # A rebuild re-emits the primary key over the key columns that survive the
+  # change set. Removing every one of them turns a keyed table into a keyless
+  # one — the rows stay, but nothing identifies them any more, and no
+  # migration asks for that in so many words. Refuse before any destructive
+  # step. Narrowing a composite key to the members that remain is still
+  # allowed, and a table that never had a primary key is not affected.
+  defp refuse_removed_primary_key!(table, existing_columns, changes) do
+    members = XqliteEcto3.RebuildVerification.primary_key_members(existing_columns)
+
+    survivors =
+      XqliteEcto3.RebuildVerification.surviving_primary_key_members(existing_columns, changes)
+
+    case {members, survivors} do
+      {[], _none} -> :ok
+      {_members, [_kept | _rest]} -> :ok
+      {removed, []} -> raise ArgumentError, removed_primary_key_message(table.name, removed)
+    end
+  end
+
+  defp removed_primary_key_message(table_name, removed) do
+    listing = Enum.map_join(removed, ", ", &inspect/1)
+
+    "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: the change set removes " <>
+      "every primary-key column (#{listing}), leaving the table with no primary key at " <>
+      "all. Keep at least one of them, or make the change by hand with execute/1, " <>
+      "recreating the table with the key you want it to have."
   end
 
   # Foreign keys and UNIQUE constraints are reconstructed from the structural
@@ -1202,6 +1236,30 @@ defmodule XqliteEcto3 do
     Enum.map(rows, fn [trg_name, sql] -> %{name: trg_name, sql: sql} end)
   end
 
+  # sqlite_sequence cannot answer "is AUTOINCREMENT declared" — its row
+  # appears only on the FIRST insert, so an empty table's declaration is
+  # invisible there and a rebuild keyed on it would silently drop the
+  # keyword (making freed ids reusable). The stored CREATE text is the
+  # authoritative source; the shared predicate keeps this decision and the
+  # post-rebuild verification in agreement.
+  defp fetch_autoincrement_flag!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    result =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+        [to_string(name)],
+        opts
+      )
+
+    case result do
+      %{rows: [[create_sql]]} when is_binary(create_sql) ->
+        XqliteEcto3.RebuildVerification.autoincrement_declared?(create_sql)
+
+      _ ->
+        false
+    end
+  end
+
   defp fetch_autoincrement_value!(meta, %Ecto.Migration.Table{name: name}, opts) do
     # sqlite_sequence table exists only if any AUTOINCREMENT column in the DB.
     case Ecto.Adapters.SQL.query(
@@ -1213,6 +1271,33 @@ defmodule XqliteEcto3 do
       {:ok, %{rows: [[seq]]}} -> seq
       _ -> nil
     end
+  end
+
+  # Defense in depth. The rebuild writes a new table from what the structural
+  # pragmas report, so a construct it fails to re-emit would be gone with
+  # nothing to show for it. Read the structure back once the dance and the
+  # foreign-key check have succeeded, and hold it against what the changes
+  # predict from the reading taken before the first statement ran. A
+  # difference is a defect in the rebuild itself, so it stops the migration
+  # before it commits.
+  defp verify_structure!(meta, table, before_structure, changes, opts) do
+    after_structure = snapshot_structure!(meta, table, opts)
+
+    case XqliteEcto3.RebuildVerification.verify(before_structure, changes, after_structure) do
+      :ok -> :ok
+      {:error, error} -> raise error
+    end
+  end
+
+  # Every statement here is a constant inside RebuildVerification, and the
+  # only value that varies is the table name, which travels as a bound
+  # parameter.
+  # sobelow_skip ["SQL.Query"]
+  defp snapshot_structure!(meta, table, opts) do
+    XqliteEcto3.RebuildVerification.read(to_string(table.name), fn sql, params ->
+      %{rows: rows} = Ecto.Adapters.SQL.query!(meta, sql, params, opts)
+      rows
+    end)
   end
 
   # Walk the changes list, producing (a) the new column list for the rebuilt
@@ -1402,7 +1487,7 @@ defmodule XqliteEcto3 do
 
   defp default_spec({:ok, nil}), do: " DEFAULT NULL"
   defp default_spec({:ok, v}) when is_integer(v) or is_float(v), do: [" DEFAULT ", to_string(v)]
-  defp default_spec({:ok, v}) when is_binary(v), do: [" DEFAULT '", v, "'"]
+  defp default_spec({:ok, v}) when is_binary(v), do: [" DEFAULT ", quote_string(v)]
   defp default_spec({:ok, true}), do: " DEFAULT 1"
   defp default_spec({:ok, false}), do: " DEFAULT 0"
   defp default_spec({:ok, {:fragment, frag}}), do: [" DEFAULT ", frag]

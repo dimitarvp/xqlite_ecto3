@@ -409,6 +409,32 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     end
   end
 
+  defmodule EmptyAutoincrementMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_empty_ai")
+      execute("CREATE TABLE rp_empty_ai(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)")
+
+      alter table(:rp_empty_ai) do
+        modify(:v, :text, null: true)
+      end
+    end
+  end
+
+  defmodule QuotedDefaultMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_qdflt")
+      execute("CREATE TABLE rp_qdflt(id INTEGER PRIMARY KEY, name TEXT)")
+
+      alter table(:rp_qdflt) do
+        modify(:name, :text, default: "it's")
+      end
+    end
+  end
+
   defmodule NoTxnFailingRebuildMigration do
     use Ecto.Migration
 
@@ -801,6 +827,30 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     assert count("rp_notxn") == 1
     PoolRepo.query!("INSERT INTO rp_notxn(id, v) VALUES (2, NULL)")
     assert count("rp_notxn") == 2
+  end
+
+  test "AUTOINCREMENT survives rebuilding a never-written table" do
+    migrate!(EmptyAutoincrementMigration, 20_260_820_100_009)
+
+    assert [[sql]] =
+             PoolRepo.query!(
+               "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'rp_empty_ai'"
+             ).rows
+
+    assert sql =~ "AUTOINCREMENT"
+
+    PoolRepo.query!("INSERT INTO rp_empty_ai(v) VALUES ('a')")
+    PoolRepo.query!("DELETE FROM rp_empty_ai")
+    PoolRepo.query!("INSERT INTO rp_empty_ai(v) VALUES ('b')")
+
+    assert [[2]] = PoolRepo.query!("SELECT id FROM rp_empty_ai WHERE v = 'b'").rows
+  end
+
+  test "a default containing a single quote survives the rebuild path" do
+    migrate!(QuotedDefaultMigration, 20_260_820_100_010)
+
+    PoolRepo.query!("INSERT INTO rp_qdflt(id) VALUES (1)")
+    assert [["it's"]] = PoolRepo.query!("SELECT name FROM rp_qdflt WHERE id = 1").rows
   end
 
   test "a mid-dance failure outside a transaction rolls its own transaction back" do
