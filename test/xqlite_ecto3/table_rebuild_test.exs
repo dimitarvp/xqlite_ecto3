@@ -250,4 +250,101 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert rows == [["rb_trg_touch"]]
     end
   end
+
+  describe "rebuild guards" do
+    test "naming the table in a different case still sees its constructs" do
+      create(~s|CREATE TABLE "RbCase"(id INTEGER PRIMARY KEY, v TEXT, CHECK (v <> 'bad'))|)
+
+      assert_raise ArgumentError, ~r/CHECK/, fn ->
+        run_alter(:rbcase, [{:modify, :v, :text, []}])
+      end
+    end
+
+    test "STRICT behind a trailing comment still refuses" do
+      create(
+        "CREATE TABLE rb_strict_c(id INTEGER PRIMARY KEY, v TEXT, n INTEGER) " <>
+          "STRICT -- keyed on (id)"
+      )
+
+      assert_raise ArgumentError, ~r/STRICT/, fn ->
+        run_alter(:rb_strict_c, [{:modify, :v, :text, []}])
+      end
+
+      create("INSERT INTO rb_strict_c(id, v, n) VALUES (1, 'x', 1)")
+
+      assert_raise XqliteEcto3.Error, fn ->
+        TestRepo.query!("INSERT INTO rb_strict_c(id, v, n) VALUES (2, 'y', 'not-an-int')")
+      end
+    end
+
+    test "WITHOUT ROWID behind a trailing comment still refuses" do
+      create("CREATE TABLE rb_wr_c(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID -- keyed by (k)")
+
+      assert_raise ArgumentError, ~r/WITHOUT ROWID/, fn ->
+        run_alter(:rb_wr_c, [{:modify, :v, :text, []}])
+      end
+    end
+
+    test "a view over the table refuses the rebuild up front" do
+      create("CREATE TABLE rb_viewed(id INTEGER PRIMARY KEY, v TEXT)")
+      create("INSERT INTO rb_viewed(id, v) VALUES (1, 'x')")
+      create("CREATE VIEW rb_v AS SELECT id FROM rb_viewed")
+
+      assert_raise ArgumentError, ~r/rb_v/, fn ->
+        run_alter(:rb_viewed, [{:modify, :v, :string, [null: true]}])
+      end
+
+      assert %{rows: [[1]]} = TestRepo.query!("SELECT count(*) FROM rb_viewed")
+
+      TestRepo.query!("DROP VIEW rb_v")
+      assert {:ok, []} = run_alter(:rb_viewed, [{:modify, :v, :string, [null: true]}])
+    end
+
+    test "a trigger on another table naming this one refuses the rebuild" do
+      create("CREATE TABLE rb_trg_target(id INTEGER PRIMARY KEY, v TEXT)")
+      create("CREATE TABLE rb_trg_other(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TRIGGER rb_trg_foreign AFTER INSERT ON rb_trg_other " <>
+          "BEGIN INSERT INTO rb_trg_target(v) VALUES ('x'); END"
+      )
+
+      assert_raise ArgumentError, ~r/rb_trg_foreign/, fn ->
+        run_alter(:rb_trg_target, [{:modify, :v, :string, [null: true]}])
+      end
+    end
+
+    test "defer_foreign_keys is restored when the rebuild fails mid-dance" do
+      create("CREATE TABLE rb_dfr_parent(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TABLE rb_dfr(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "pid INTEGER NOT NULL REFERENCES rb_dfr_parent(id))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_dfr_parent(id) VALUES (1)")
+      TestRepo.query!("INSERT INTO rb_dfr(id, name, pid) VALUES (1, 'a', 1)")
+      create("CREATE TABLE rb_dfr__xqlite_new(x INTEGER)")
+
+      assert_raise XqliteEcto3.Error, fn ->
+        run_alter(:rb_dfr, [{:modify, :name, :string, [null: true]}])
+      end
+
+      assert %{rows: [[0]]} = TestRepo.query!("PRAGMA defer_foreign_keys")
+
+      assert_raise XqliteEcto3.Error, fn ->
+        TestRepo.query!("INSERT INTO rb_dfr(id, name, pid) VALUES (2, 'b', 999)")
+      end
+    end
+
+    test "a defer_foreign_keys the caller set survives a rebuild" do
+      create("CREATE TABLE rb_dfu(id INTEGER PRIMARY KEY, name TEXT)")
+      TestRepo.query!("PRAGMA defer_foreign_keys = ON")
+
+      assert {:ok, []} = run_alter(:rb_dfu, [{:modify, :name, :string, [null: true]}])
+
+      assert %{rows: [[1]]} = TestRepo.query!("PRAGMA defer_foreign_keys")
+      TestRepo.query!("PRAGMA defer_foreign_keys = OFF")
+    end
+  end
 end

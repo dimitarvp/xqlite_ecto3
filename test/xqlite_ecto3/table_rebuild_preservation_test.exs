@@ -301,6 +301,114 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
 
   # --- helpers ---------------------------------------------------------------
 
+  defmodule ModifyKeepsColumnMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_keep")
+
+      execute(
+        "CREATE TABLE rp_keep(id INTEGER PRIMARY KEY, " <>
+          "name TEXT NOT NULL DEFAULT 'dflt', qty INTEGER NOT NULL)"
+      )
+
+      execute("INSERT INTO rp_keep(id, name, qty) VALUES (1, 'a', 1)")
+
+      alter table(:rp_keep) do
+        modify(:name, :text)
+      end
+    end
+  end
+
+  defmodule ModifyOverridesMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:rp_keep) do
+        modify(:qty, :integer, null: true)
+      end
+    end
+  end
+
+  defmodule SelfRefCaseMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS \"RpNode\"")
+
+      execute(
+        "CREATE TABLE \"RpNode\"(id INTEGER PRIMARY KEY, " <>
+          "parent_id INTEGER REFERENCES rpnode(id) ON DELETE CASCADE, label TEXT)"
+      )
+
+      execute("INSERT INTO \"RpNode\"(id, parent_id, label) VALUES (1, NULL, 'root')")
+      execute("INSERT INTO \"RpNode\"(id, parent_id, label) VALUES (2, 1, 'a')")
+      execute("INSERT INTO \"RpNode\"(id, parent_id, label) VALUES (3, 2, 'b')")
+
+      alter table(:RpNode) do
+        modify(:label, :text, null: true)
+      end
+    end
+  end
+
+  defmodule CaseSpellingMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS \"RpSpell\"")
+      execute("CREATE TABLE \"RpSpell\"(id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)")
+      execute("CREATE UNIQUE INDEX rp_spell_uq ON \"RpSpell\"(v)")
+      execute("INSERT INTO \"RpSpell\"(v) VALUES ('a')")
+      execute("INSERT INTO \"RpSpell\"(v) VALUES ('b')")
+
+      alter table(:rpspell) do
+        modify(:v, :text, null: true)
+      end
+    end
+  end
+
+  defmodule ModifyPkMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_pkid")
+      execute("CREATE TABLE rp_pkid(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+      execute("INSERT INTO rp_pkid(name) VALUES ('a')")
+      execute("INSERT INTO rp_pkid(name) VALUES ('b')")
+      execute("DELETE FROM rp_pkid WHERE id = 2")
+
+      alter table(:rp_pkid) do
+        modify(:id, :integer)
+      end
+    end
+  end
+
+  defmodule DescUniqueMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("DROP TABLE IF EXISTS rp_desc")
+      execute("CREATE TABLE rp_desc(a TEXT, b TEXT, v TEXT, UNIQUE(a DESC, b))")
+      execute("INSERT INTO rp_desc(a, b, v) VALUES ('x', 'y', '1')")
+
+      alter table(:rp_desc) do
+        modify(:v, :text, null: true)
+      end
+    end
+  end
+
+  defmodule NoTxnRebuildMigration do
+    use Ecto.Migration
+
+    @disable_ddl_transaction true
+
+    def up do
+      alter table(:rp_notxn) do
+        modify(:v, :text, null: true)
+      end
+    end
+  end
+
   defp migrate!(module, version), do: Ecto.Migrator.up(PoolRepo, version, module, log: false)
 
   defp fk_rows(table), do: PoolRepo.query!("PRAGMA foreign_key_list('#{table}')").rows
@@ -604,5 +712,84 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
 
     assert count("rp_qt") == 1
     assert [["hi"]] = PoolRepo.query!(~s|SELECT "we""ird" FROM rp_qt|).rows
+  end
+
+  test "modify without options keeps NOT NULL and DEFAULT on the column" do
+    migrate!(ModifyKeepsColumnMigration, 20_260_820_100_001)
+
+    insert_rejected("INSERT INTO rp_keep(id, name, qty) VALUES (2, NULL, 1)")
+
+    PoolRepo.query!("INSERT INTO rp_keep(id, qty) VALUES (3, 2)")
+    assert [["dflt"]] = PoolRepo.query!("SELECT name FROM rp_keep WHERE id = 3").rows
+
+    migrate!(ModifyOverridesMigration, 20_260_820_100_002)
+    PoolRepo.query!("INSERT INTO rp_keep(id, name, qty) VALUES (4, 'd', NULL)")
+    assert count("rp_keep") == 3
+  end
+
+  test "a self-reference spelled in a different case keeps every row" do
+    migrate!(SelfRefCaseMigration, 20_260_820_100_003)
+
+    assert count(~s|"RpNode"|) == 3
+    assert [[0, 0, target, "parent_id", "id", _, "CASCADE", _]] = fk_rows("RpNode")
+    assert String.downcase(target, :ascii) == "rpnode"
+    assert fk_check_clean?("RpNode")
+
+    PoolRepo.query!(~s|DELETE FROM "RpNode" WHERE id = 1|)
+    assert count(~s|"RpNode"|) == 0
+  end
+
+  test "a case-mismatched spelling preserves indexes and the sequence" do
+    migrate!(CaseSpellingMigration, 20_260_820_100_004)
+
+    assert [["rp_spell_uq"]] =
+             PoolRepo.query!(
+               "SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'rp_spell_uq'"
+             ).rows
+
+    insert_rejected(~s|INSERT INTO "RpSpell"(v) VALUES ('a')|)
+
+    PoolRepo.query!(~s|INSERT INTO "RpSpell"(v) VALUES ('c')|)
+
+    assert [[3]] =
+             PoolRepo.query!(~s|SELECT id FROM "RpSpell" WHERE v = 'c'|).rows
+  end
+
+  test "modify on the key column keeps PRIMARY KEY and AUTOINCREMENT" do
+    migrate!(ModifyPkMigration, 20_260_820_100_005)
+
+    insert_rejected("INSERT INTO rp_pkid(id, name) VALUES (1, 'dup')")
+
+    PoolRepo.query!("INSERT INTO rp_pkid(name) VALUES ('c')")
+    assert [[3]] = PoolRepo.query!("SELECT id FROM rp_pkid WHERE name = 'c'").rows
+  end
+
+  test "DESC inside a table-level UNIQUE survives the rebuild" do
+    migrate!(DescUniqueMigration, 20_260_820_100_006)
+
+    assert [[uq_name]] =
+             PoolRepo.query!(
+               ~s|SELECT name FROM pragma_index_list('rp_desc') WHERE "unique" = 1|
+             ).rows
+
+    assert [["a", 1], ["b", 0]] =
+             PoolRepo.query!(
+               ~s|SELECT name, "desc" FROM pragma_index_xinfo('#{uq_name}') | <>
+                 "WHERE key = 1 ORDER BY seqno"
+             ).rows
+
+    insert_rejected("INSERT INTO rp_desc(a, b, v) VALUES ('x', 'y', '2')")
+  end
+
+  test "a rebuild outside a transaction refuses before any destructive step" do
+    PoolRepo.query!("DROP TABLE IF EXISTS rp_notxn")
+    PoolRepo.query!("CREATE TABLE rp_notxn(id INTEGER PRIMARY KEY, v TEXT)")
+    PoolRepo.query!("INSERT INTO rp_notxn(id, v) VALUES (1, 'keep')")
+
+    assert_raise ArgumentError, ~r/transaction/, fn ->
+      migrate!(NoTxnRebuildMigration, 20_260_820_100_007)
+    end
+
+    assert count("rp_notxn") == 1
   end
 end

@@ -695,8 +695,29 @@ defmodule XqliteEcto3 do
               "and rewrites every row."
     end
 
+    # Two half-blind signals, refuse only when both say no: in_transaction?/1
+    # tracks this process's explicit transaction nesting (true under a real
+    # migration's DDL transaction, blind to the SQL Sandbox), while
+    # DBConnection.status/2 reaches the driver's handle_status, which asks
+    # SQLite itself (true under the Sandbox's wrapping transaction, but it
+    # may probe a different pool member than the one running this rebuild).
+    in_wrapping_transaction? =
+      in_transaction?(meta) or DBConnection.status(meta.pid, opts) == :transaction
+
+    if !in_wrapping_transaction? do
+      raise ArgumentError,
+            "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY outside a " <>
+              "transaction: the rebuild drops and recreates the table in several " <>
+              "statements, and only the surrounding transaction makes a mid-rebuild " <>
+              "failure safe. Remove @disable_ddl_transaction from this migration, or " <>
+              "wrap the operation in a transaction."
+    end
+
+    table = resolve_stored_table_name!(meta, table, opts)
+
     refuse_unpreservable_constraints!(meta, table, opts)
     refuse_incoming_actions_on_populated!(meta, table, opts)
+    refuse_dependent_schema_objects!(meta, table, opts)
 
     existing_columns = fetch_full_column_info!(meta, table, opts)
     foreign_keys = fetch_foreign_keys!(meta, table, opts)
@@ -723,32 +744,105 @@ defmodule XqliteEcto3 do
         Enum.map(indexes, & &1.sql) ++
         Enum.map(triggers, & &1.sql)
 
-    statements
-    |> List.flatten()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.each(&Ecto.Adapters.SQL.query!(meta, &1, [], opts))
+    %{rows: [[prior_defer]]} =
+      Ecto.Adapters.SQL.query!(meta, "PRAGMA defer_foreign_keys", [], opts)
 
-    # foreign_key_check returns rows if violations exist. It's a PRAGMA that
-    # only produces rows on failure, so an empty result means clean.
-    case Ecto.Adapters.SQL.query!(
-           meta,
-           "PRAGMA foreign_key_check(#{quote_name(table.name)})",
-           [],
-           opts
-         ) do
-      %{rows: []} ->
-        # SQLite auto-resets defer_foreign_keys only at COMMIT; inside a
-        # transaction that never commits (the SQL Sandbox), the flag would
-        # leak ON and silently disable FK enforcement for the session.
-        Ecto.Adapters.SQL.query!(meta, "PRAGMA defer_foreign_keys = OFF", [], opts)
-        {:ok, []}
+    try do
+      statements
+      |> List.flatten()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.each(&Ecto.Adapters.SQL.query!(meta, &1, [], opts))
 
-      %{rows: violations} ->
-        raise "table-rebuild for #{inspect(table.name)} left foreign-key violations: " <>
-                inspect(violations) <>
-                ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
-                "dependent tables that reference this one."
+      # foreign_key_check returns rows if violations exist. It's a PRAGMA that
+      # only produces rows on failure, so an empty result means clean.
+      case Ecto.Adapters.SQL.query!(
+             meta,
+             "PRAGMA foreign_key_check(#{quote_name(table.name)})",
+             [],
+             opts
+           ) do
+        %{rows: []} ->
+          {:ok, []}
+
+        %{rows: violations} ->
+          raise "table-rebuild for #{inspect(table.name)} left foreign-key violations: " <>
+                  inspect(violations) <>
+                  ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
+                  "dependent tables that reference this one."
+      end
+    after
+      # SQLite auto-resets defer_foreign_keys only at COMMIT, which a
+      # sandboxed transaction never reaches and a failed rebuild never gets
+      # to — either way the flag would leak ON and silently disable FK
+      # enforcement for the session. Restore rather than force OFF: a caller
+      # may have deliberately deferred enforcement before migrating.
+      # Best-effort (non-bang): if the connection itself died, there is no
+      # flag left to leak and no error worth masking the original one with.
+      _ = Ecto.Adapters.SQL.query(meta, "PRAGMA defer_foreign_keys = #{prior_defer}", [], opts)
     end
+  end
+
+  # SQLite resolves table names case-insensitively (ASCII folding), but
+  # several of the rebuild's schema reads compare names as raw TEXT.
+  # Resolving the stored spelling once up front makes every later read —
+  # CREATE-text scans, index/trigger/sequence fetches, quoting, the final
+  # RENAME target — see the table exactly as the schema stores it, whatever
+  # spelling the migration used.
+  defp resolve_stored_table_name!(meta, table, opts) do
+    result =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND lower(name) = lower(?1)",
+        [to_string(table.name)],
+        opts
+      )
+
+    case result do
+      %{rows: [[stored]]} ->
+        %{table | name: stored}
+
+      %{rows: []} ->
+        raise ArgumentError,
+              "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: no such table"
+    end
+  end
+
+  # Since SQLite 3.25 the rebuild's final RENAME re-parses every view and
+  # trigger in the schema, so any of them still naming the just-dropped
+  # table kills the dance mid-way with an error about a table that "no
+  # longer exists". Refuse up front instead, naming the dependents. The
+  # reference test is a word-boundary scan over the stored SQL — an
+  # over-approximation, so the only failure mode is a safe refusal.
+  defp refuse_dependent_schema_objects!(meta, table, opts) do
+    table_name = to_string(table.name)
+
+    %{rows: rows} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT type, name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND " <>
+          "(type = 'view' OR (type = 'trigger' AND lower(tbl_name) <> lower(?1)))",
+        [table_name],
+        opts
+      )
+
+    pattern =
+      Regex.compile!("(?<![A-Za-z0-9_])#{Regex.escape(table_name)}(?![A-Za-z0-9_])", "i")
+
+    dependents = for [type, name, sql] <- rows, Regex.match?(pattern, sql), do: {type, name}
+
+    case dependents do
+      [] -> :ok
+      hits -> raise ArgumentError, dependents_message(table_name, hits)
+    end
+  end
+
+  defp dependents_message(table_name, hits) do
+    listing = Enum.map_join(hits, ", ", fn {type, name} -> "#{type} #{inspect(name)}" end)
+
+    "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: #{listing} still " <>
+      "reference(s) it, and the rebuild's final RENAME would fail after the table was " <>
+      "already dropped. Drop the dependent objects first, run this migration, then " <>
+      "recreate them."
   end
 
   # Foreign keys and UNIQUE constraints are reconstructed from the structural
@@ -854,7 +948,8 @@ defmodule XqliteEcto3 do
     if has_generated_columns?(meta, table, opts) do
       "generated columns"
     else
-      scan_create_sql_for_unpreservable(meta, table, opts)
+      unpreservable_table_option(meta, table, opts) ||
+        scan_create_sql_for_unpreservable(meta, table, opts)
     end
   end
 
@@ -895,24 +990,35 @@ defmodule XqliteEcto3 do
       Regex.match?(~r/\bCOLLATE\b/i, create_sql) -> "COLLATE clauses"
       Regex.match?(~r/\bDEFERRABLE\b/i, create_sql) -> "DEFERRABLE foreign keys"
       Regex.match?(~r/\bON\s+CONFLICT\b/i, create_sql) -> "ON CONFLICT clauses"
-      true -> unpreservable_table_option(create_sql)
+      true -> nil
     end
   end
 
-  # WITHOUT ROWID and STRICT are table options that live in the tail after the
-  # final `)` closing the column/constraint list. Table options carry no
-  # parentheses, so the last `)` is an unambiguous boundary — a column merely
-  # named `rowid` or `strict` sits inside the list and never reaches the tail,
-  # avoiding a false positive. Neither option is exposed by the structural
-  # pragmas, so a rebuild would silently drop it (converting a WITHOUT ROWID
-  # table to a rowid table, or dropping strict type-checking); refuse instead.
-  defp unpreservable_table_option(create_sql) do
-    tail = create_sql |> String.split(")") |> List.last() || ""
+  # WITHOUT ROWID and STRICT live in the CREATE text's tail, where a comment
+  # containing `)` can hide them from any text scan — but pragma_table_list
+  # reports both structurally (`wr`, `strict`). A rebuild would silently drop
+  # either (converting a WITHOUT ROWID table to a rowid table, or dropping
+  # strict type-checking); refuse instead.
+  defp unpreservable_table_option(meta, table, opts) do
+    result =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT wr, strict FROM pragma_table_list " <>
+          "WHERE schema = 'main' AND lower(name) = lower(?1)",
+        [to_string(table.name)],
+        opts
+      )
 
-    cond do
-      Regex.match?(~r/\bWITHOUT\s+ROWID\b/i, tail) -> "WITHOUT ROWID storage"
-      Regex.match?(~r/\bSTRICT\b/i, tail) -> "STRICT typing"
-      true -> nil
+    case result do
+      %{rows: [[wr, strict]]} ->
+        cond do
+          wr == 1 -> "WITHOUT ROWID storage"
+          strict == 1 -> "STRICT typing"
+          true -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 
@@ -974,9 +1080,15 @@ defmodule XqliteEcto3 do
   # A self-reference must point at the transient rebuild table, so that dropping
   # the original cannot cascade (or restrict) into the freshly-copied rows;
   # ALTER TABLE ... RENAME then rewrites this target back to the final name.
-  defp fk_target(target, table_name) when target == table_name, do: transient_name(table_name)
+  # SQLite matches the REFERENCES target case-insensitively (ASCII), so the
+  # self-reference test must too — an exact compare misses `REFERENCES node`
+  # on a table stored as `Node`, leaving the clause pointed at the original
+  # table: its DROP would then cascade into the rows just copied out of it.
+  defp fk_target(target, table_name) do
+    if ascii_equal_fold?(target, table_name), do: transient_name(table_name), else: target
+  end
 
-  defp fk_target(target, _table_name), do: target
+  defp ascii_equal_fold?(a, b), do: String.downcase(a, :ascii) == String.downcase(b, :ascii)
 
   # A NULL `to` means the key references the target's implicit primary key —
   # emit `REFERENCES target` with no column list so SQLite resolves it there.
@@ -1014,16 +1126,25 @@ defmodule XqliteEcto3 do
   end
 
   defp unique_constraint_clause(meta, index_name, opts) do
+    # index_xinfo, not index_info: only the former carries the per-column
+    # sort direction, and a UNIQUE(a DESC, b) rebuilt without the DESC would
+    # silently stop satisfying mixed-direction ORDER BYs. `key = 1` filters
+    # the indexed columns from the trailing rowid entries.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT name FROM pragma_index_info(?1) ORDER BY seqno",
+        "SELECT name, \"desc\" FROM pragma_index_xinfo(?1) WHERE key = 1 ORDER BY seqno",
         [index_name],
         opts
       )
 
-    cols = Enum.map(rows, fn [col_name] -> col_name end)
-    ["UNIQUE (", quoted_column_list(cols), ")"]
+    cols =
+      Enum.map(rows, fn
+        [col_name, 1] -> [quote_name(col_name), " DESC"]
+        [col_name, _asc] -> quote_name(col_name)
+      end)
+
+    ["UNIQUE (", Enum.intersperse(cols, ", "), ")"]
   end
 
   defp quoted_column_list(cols) do
@@ -1143,14 +1264,27 @@ defmodule XqliteEcto3 do
       pk_clause
     ]
 
-    %{name: name, source_name: name, spec: spec}
+    %{
+      name: name,
+      source_name: name,
+      spec: spec,
+      meta: %{
+        type: type,
+        notnull: notnull,
+        default: dflt,
+        pk: pk,
+        composite_pk?: composite_pk?,
+        autoincrement?: autoincrement? and pk == 1 and not composite_pk?
+      }
+    }
   end
 
   defp default_clause(nil), do: ""
   defp default_clause(value), do: [" DEFAULT ", to_string(value)]
 
   defp apply_change(cols, {:add, name, type, opts}) do
-    cols ++ [%{name: to_string(name), source_name: nil, spec: add_spec(name, type, opts)}]
+    cols ++
+      [%{name: to_string(name), source_name: nil, spec: add_spec(name, type, opts), meta: nil}]
   end
 
   defp apply_change(cols, {:add_if_not_exists, name, type, opts}) do
@@ -1179,7 +1313,7 @@ defmodule XqliteEcto3 do
 
     Enum.map(cols, fn col ->
       if col.name == name_s do
-        %{col | spec: add_spec(name, type, opts)}
+        %{col | spec: modify_spec(col, name, type, opts)}
       else
         col
       end
@@ -1187,6 +1321,51 @@ defmodule XqliteEcto3 do
   end
 
   defp apply_change(cols, _other), do: cols
+
+  # Ecto's contract for modify/3: an option not given leaves that aspect of
+  # the column untouched (":null — … If this option is not set, the nullable
+  # behaviour of the underlying column is not modified"). So the migration's
+  # options merge OVER what the column already declares — rebuilding the
+  # definition from the options alone silently dropped NOT NULL, DEFAULT,
+  # PRIMARY KEY and AUTOINCREMENT. A column added earlier in the same alter
+  # has no stored declaration to merge with (meta: nil).
+  defp modify_spec(%{meta: nil}, name, type, opts), do: add_spec(name, type, opts)
+
+  defp modify_spec(%{meta: meta}, name, type, opts) do
+    notnull? =
+      case Keyword.fetch(opts, :null) do
+        {:ok, null} -> !null
+        :error -> meta.notnull
+      end
+
+    default =
+      case Keyword.fetch(opts, :default) do
+        {:ok, _} = given -> default_spec(given)
+        :error -> default_clause(meta.default)
+      end
+
+    pk? =
+      case Keyword.fetch(opts, :primary_key) do
+        {:ok, flag} -> flag
+        :error -> meta.pk == 1 and not meta.composite_pk?
+      end
+
+    pk_clause =
+      cond do
+        !pk? -> ""
+        meta.autoincrement? -> " PRIMARY KEY AUTOINCREMENT"
+        true -> " PRIMARY KEY"
+      end
+
+    [
+      quote_name(name),
+      " ",
+      XqliteEcto3.DataType.column_type(type, opts),
+      if(notnull?, do: " NOT NULL", else: ""),
+      default,
+      pk_clause
+    ]
+  end
 
   defp add_spec(name, type, opts) do
     type_sql = XqliteEcto3.DataType.column_type(type, opts)
