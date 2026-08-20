@@ -348,6 +348,38 @@ representability-exact rather than a digit-count heuristic), plus 2^52 and 2^-13
 accepts and 18/19-sig rejects. Probes re-run by the orchestrator (exit 0). Zero
 new findings. DRYNESS: **DRY (2 of 2)** — second consecutive clean covering run.
 Re-wet triggers UNCHANGED.
+RE-WET (2026-08-20): the 0.11.0 dep bump + its own F-B4-2 fix (`be44463`,
+the guard now mirrors NUMERIC integer demotion) + the law-generator oracle
+change (`787ea23`).
+COVERING RE-RUN (Run 25, 2026-08-20 — lap 3, the oracle attacked from
+OUTSIDE the generator's guard-filter): **F-B4-3 (S2, FIXED, RED→green)** —
+the guard converted every value through float64 first, but the bind path
+sends TEXT and NUMERIC affinity stores an int64-fitting integer literal as
+an EXACT INTEGER — so whole numbers past 2^53 were refused (6 over-refusals
+in a 26-case harness incl. i64 max, while i64 MIN was accepted as
+float64-exact; ZERO false accepts). Fix: a fast-accept keyed on the
+RENDERED `:normal` form parsing as an int64 integer literal — the same
+value written "…0.0" renders with a point, parses as REAL, and stays under
+the float64 model (refuse pin committed). **F-B4-4 (S2, FIXED, RED→green;
+closes the B2-filed encoder seed)** — map/list params used `Jason.encode!`,
+so structs without `Jason.Encoder` (a `:duration` `%Duration{}`; Ecto
+never validates `dump/1` output), nested such structs, and
+JSON-unrepresentable values raised raw Jason/protocol errors. Fix: new
+`UnencodableParameterError` (value/index/reason) from attempt-then-
+structure `encode_json/2` (encoder-bearing structs keep working — no
+narrowing); parameter positions threaded through `encode/3`;
+`DecimalPrecisionError` gains `index`. CLEAN: zero silent transformations;
+`representable?/1` never raises; `internal_encoding_error` classified;
+UUID/binary byte-stable at 0.11.0; churn re-anchored (wrap/1 untouched).
+DRYNESS: two S2 — **B4 RESETS to 0 of 2, NOT DRY**. Re-wets ALSO on:
+`integer_literal_in_int64?/1` / `encode_json/2` /
+`UnencodableParameterError` / the encode index threading. Next-pass seeds:
+a property pinning the fast-accept's rendered-form predicate to the bind
+text (and the loader to `stored_decimal/1`); `connection.ex`
+`expr(%Decimal{}, …)` (no precision check, unreachable from ordinary Ecto
+— dead code or second door?); decimal WHERE comparisons against
+INTEGER-stored values; `-0` sign loss; collections of unencodable structs;
+the int64-boundary fast-accept adversarially.
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
@@ -814,6 +846,35 @@ leaks no process or mailbox entry (delta 0), and the cancel path works
 immediately after; `cancellation_test.exs` 11 green. Probes re-run by the
 orchestrator (exit 0). Zero new findings. DRYNESS: **DRY (2 of 2)** — second
 consecutive clean covering run. Re-wet triggers UNCHANGED.
+RE-WET (2026-08-20): the 0.11.0 dep bump (scheduler-class flips of
+adapter-called NIFs) + Run 23's `disconnect_if_rolled_back` on the sibling
+error branch.
+COVERING RE-RUN (Run 25, 2026-08-20 — lap 3): **F-B8-4 (S1, FIXED,
+RED→green)** — the flagship's sharpest open question settled against the
+code: SQLite rolls back the WHOLE transaction when it interrupts a write,
+and the adapter's timeout is that interrupt; the cancelled branch returned
+a plain error tuple, so post-cancel body statements ran in autocommit and
+committed durably inside a transaction that reported failure (both
+statement paths, driver-level and through a real pool; read-only controls
+clean — which is why Run 11's SELECT-only pins never saw it). Fix: the
+cancelled branch now routes through `disconnect_if_rolled_back/2`
+(disconnect at the point of damage for writes; reads keep their
+transaction; autocommit statements unaffected). **F-B8-5 (S3, FILED)** —
+under dirty-scheduler saturation a 100 ms timeout returned in 11.3 s
+(113×): the canceller runs (normal scheduler) but the statement had not
+started; docs line owed (the timeout bounds the QUERY, not the caller's
+wait). Ledger correction: Run 7's flip census — the driver calls
+`transaction_status/1` (already dirty at 0.10.0), so the hot-path flips at
+`c24383b` number THREE (`stmt_column_names`, `changes`, `total_changes`),
+not five; cancel-token NIFs stay normal-scheduler (correct). CLEAN: core
+100 ms timeout honored at 101 ms on cached AND one-shot paths at 0.11.0
+(`:infinity` control 4.6 s); encode-raise hygiene (no canceller, zero
+deltas); `handle_status/2` accurate mid-cancellation. DRYNESS: an S1 —
+**B8 RESETS to 0 of 2, NOT DRY**. Re-wets ALSO on: the cancelled branch /
+`disconnect_if_rolled_back`. Next-pass seeds: savepoint-nested cancelled
+writes (`handle_rollback(:savepoint)`); SQL Sandbox × cancelled write;
+streams in a sibling-rolled-back transaction; F-B8-5 through a
+multi-connection pool; the guard's status read under dirty saturation.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

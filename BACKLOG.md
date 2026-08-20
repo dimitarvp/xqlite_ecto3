@@ -259,16 +259,20 @@ after the S0–S2 burn-down.
   type tags — recorded, not churned. (Run 16, B2; counts re-verified
   unchanged and pointers corrected to the `test` lines in Run 24 —
   line filters snap to the nearest test at or before the line.)
-- [F-B2-14-adjacent] (B4 court, orchestrator-unverified seed from
-  Run 24) `Query`'s `encode_param/1` `is_map` catch-all sends ANY
-  struct without a `Jason.Encoder` implementation to `Jason.encode!`,
-  so a custom Ecto type whose `dump/1` returns a struct surfaces as a
-  raw `Protocol.UndefinedError` from Jason instead of a structured
-  adapter error — against the errors-carry-maximum-structure rule.
-  Reachable from ordinary Ecto (`%Duration{}` proves it live). The
-  B4 re-cover adjudicates: either a structured
-  `{:unencodable_parameter, struct}` error or an explicit clause
-  list. (Run 24, B2 → B4)
+- [F-B2-14-adjacent] CLOSED by F-B4-4 (Run 25): adjudicated CONFIRMED
+  S2 and fixed — `UnencodableParameterError` (value/index/reason) from
+  attempt-then-structure JSON encoding; encoder-bearing structs keep
+  working; parameter positions threaded; `DecimalPrecisionError`
+  gained `index`. (Run 24 → Run 25, B4)
+- [F-B8-5] (S3, docs, from Run 25) Under dirty-scheduler saturation a
+  statement waiting for a dirty IO slot has not started, so a 100 ms
+  `:timeout` returned in 11.3 s (113×) — the cancel NIFs stay on
+  normal schedulers (correct), the structured error still arrives, and
+  no pool deadline can rescue a caller suspended before its statement
+  runs. Owed: one honest line next to the timeout→cancel docs — the
+  timeout bounds how long the QUERY runs, not how long the CALLER
+  waits, when long database work saturates the VM's dirty schedulers.
+  Fold into the Gate-3 docs pass + the STE README drafts. (Run 25, B8)
 - [B7 enhancement candidate, unranked] A structural before/after
   verification at the end of the rebuild — compare table_xinfo,
   foreign_key_list, index_list, and table_list.wr/strict against the

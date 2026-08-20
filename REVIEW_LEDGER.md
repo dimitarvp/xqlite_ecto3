@@ -3185,3 +3185,159 @@ event-surface probe 9/9, OTel path unchanged.
   re-checked them); line-pointer discipline as a standing check;
   whether `refuse_unknown_column!`/the `pk_removed` door could hide a
   future upstream test on the next ecto/ecto_sql bump.
+
+---
+
+## Run 25 — 2026-08-20 — lap 3, batch 5: B4 + B8 re-covers (0.11.0 + law-aftermath absorption)
+
+- Commit at scan: `195713a`. Single Opus reviewer over both axes;
+  orchestrator re-drove all four load-bearing probes (driver-level and
+  repo-level cancelled-DML leaks with their read-only controls; the
+  26-case decimal edge harness; the parameter-error shapes) — every
+  verdict identical — implemented all three fixes, captured suite RED via
+  the stash pattern (three lib files stashed under the new tests →
+  exactly the 12 designed failures, every control green on the old code),
+  own exit-file-gated `mix verify`.
+
+### B8 — the flagship's sharpest question settled against the code
+
+- **F-B8-4 (S1, CONFIRMED + FIXED AT GATE, RED→green).** The Run-23
+  handoff seed: SQLite rolls back the ENTIRE transaction when it
+  interrupts an INSERT/UPDATE/DELETE (`sqlite3VdbeHalt` →
+  `sqlite3RollbackAll`, autocommit restored) — and the adapter's timeout
+  IS that interrupt. The `{:error, :operation_cancelled}` branch returned
+  a plain error tuple that DBConnection does not disconnect on, so after
+  a cancelled write inside `Repo.transaction` every later body statement
+  ran in autocommit and COMMITTED DURABLY while the transaction reported
+  failure — the F-B3-5 atomicity break through the timeout door, on BOTH
+  statement paths (cached and one-shot), proven at driver level (leaked
+  ids visible to an independent connection before any commit) and through
+  a real pool (`rows_surviving_a_FAILED_transaction = [30]`; read-only
+  cancel control atomic). Why Run 11 missed it: both in-transaction
+  cancellation pins cancel a SELECT, and read-only interrupts roll
+  nothing back (re-confirmed at 0.11.0 — the Run 11 result stands, it
+  just never generalized to writes). FIX: the cancelled branch now routes
+  through the same `disconnect_if_rolled_back/2` guard Run 23 added —
+  correct in all three situations (cancelled write in txn → disconnect at
+  the point of damage; cancelled read in txn → error with the transaction
+  open; cancelled statement outside a txn → error, connection reusable),
+  at the cost of one status read on the cancelled path only. Tests: a
+  driver-callback pair (cancelled write disconnects; cancelled read stays
+  an error with the transaction open — the over-disconnect control) + a
+  pooled atomicity test (no body write after a cancelled write survives a
+  failed transaction; RED on the old driver = one leaked row). Post-fix
+  probe disposition: the repo-level probe flips to PASS (both failed
+  transactions atomic); the driver-level probe still prints FAIL by
+  design — its `slow_return` now reads `{:disconnect, …}` (the fix
+  signaling) and the probe then keeps driving the same state by hand,
+  which DBConnection never does after a disconnect verdict; the
+  raw-callback layer cannot stop a caller that ignores the verdict.
+- **F-B8-5 (S3, CONFIRMED, FILED).** Timeout precision under
+  dirty-scheduler saturation: the cancel token/cancel_operation NIFs stay
+  on normal schedulers (correct — the canceller always runs), but a
+  statement waiting for a dirty IO slot has not started, so the caller
+  waited 11.3 s against a 100 ms deadline (113×) with 12 long queries
+  saturating 10 dirty schedulers. Structured error and healthy connection
+  throughout — only the timing promise breaks, and no pool-side deadline
+  can rescue a caller suspended before its statement runs. Not a 0.11.0
+  regression (`stmt_multi_step_cancellable` was already dirty). FILED as
+  a docs line (the timeout bounds how long the QUERY runs, not how long
+  the CALLER waits, under dirty saturation) — owed to the Gate-3 docs
+  pass + the STE README drafts.
+- **Ledger correction (append-only honesty), Run 7:** the DirtyIo
+  flip census said five adapter-called NIFs flip at the dep bump; the
+  driver actually calls `transaction_status/1` (already DirtyIo at
+  0.10.0), not `txn_state`. The true hot-path flip count at `c24383b` is
+  THREE (`stmt_column_names`, `changes`, `total_changes`), plus
+  `register_progress_hook` off-path; `create_cancel_token` and
+  `cancel_operation` remain normal-scheduler — the right arrangement.
+- **CLEAN (orchestrator re-drove the leak probes; leg evidence
+  reviewer-run with controls):** core timeout at 0.11.0 — 100 ms deadline
+  honored at 101 ms on BOTH the cached and the one-shot path, structured
+  `%DBConnection.ConnectionError{}`, connection reusable, `:infinity`
+  control runs 4.6 s (the probe measures cancellation, not a fast
+  query); encode-raise hygiene re-anchored (no canceller spawned, zero
+  process/mailbox delta, cancel path immediately functional);
+  `handle_status/2` accurate mid-cancellation (reports `:idle` right
+  after a cancelled in-txn write, matching SQLite — the oracle the fix
+  now consults).
+- Dryness: an S1 — **B8 stays 0 of 2, NOT DRY**. Re-wet triggers ALSO:
+  the cancelled branch of `handle_execute` / `disconnect_if_rolled_back`.
+- Completeness critic (next B8 pass): SAVEPOINTS (rollback-on-interrupt
+  destroys them too — a cancelled write inside a nested Repo.transaction
+  is the same shape through `handle_rollback(:savepoint)`); the SQL
+  Sandbox × cancelled write (the sandbox's never-committing transaction
+  destroyed → later test writes autocommit into the real test database —
+  now partially mitigated by the guard, unprobed); a stream running in a
+  transaction a sibling cancelled write rolled back; F-B8-5 through a
+  multi-connection pool; the guard's own status read queuing under dirty
+  saturation.
+
+### B4 — the guard was over-refusing what SQLite stores exactly, and the encoder gap adjudicated
+
+- **F-B4-3 (S2, CONFIRMED + FIXED AT GATE, RED→green).** The decimal
+  guard converted EVERY value through float64 before modeling storage —
+  but the bind path sends TEXT, and NUMERIC affinity stores a plain
+  integer literal that fits int64 as an EXACT INTEGER with no float64
+  anywhere. So every whole number past 2^53 was refused
+  (`DecimalPrecisionError` claiming it "would silently round" — false
+  for these) while the identical digits round-trip exactly: 26-case
+  harness → 6 over-refusals (2^53+1, i64 max, 17-19-digit integrals),
+  ZERO false accepts, and the asymmetry that i64 MIN was accepted (it is
+  float64-exact) while i64 MAX was refused. FIX: a fast-accept keyed on
+  the RENDERED form — `Decimal.to_string(d, :normal)` parsing as a plain
+  integer literal within int64 — which is strictly more faithful than
+  the reviewer's value-based sketch: the same VALUE written "…0.0"
+  renders with a decimal point, SQLite parses that text as REAL, and the
+  float64 model stays its judge (pinned by a new refuse test for exactly
+  that form; the F-B4-2 class remains refused). Module premise comment
+  corrected (bound as TEXT; two storage paths); 6 accept pins + 1
+  render-form refuse pin + a NIF-level storage ground-truth test
+  (typeof = integer, exact digits) committed.
+- **F-B4-4 (S2, CONFIRMED + FIXED AT GATE, RED→green) — closes
+  [F-B2-14-adjacent].** `encode_param`'s map/list clauses called
+  `Jason.encode!`, so any struct without a `Jason.Encoder` (a
+  `:duration` field's `%Duration{}` — Ecto does not validate what
+  `dump/1` returns), any nested such struct, and any JSON-unrepresentable
+  value surfaced as a raw `Protocol.UndefinedError`/`Jason.EncodeError`
+  naming Jason, not the adapter. FIX: new
+  `XqliteEcto3.UnencodableParameterError` (fields `value`, `index`,
+  `reason`) raised from an attempt-then-structure `encode_json/2` — a
+  deliberate refinement over the refuse-all-structs sketch: a struct that
+  DOES implement `Jason.Encoder` keeps encoding (no behavior narrowing);
+  only failures are converted, including the protocol raise (one
+  narrow rescue+reraise at the documented raise boundary, same class as
+  the rebuild's sanctioned rescue). Parameter positions are now threaded
+  through `encode/3`, and `DecimalPrecisionError` gains the same `index`
+  field. 5 committed tests (struct / nested struct / invalid-UTF8 map /
+  plain-map control / decimal index).
+- **CLEAN (reviewer-driven with controls; orchestrator re-drove the
+  finding probes):** zero silent transformations across the full 26-case
+  edge harness (the guard's core job intact; RED control = a real
+  mismatch detected through the bypass path); `representable?/1` never
+  raises across the float-range boundary (control: a real
+  `Decimal.Error` is catchable; decimal 3.1.1 caps parsing at 34 digits
+  before the guard is reached); non-finite decimals refused by Ecto
+  before the adapter AND by the guard directly; the 0.11.0
+  `internal_encoding_error` atom is CLASSIFIED (`type:
+  :internal_encoding_error` via the `{tag, msg}` wrap clause — matchable,
+  consistent with `:nif_panicked`); UUID/binary byte-stability at 0.11.0
+  (11/11, all-256-bytes blob identity, 16-byte UUID storage, canonical
+  text forms); churn `458dc0c..195713a` — types/ query.ex data_type.ex
+  untouched, decimal_precision.ex = the F-B4-2 fix, error.ex = B5's
+  Constraint fields only, `wrap/1` clause list unchanged.
+- Dryness: two S2 — **B4 stays 0 of 2, NOT DRY**. Re-wet triggers ALSO:
+  `integer_literal_in_int64?/1` / `encode_json/2` /
+  `UnencodableParameterError` / the `encode/3` index threading.
+- Completeness critic (next B4 pass): the fast-accept's rendered-form
+  predicate and the bind path's `Decimal.to_string(d, :normal)` must
+  never drift — a property pinning predicate-text == bound-text (and
+  loader output == `stored_decimal/1` model) would make drift loud;
+  `connection.ex` `expr(%Decimal{}, …)` inlines a decimal into SQL text
+  with NO precision check and could not be reached from ordinary Ecto —
+  settle dead-code vs second door; decimal query COMPARISONS against
+  INTEGER-stored whole numbers (mixed storage classes in WHERE); `-0`
+  decimal sign loss (numerically equal, sign gone — the float `-0.0`
+  law-projection sibling, unpinned); `{:array, :duration}` and
+  collections of unencodable structs (mechanism covered, coverage not);
+  adversarial pass on the int64-boundary fast-accept itself.
