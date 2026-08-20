@@ -4340,3 +4340,14 @@ SQLite in `decimal_precision_test.exs`. Seed 653856 replays green;
 both files 76/76. Class lesson banked: float comparisons in tests go
 through the storage model, never through shortest-print conversions.
 
+FOURTH red (three jobs): the queue_timeout-shape test's own HOLDER
+lost the 1 ms queue race against the pool's ASYNC CONNECT on slow
+runners — the aggressive queue params built to drop the victim
+dropped the first arrivals too, and the warm-up's failure was
+silently discarded (`_warm_up`). Fix: the warm-up retries until the
+pool actually serves, the holder retry-wraps its checkout (the only
+assertion of interest is the VICTIM's error shape, guaranteed once
+the holder holds), receive window widened. 5/5 local. Same lesson
+as the sandbox saga, sharpened: a test that configures the pool to
+fail fast must retry ITS OWN setup traffic through that same pool.
+

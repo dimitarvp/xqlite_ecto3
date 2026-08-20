@@ -229,21 +229,45 @@ defmodule XqliteEcto3.CancellationTest do
 
       on_exit(fn -> File.rm(db) end)
 
-      _warm_up = pool_exec(pool, "SELECT 1", timeout: 5_000)
+      # The 1 ms queue drops ANY caller that arrives while the pool's async
+      # connect is still in flight — including the warm-up and the holder
+      # below on a slow machine. Retry both until the pool actually serves:
+      # the assertion of interest is only the VICTIM's error shape, which is
+      # guaranteed once the holder holds.
+      warmed_up? =
+        Enum.any?(1..200, fn _attempt ->
+          case pool_exec(pool, "SELECT 1", timeout: 5_000) do
+            {:ok, _query, _result} -> true
+            {:error, _not_ready_yet} -> Process.sleep(25) == :ok and false
+          end
+        end)
+
+      assert warmed_up?
+
       parent = self()
 
       spawn(fn ->
-        DBConnection.run(
-          pool,
-          fn _conn ->
-            send(parent, :holding)
-            Process.sleep(3_000)
-          end,
-          timeout: :infinity
-        )
+        Enum.reduce_while(1..200, :not_holding, fn _attempt, _acc ->
+          try do
+            DBConnection.run(
+              pool,
+              fn _conn ->
+                send(parent, :holding)
+                Process.sleep(3_000)
+              end,
+              timeout: :infinity
+            )
+
+            {:halt, :held}
+          catch
+            _kind, _dropped_from_queue ->
+              Process.sleep(25)
+              {:cont, :not_holding}
+          end
+        end)
       end)
 
-      assert_receive :holding, 2_000
+      assert_receive :holding, 10_000
 
       # The caller never reaches SQLite, so this is not a cancelled query and
       # does not report the cancel's :error reason.
