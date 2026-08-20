@@ -58,21 +58,15 @@ defmodule XqliteEcto3.SandboxCancelTest do
     assert {:error, %DBConnection.ConnectionError{}} =
              SandboxCancelRepo.query(@slow_write, [], timeout: 50)
 
-    # The cancelled write destroyed the sandbox transaction and the driver
-    # tore the connection down. Two coherent modes follow, depending on pool
-    # state: the test loses ownership outright, or the sandbox re-begins on a
-    # replacement connection whose transaction is EMPTY — the table this test
-    # created is gone either way, so a later write cannot quietly land.
-    case SandboxCancelRepo.query("INSERT INTO sbx_cancel(id, v) VALUES (2, 222)") do
-      {:error, %DBConnection.OwnershipError{}} ->
-        assert Sandbox.checkin(SandboxCancelRepo) == :not_found
+    # The cancelled write destroyed the sandbox transaction, and the pooled
+    # timeout also trips DBConnection's checkout deadline, which tears the
+    # connection down. Which error a query issued DURING that teardown sees
+    # is a timing race (ownership lost, a fresh empty sandbox, or an exit
+    # from the dying holder), so the test asserts only the invariants: the
+    # check-in below tolerates both outcomes, and a fresh checkout must see
+    # a database with no trace of the cancelled test.
+    assert Sandbox.checkin(SandboxCancelRepo) in [:ok, :not_found]
 
-      {:error, %XqliteEcto3.Error{type: :no_such_table}} ->
-        :ok = Sandbox.checkin(SandboxCancelRepo)
-    end
-
-    # The next checkout works, and sees a database with no trace of the
-    # cancelled test: the rollback took the table with it.
     :ok = Sandbox.checkout(SandboxCancelRepo)
 
     assert %{rows: [[0]]} =

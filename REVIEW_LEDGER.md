@@ -4312,3 +4312,15 @@ structurally (`OwnershipError` + `:not_found`, or
 `%XqliteEcto3.Error{type: :no_such_table}` + normal checkin); README
 and draft state both modes. Verify green before the fix commit.
 
+SECOND red (same test, macOS/Windows): the mode-branch still PROBED
+during the teardown window — the pooled `timeout: 50` also arms
+DBConnection's checkout deadline (the documented recycle), and a
+query issued while that teardown is in flight can see a THIRD shape
+(an exit from the dying holder) — the race has no stable loser on
+slow runners. Final form: the test asserts INVARIANTS ONLY (cancel
+returns `ConnectionError`; `checkin` tolerated as `:ok | :not_found`;
+a fresh checkout sees zero trace of the cancelled test and a usable
+database), 5/5 local; the mode taxonomy stays recorded HERE and in
+the docs, not in assertions. Lesson banked into the axis: post-cancel
+DX shapes are timing-mode-dependent — pin invariants, describe modes.
+
