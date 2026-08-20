@@ -55,6 +55,21 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B9-13] (S3, from Run 29) `fk_diagnostics_test.exs`'s telemetry
+  assertion fails under the `XQLITE_ECTO3_TELEMETRY=off` build
+  (pre-existing; invisible in CI because the `telemetry_disabled`
+  lane runs only the smoke file). Remedy: flag-guard that test the
+  way the smoke file does (module-level compile-time check), or
+  widen the OFF lane to the full suite minus telemetry-asserting
+  files. Not fixed blind — the OFF build sits outside the local
+  verify gate. (Run 29, B9)
+- [F-B9-14] (S3, from Run 29) `group_fk_rows/1`'s
+  `foreign_key_list` row destructures in `fk_diagnostics.ex` still
+  lack fallthrough clauses — the same implicit-raise class the
+  `foreign_key_check` reader got fixed for at Run 29's gate; an
+  unexpected pragma row shape would raise through the diagnostics
+  path instead of degrading to `{:unavailable, reason}`. One
+  mechanical pass, same convention. (Run 29, B9)
 - [F-B7-41-menu] (maintainer menu, from Run 28's gate) Every rebuild
   pre-flight refusal is a bare `ArgumentError` with no structured
   fields, so refusal tests can only assert the exception type plus
@@ -228,6 +243,15 @@ after the S0–S2 burn-down.
   adversarial lap should cover whichever lands. Knock-on (B5): under an
   observer, `busy_budget/1` reads 0 and the unique-name lookup budget
   collapses — emission turns timing-dependent on such connections.
+  (Knock-on resolved by the fixed 500 ms budget; the observer's
+  fail-fast behavior itself remains.)
+  Addendum (Run 29): the extension-permission flag is the same
+  no-restore pattern one facility over —
+  `Xqlite.enable_load_extension(conn, true)` has no
+  disable-on-scope-exit story upstream either, and the SQL-level
+  `load_extension()` it opens stays callable for the connection's
+  life. The adapter's `with_xqlite/3` docs now warn; an xqlite-side
+  note on `enable_load_extension/2` belongs in the same court batch.
 - [F-B9-4] (S3, from Run 23) The unique-index-name lookup runs 1+N
   pragma reads on the caller's connection inside the
   `handle_execute` span with no span of its own, while the sibling

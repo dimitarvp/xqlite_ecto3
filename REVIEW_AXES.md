@@ -285,6 +285,40 @@ error-path change / `with_xqlite/3` checkout semantics. Next-pass seeds:
 F-B3-5 × SQL Sandbox; the connection-scoped-state family through
 with_xqlite; F-B3-4 at pool_size > 1; cancelled-DML auto-rollback (with
 the B8 re-cover); a cross-process contention wedge.
+COVERING RE-RUN (Run 29, 2026-08-20 — lap 4, paired with B9): the
+flagship seed CLEAN — ON CONFLICT ROLLBACK under the SQL Sandbox is
+safe BECAUSE the disconnect guard fires and ecto_sql re-begins the
+sandbox transaction on the replacement connection (leak-detector
+control proven) — and the guard's two missing doors are the run's
+findings. **F-B3-7 (S2, FIXED, RED→green):** the guard read the CACHED
+transaction flag, which raw-SQL `BEGIN` never sets and `checkout/1`
+(once per connection, source-verified) never re-syncs — durable
+post-failure writes through BOTH the ON-CONFLICT-ROLLBACK and the
+ordinary TIMEOUT door; fixed by a leading-keyword transaction-control
+sync (~9 ns non-matching; one `txn_state` read on actual control
+statements; `ROLLBACK TO` cannot false-idle — the read asks SQLite).
+Residuals recorded: un-pinned raw BEGIN on a pool (inherent to
+pooling, every adapter; probe leg FAIL BY DESIGN) and comment-prefixed
+control (F-B7-6 comment-class sibling). **F-B3-8 (S2, FIXED):**
+`handle_declare`/`handle_fetch` bypassed the guard — streamed
+ROLLBACK-class DML leaked; both now route through it. **F-B3-9 (S2,
+docs-FIXED):** bridge-enabled extension loading leaves SQL-level
+`load_extension()` callable for the connection's life — moduledoc now
+names the standing permission + restore; xqlite-court addendum filed.
+**F-B3-10 (S3, docs-FIXED):** fail-fast poisoned connections are
+preferentially reused (2/4 poisoned absorbed 23/24 contended writes);
+amplification sentence added; post-Run-27 the lookup budget HOLDS.
+CLEAN: state family (authorizer true-undo, no cache desync; hooks
+persist harmlessly; progress hook does not clobber cancellation —
+303/300 ms with control); REAL second-OS-process wedge exact-count
+66 = 40 + 26. DRYNESS: finding run — **B3 stays 0 of 2, NOT DRY**.
+Re-wets ALSO on: `sync_after_transaction_control/2` /
+`leading_keyword/1`, the declare/fetch guard routing, the
+`with_xqlite` state section. Next-pass seeds: the keyword-sync
+surface itself; backup/serialize/session handles across check-in;
+`set_busy_policy` form; `Repo.stream` inside `Ecto.Multi`;
+`{:shared, owner}` sandbox mode under a ROLLBACK-class violation;
+the amplification curve vs pool size/fraction.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -1072,6 +1106,47 @@ guide event-table edits / `disconnect_if_rolled_back`. Next-pass seeds:
 drive an `:exception` phase; OFF-build smoke re-drive; `cached_count`
 semantics numerically; the bridge RawConn checkout's missing event
 (decide with F-B9-4); `:checkout` counted against actual checkouts.
+COVERING RE-RUN (Run 29, 2026-08-20 — lap 4, paired with B3; emission
+sites blob-identical since Run 23, verified): FIVE confirmed + one
+test-only + one filed. **F-B9-7 (S2, docs+test FIXED):**
+`[:xqlite_ecto3, :checkout]` fires once per CONNECTION at connect
+(source + 55-query/0-event measurement), not "per-call" as the guide
+said; corrected both surfaces + a pool-level test (the old test called
+the callback directly). **F-B9-8 (S2, FIXED, RED→green):** the
+`fk_diagnostics` span's stop metadata dropped `conn`/`mode`
+(`:telemetry.span/3` uses the returned map AS stop metadata; every
+sibling merges) — a `%{mode: _}` handler detached VM-WIDE on first
+diagnosed violation (control: same handler on `handle_begin`
+survives); start metadata now merged in. **F-B9-9 (S3, docs-FIXED):**
+first live `:exception` drive — real metadata is
+kind/reason/stacktrace, NO result_class/error_reason; detachment
+proven; pool-unreachable today (DBConnection raises first); both
+surfaces document the shape, guide samples gained catch-alls.
+**F-B9-10 (S3, FIXED):** OTel `error.type` collapsed every
+disconnecting error to `"disconnect"` (the `{:disconnect, inner}`
+wrapper matched generically) — mapper unwraps; the two
+`error_reason` shapes KEPT and documented. **F-B9-11 (S3,
+docs-FIXED):** guide table gained the three `statement_cache` rows;
+the nanosecond claim now says span measurements are NATIVE units
+(adapter emissions are ns). **F-B9-12 (S3 test-only, FIXED):**
+statement-cache `:hit` capture was discriminator-free (the F-B9-2/3
+class, ~1/3 flake in one multi-file VM) — SQL-filtered. **F-B9-13
+(S3, FILED):** `fk_diagnostics_test`'s telemetry assertion fails
+under the OFF build (pre-existing; the OFF CI lane runs only the
+smoke file) — flag-guard or widen the lane. CLEAN: `cached_count`
+before-the-action confirmed numerically (warm-cache RED evidence);
+OFF/ON round trip re-driven live both directions, ON restored;
+the bridge emits ZERO adapter events (the F-B9-4 evidence; ruling
+stays the maintainer's). DRYNESS: finding run — **B9 stays 0 of 2,
+NOT DRY**. Re-wets ALSO on: `classify_dbc`'s disconnect clause, the
+`fk_diagnostics` span return shape, the guide's event table, the
+OTel `error_type` unwrap. Next-pass seeds: NIF fault injection for a
+pool-reachable `:exception`; `:checkout` under the SANDBOX ownership
+pool (per-ownership-checkout risk — "true in tests, false in
+production"); the `disconnect` event's `reason` under the Runs-23/25
+disconnect paths; `statement_cache` `:miss` on the multi-statement
+fallback; native-vs-ns on a non-Linux runtime; `group_fk_rows/1`
+fallthroughs (filed).
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean
