@@ -2351,3 +2351,107 @@ event-surface probe 9/9, OTel path unchanged.
   rebuild, FTS5/virtual-table shadows, an open `Repo.stream` cursor during
   the rebuild, `flush()` mid-migration, concurrent readers on a second
   connection during the drop-rename window.
+
+---
+
+## Run 16 — 2026-08-20 — mini-lap batch 4: B2 (exclusion-list audit) + gate corrections
+
+- Commit at scan: `8d1473f`. Single Opus reviewer; one sanctioned temporary
+  test_helper.exs edit window, discharged clean (byte-identical SHA proven).
+  The orchestrator re-ran the isolation runs and probes, implemented the
+  gate fixes itself, and ran its own `mix verify` with the exit code read
+  from a status file (see the correction below).
+- **GATE CORRECTION (append-only honesty): Run 15's "mix verify GREEN — the
+  orchestrator's OWN run" claim was FALSE.** That verify died at the FORMAT
+  step (formatter non-idempotency on a long literal in the new DESC test);
+  the background wrapper's exit code masked the failure and a fused
+  tail-&&-push chain pushed `e476e0f`/`8d1473f` anyway — the same
+  procedural defect pushed the xqlite 0.11.0 release commit minutes later
+  (remedied there by a green re-verify after a stale-PLT rebuild). CI
+  compounded the blindness: the failed lint job SKIPPED the entire test
+  matrix, so nothing remote ran the suite either. The corrected procedure
+  (wrapper writes the exit to a file; the follow-up call gates on the
+  VALUE; inspect and commit never fuse into one chain) is codified in the
+  verify-gate feedback memory and used from this run on.
+- **F-B2-4 (S2, CONFIRMED + FIXED at the root).** The Run 15 transaction
+  guard broke the vendored suite: alter.exs drives migrations through
+  `Ecto.Migration.Runner` directly — no transaction — so alter.exs:73
+  raised the refusal and the shared suite was RED at HEAD, caught by
+  neither the (red) local gate nor the (skipped) CI matrix. Fix: the
+  refusal became a SELF-WRAP — `rebuild_table` opens its own transaction
+  when none is wrapping it (BEGIN IMMEDIATE; ROLLBACK on any mid-dance
+  failure via the one sanctioned rescue+reraise; COMMIT on success) —
+  preserving the F-B7-8 safety while keeping `@disable_ddl_transaction`
+  and raw Runner drives working. The two no-txn preservation tests were
+  rewritten for the new contract (self-wrap success incl. post-modify
+  nullability; a mid-dance copy failure rolls the self-opened transaction
+  back — table and rows intact, no transient left). Vendored suite:
+  **434 passed / 32 excluded, exit 0** — the orchestrator's own run.
+  Isolated `alter.exs:44` fails at its ORIGINAL documented line again
+  (the `%Decimal{}` assertion), so its standing rationale is accurate
+  once more.
+- **F-B2-5 (S2, FIXED).** `:insert_cell_wise_defaults` hid SEVEN passing
+  tests of eight — narrowed to `{:location, repo.exs:864}`, the one test
+  that actually inserts uneven rows (Ecto pads the missing cell with NULL,
+  suppressing the column DEFAULT). The seven now run in the suite.
+- **F-B2-6 (S2, FIXED as documentation).** transaction.exs:161's rationale
+  claimed "true parallelism that SQLite cannot provide by design"; the
+  reviewer's standalone probe — orchestrator re-run — proves the same test
+  PASSES on the same SQLite at pool_size ≥ 2 with `:deferred` mode. The
+  real causes are the suite's own `pool_size: 1` and the driver's
+  `BEGIN IMMEDIATE` default promoting a read-only transaction to a writer.
+  Rationale rewritten to own the trade-off; exclusion kept (the suite pins
+  pool_size 1 deliberately; `:immediate` stays the safer default).
+  ecto_sqlite3 corroborates: loads the test, no exclusion, default pool.
+- **F-B2-7 (S2, FIXED as documentation; code gap filed).** Three rationales
+  (`:alter_primary_key`, `:alter_foreign_key`, migration.exs:664) blamed
+  SQLite's ALTER limits; the rebuild engine ENGAGES for all three and dies
+  on an ADAPTER gap — `modify` with a `references(...)` type has no
+  `DataType.column_type/2` clause. Rationales rewritten; the code gap
+  filed to BACKLOG as a maintainer menu item (teaching column_type the
+  Reference struct may collapse three exclusions at once). One
+  `:alter_primary_key` test remains a genuine SQLite limit (a PRIMARY KEY
+  column cannot be ADDED to an existing table).
+- **F-B2-9 / F-B2-10 / F-B2-11 (S3, FIXED).** lock_for_migrations pointed
+  readers at a file the suite does not even load (its only tagged site is
+  migrator.exs:197); two stale "needs adapter work" tag-doc rows corrected
+  (`:json_extract_path` promised a coercion layer the code comments rule
+  out — no load hook exists for untyped selects; `:assigns_id_type`'s real
+  blocker is F-B2-7, not PK handling); the three undocumented location
+  exclusions got a public Location-scoped exclusions table in the tags
+  doc; the `:binary` storage-class wording corrected (declared BLOB — no
+  affinity; the storage class follows the value, LIKE matches both).
+- **F-B2-8 (S3, BACKLOG).** `:array_type` and `:microsecond_precision` are
+  each over-broad by exactly one passing test; narrowing costs 8+4
+  location tuples against one-test gains, and the shared migration is
+  exclusion-aware for the type tags — filed with counts, not churned.
+- **Also this wave:** README rebuild sections updated for the Run 15
+  refusals (dependent views / foreign triggers), the modify merge
+  contract, and the self-wrap transaction story; **xqlite dep bumped
+  0.10.0 → 0.11.0** (released and Hex-published today — maintainer's
+  button) so the remaining covering runs review the shipped stack.
+- **Method upgrade banked (reviewer's find):** `mix test <path>:<line>` on
+  a vendored file REPLACES the configured excludes (ExUnit sets
+  `exclude: [:test]`), so location exclusions isolate with no helper
+  edit — the temporary-edit exception is retired.
+
+### Verdict + dryness
+
+- 4 S2 (one root-fixed in code, three fixed as documentation) + 3 S3 fixed
+  + 1 S3 filed + 1 code gap filed as a maintainer menu item. `mix verify`
+  GREEN — exit value read from the status file per the corrected gate.
+- Dryness: finding-run — **B2 stays 0 of 2, NOT DRY.** Re-wet triggers
+  extended per the reviewer: the rebuild engine's refusal set,
+  `default_transaction_mode`, the suite's PoolRepo pool_size, and
+  `DataType.column_type/2`'s accepted types all re-wet B2 (each proven
+  able to invalidate a rationale without touching the list). **B7 re-wets
+  AGAIN** (the self-wrap replaces the Run 15 guard). **B3/B4/B8/B9 re-wet
+  by the dep bump** to xqlite 0.11.0 (dirty-scheduler reader flips, busy
+  per-stall budget, TEXT-OOM encoding) — deliberate: the remaining
+  covering runs now review the shipped stack in-flow.
+- Completeness critic (next B2 pass): adopt the reviewer's
+  frame-attribution rule as a standing check — a failure whose stack lands
+  in lib/xqlite_ecto3/ must say "our gap", never "SQLite's limit"; run the
+  hidden-vs-failing count sweep every pass (it caught three over-broad
+  exclusions this time); unprobed — whether column_type learning
+  `%Ecto.Migration.Reference{}` collapses the three ALTER exclusions.

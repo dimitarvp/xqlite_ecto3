@@ -123,6 +123,32 @@ assigns_id_type, alter_primary_key + alter_foreign_key (loud). Run-11 rebuild
 churn is modify-only — un-staled no ALTER exclusion. DRYNESS: a NEW confirmed +
 an exclusion-list change (a listed re-wetter) → NOT a clean covering run — **B2
 stays 0 of 2, NOT DRY**. Re-wet triggers UNCHANGED.
+COVERING RE-RUN (Run 16, 2026-08-20 — the full-disposition pass; every tag run
+in isolation, every location isolated via the banked `mix test path:line`
+method): SEVEN findings. **F-B2-4 (S2, root-FIXED):** the Run 15 transaction
+guard broke the vendored alter.exs suite (drives Runner directly, no txn) —
+suite RED at HEAD behind a red-then-skipped gate; fixed by the SELF-WRAP
+(rebuild opens its own transaction when none wraps it) — suite 434/434 green,
+alter.exs:44 back on its original documented mechanism. **F-B2-5 (S2, FIXED):**
+`:insert_cell_wise_defaults` hid 7 passing tests of 8 → narrowed to
+repo.exs:864. **F-B2-6 (S2, doc-FIXED):** transaction.exs:161 fails from the
+suite's pool_size 1 + BEGIN IMMEDIATE default, not SQLite (passes at pool ≥ 2
+with :deferred; ecto_sqlite3 corroborates) — rationale now owns the trade-off.
+**F-B2-7 (S2, doc-FIXED + code gap filed):** the three ALTER rationales blamed
+SQLite; the real blocker is `modify` with `references(...)` having no
+`DataType.column_type` clause (maintainer menu — may collapse three exclusions).
+**F-B2-9/10/11 (S3, FIXED):** wrong lock_for_migrations file pointer; two stale
+"needs adapter work" doc rows; the location exclusions got a public table; the
+`:binary` storage-class wording corrected. **F-B2-8 (S3, BACKLOG):**
+:array_type / :microsecond_precision over-broad by one each (counts filed, not
+churned). Exclusion list now 18 = 12 tags + 6 locations. DRYNESS: finding-run —
+**B2 stays 0 of 2, NOT DRY**. Re-wet triggers EXTENDED: the rebuild engine's
+refusal set, `default_transaction_mode`, the suite's pool_size, and
+`DataType.column_type/2`'s accepted types. Next-pass seeds: the
+frame-attribution rule (stack in lib/xqlite_ecto3/ ⇒ "our gap", never
+"SQLite's limit") as a standing check; the hidden-vs-failing count sweep each
+pass; whether column_type learning `%Ecto.Migration.Reference{}` collapses the
+ALTER exclusions.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we

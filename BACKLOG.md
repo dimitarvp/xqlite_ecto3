@@ -142,6 +142,22 @@ after the S0–S2 burn-down.
   defensible as-is. The all-members-removed case deserves a refusal
   (recommendation: refuse when the original table had a PK and the
   surviving member set is empty). (Run 15, B7)
+- [F-B2-7-code] (maintainer menu) `modify` with a `references(...)`
+  type dies in `DataType.column_type/2` (no clause for
+  `%Ecto.Migration.Reference{}`) even though the rebuild engine
+  otherwise handles the change. Teaching column_type the Reference
+  struct (resolve to the referenced column's type + rebuild the FK
+  clause) may collapse three exclusions at once
+  (`:alter_foreign_key`, migration.exs:664, half of
+  `:alter_primary_key`) — the largest single exclusion reduction
+  available. Needs a maintainer call on scope. (Run 16, B2)
+- [F-B2-8] (S3) `:array_type` and `:microsecond_precision` are each
+  over-broad by exactly one hidden PASSING test (type.exs:522 "nested
+  embeds" — touches only the map column; interval.exs:192
+  "datetime_add with microsecond" — asserts the rounding SQLite
+  actually does). Narrowing costs 8 and 4 location tuples
+  respectively, and the shared migration is exclusion-aware for the
+  type tags — recorded, not churned. (Run 16, B2)
 - [B7 enhancement candidate, unranked] A structural before/after
   verification at the end of the rebuild — compare table_xinfo,
   foreign_key_list, index_list, and table_list.wr/strict against the
