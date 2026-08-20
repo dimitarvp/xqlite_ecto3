@@ -195,7 +195,7 @@ Pool exhaustion is a separate case, and it is the one a bigger pool does fix: ev
 
 Scheduler saturation shows up as the first shape, only later than you asked for.
 
-Inside an `Ecto.Adapters.SQL.Sandbox` test, a cancelled **write** also ends that test's checkout: SQLite rolls back the transaction the sandbox is holding, so the connection cannot be reused for the rest of the test. Later queries in that test report `DBConnection.OwnershipError` and `Sandbox.checkin/1` returns `:not_found`. Nothing the test wrote reaches the database, and the next test checks out normally — but the first error you see may be about ownership rather than the timeout that caused it.
+Inside an `Ecto.Adapters.SQL.Sandbox` test, a cancelled **write** also destroys that test's sandbox transaction: SQLite rolls the whole thing back when it interrupts the write, and the driver tears the connection down. What follows depends on pool state — the test either loses ownership outright (later queries report `DBConnection.OwnershipError`, `Sandbox.checkin/1` returns `:not_found`) or continues on a replacement connection whose sandbox transaction is **empty**, so everything the test wrote before the cancel is gone. Either way nothing reaches the database file and the next test checks out normally — but the errors you see after the cancel are about missing state or ownership, not about the timeout that caused them.
 
 ### Structured constraint errors
 

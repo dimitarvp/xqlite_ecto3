@@ -4289,3 +4289,26 @@ every S0-S2 question was clean — it is the closest axis to dry.
   DirtyIo status read under adversarial queuing; F-B8-2's stream
   cancellation (still blocked on an xqlite `stream_fetch_cancellable`).
 
+### Post-push addendum (same day): CI red → test hardening + a mode correction
+
+`59cff45` went RED on every macOS/Windows test job (+ one ubuntu):
+the new `sandbox_cancel_test.exs` rode the SHARED sandboxed TestRepo,
+and on slow runners the cancelled write legitimately held its
+connection past DBConnection's default 50 ms queue deadline while
+parallel async tests queued — the holder was evicted mid-statement
+(the same eviction machinery the pool-exhaustion test was already
+hardened against). FIX: dedicated `SandboxCancelRepo` (sandbox pool,
+own tmp db, `queue_target/queue_interval` 5 s, `ownership_timeout`
+120 s), the banked in-test dedicated-repo pattern. The hardening also
+CORRECTED the finding's DX pin: on a clean pool the cancelled write's
+disconnect leads ecto_sql to RE-BEGIN the sandbox on a replacement
+connection — the test then CONTINUES with an EMPTY sandbox
+transaction (prior writes gone, `no such table` for a table the test
+created) instead of losing ownership; the OwnershipError mode is what
+shared-pool queue pressure produces. BOTH modes keep the invariants
+(nothing durable ever; pre-cancel sandbox writes gone; next test
+clean). The test now asserts the invariants and branches on the mode
+structurally (`OwnershipError` + `:not_found`, or
+`%XqliteEcto3.Error{type: :no_such_table}` + normal checkin); README
+and draft state both modes. Verify green before the fix commit.
+
