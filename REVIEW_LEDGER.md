@@ -3643,3 +3643,217 @@ probe), implemented the fix, stash-RED 22/23 → 23/23.
   the 24-cap boundary with autoindexes counted (24 named + 1
   autoindex = refusal where 24 named alone resolves);
   `busy_timeout` validation (`:infinity`, non-integer).
+
+---
+
+## Run 28 — 2026-08-20 — dryness lap 4, batch 2: B7 (the heaviest cover of the program)
+
+Single Opus reviewer over the rebuild engine at `f437279` (engine code
+byte-unchanged since Run 22's `702429a` — `268261a`'s touch is
+docs-only), xqlite `2700446`, deps = hex 0.11.0. **THIRTEEN confirmed
+findings fixed in-run: 4 S1 + 7 S2 from the review (F-B7-28..38, one
+S3 among them) plus TWO more S2s the gate's own generator widenings
+exposed (F-B7-39, F-B7-40).** Reviewer numbering self-corrected to
+start at F-B7-28 (27 taken). Gate ran as three serialized Opus
+implementation batches (S1s; S2s+generators; the gate-exposed pair),
+each line-reviewed, each probe-verified by the orchestrator; pre-fix
+RED evidence orchestrator-re-driven on the untouched tree FIRST (all
+eight finding probes exit 1; facts 17/17; cleans 15/15); final tree
+re-driven across the FULL matrix; stash-RED over the combined lib
+diff = **79/108 → 108/108**.
+
+### The findings (all FIXED; statements compressed — probes carry the detail)
+
+- **F-B7-29 (S1).** PK sort order invisible: `INTEGER PRIMARY KEY
+  DESC` is NOT a rowid alias (takes NULLs, keeps real rowids) — the
+  rebuild flattened it into one and a NULL key value came back as 11,
+  silently, post-check green. FIX: read the key's backing index
+  (origin `'pk'` via `index_xinfo`, mirroring the UNIQUE read),
+  re-emit per-member `ASC`/`DESC` inline + in `modify` + in the
+  composite clause; `rowid_copy_needed?` treats a single INTEGER key
+  as alias only with NO backing index. Snapshot gains
+  `primary_key_order` + `rowid` facts (presence via `table_list.wr`;
+  count/min/max — one statement; claims gated by `key_untouched?`
+  since a moved key legitimately renumbers; DESC claim
+  one-directional since a key may become the rowid). Ground truth
+  pinned first (probe 1344): inline DESC ≠ alias; `PRIMARY KEY DESC
+  AUTOINCREMENT` rejected by SQLite; TABLE-LEVEL single INTEGER key
+  IS an alias even with DESC.
+- **F-B7-30 (S1; S0 weighed at gate, graded S1).** An fts5 table
+  passes every pre-flight check (`sqlite_schema` types it `'table'`)
+  and the rebuild silently replaces it with a plain table — shadows
+  dropped, `MATCH` dead. Row text survives in the replacement (why
+  not S0; the external-content variant, where text would NOT survive,
+  is unprobed → seeded, and the fix forecloses it). FIX:
+  `pragma_table_list.type` read in the existing storage query;
+  `'virtual'` and `'shadow'` refuse pre-flight.
+- **F-B7-31 (S1).** The self-wrapped dance (no caller transaction =
+  `@disable_ddl_transaction`; ecto_sql runs those with NO checkout)
+  split `BEGIN IMMEDIATE`/statements/`COMMIT` across pooled
+  connections: non-deterministic failure above pool_size 1, and in
+  ~1/3 of probe runs a pooled connection stranded INSIDE an open
+  write transaction, locking the database for every writer until
+  reuse. The unclosed half of F-B7-8's remedy. FIX:
+  `on_one_connection/4` — `Ecto.Adapters.SQL.checkout` pins one
+  connection for the whole dance; the connection-scoped
+  `defer_foreign_keys` read/restore moved inside (same defect); the
+  wrapped path untouched.
+- **F-B7-32 (S1).** Trigger bodies compile lazily, so a rebuild
+  re-created a trigger reading a column the same change set removed —
+  migration green, EVERY later write dead (`no such column: NEW.a`);
+  the plain-ALTER path refuses the same removal via SQLite's own
+  DROP COLUMN guard. FIX: pre-flight word-scan of each trigger's
+  stored SQL for removed columns (the dependent-scan's own
+  over-approximation, shared `word_pattern/1` — which the gate also
+  hardened for names carrying a double quote, stored doubled).
+- **F-B7-28 (S2).** `add_if_not_exists`/`remove_if_exists` compared
+  names as raw text while SQLite and the rebuild path fold ASCII
+  case: `remove_if_exists :firstname` vs stored `"firstName"` =
+  silent no-op; the guard `add_if_not_exists` exists for defeated
+  loudly; the two paths disagreed on the same migration text. FIX:
+  fold both sides, emit the STORED spelling.
+- **F-B7-33 (S2).** Stranded-constraint removals (table-level UNIQUE
+  member, FK member, indexed column) died mid-dance with raw SQLite
+  text — one message actively wrong ("expressions prohibited…" from
+  the double-quoted-string fallback). FIX: one pre-flight pass over
+  reconstructed constraints + index SQL against surviving columns,
+  named domain refusals (FK/UNIQUE structural; index by word-scan —
+  an index may cover an expression no pragma names).
+- **F-B7-34 (S2).** Map/list defaults: plain path JSON-encodes,
+  rebuild + model had no clause → `FunctionClauseError` from
+  pre-flight. FIX: one shared `DataType.json_default/1` behind all
+  THREE renderers; boolean defaults now `true`/`false` on every path.
+- **F-B7-35 (S2).** The unpreservable keyword scan read `CHECK` etc.
+  inside string literals: `DEFAULT 'check pending'` blocked that
+  table's every future rebuild. FIX: literal contents blanked in one
+  left-to-right pass over all four quoting forms (`'…'`, `"…"`,
+  `` `…` ``, `[…]` — the naive literal-only regex was WRONG and the
+  law property caught it in 50 runs: a column named `it's_v` opened a
+  bogus literal). Same blanking behind `autoincrement_declared?`
+  (shared engine+model), closing F-B7-6's string-literal half; the
+  comment half stays ruled.
+- **F-B7-36 (S2).** The dependent-object scan refused a rebuild when
+  a VIEW merely selected a column named like the table. FIX: the
+  word-scan is now a pre-filter; each hit is CONFIRMED against SQLite
+  by a savepointed test-rename to the dance's transient name —
+  ground truth probed first: RENAME rewrites the stored SQL of true
+  dependents and leaves coincidences untouched; a failed rename
+  degrades to refuse-all; cleanup in `after`; runs under
+  `on_one_connection`.
+- **F-B7-37 (S2).** `primary_key: true` grant beside a surviving
+  COMPOSITE key emitted two primary keys (`has more than one primary
+  key`, mid-dance, including via the engine's own
+  removed-key guidance). Fixed in batch B composite-scoped, then
+  SUPERSEDED by the unified rule (F-B7-39/40 below).
+- **F-B7-38 (S3).** The post-check bang-read `sqlite_sequence` where
+  the engine tolerates its absence — an AUTOINCREMENT text-scan false
+  match on a sequence-less database aborted before the first
+  statement. FIX: same tolerance, both halves.
+- **F-B7-39 (S2, GATE-EXPOSED by the widened generators).** The same
+  two-keys crash beside a surviving SINGLE-column key (grant via
+  `add` or `modify`). FIX (unified rule, supersedes the composite
+  scoping): a grant refuses iff ANY current key member survives still
+  keyed — present, not removed, not de-keyed; the one exception is
+  granting a single-column key to its own column (asks for the key it
+  has). Engine and model now SHARE the computation
+  (`surviving_primary_key_members/2`), not mirror it.
+- **F-B7-40 (S2, GATE-EXPOSED).** `modify ..., primary_key: false` on
+  a composite member was silently ignored (clause re-emitted over
+  every PRESENT member; post-check aborted blaming the library). FIX:
+  the clause emits over members still KEYED — a de-key narrows like a
+  removal; de-key-all + grant = a legal key move (single AND
+  composite); de-key-all with no grant = the existing keyless refusal
+  (already counted de-keys — verified, not assumed). The
+  batch-B-refused composite-move shape became LEGAL; no committed
+  test had pinned the refusal (grep-verified), only code + comments —
+  updated, with a positive test for the move.
+
+### Ruled/filed items — consequence updates (rulings untouched)
+
+- **F-B7-6:** live evidence both directions — comment evasion
+  silently drops AUTOINCREMENT and re-hands freed id 2; literal
+  false-positive aborts blaming the library. The LITERAL half is now
+  CLOSED by F-B7-35's blanking; the comment half stays
+  accepted-as-limitation (probe 1444 leg 3 remains failing BY
+  DESIGN).
+- **F-B7-27:** the rebuild also drops `sqlite_stat4` (STAT4 compiled
+  in; 1 stat1 + 8 stat4 rows → 0/0 measured). Docs line updated in
+  the STE draft to name both. Probe 1530 leg 4 remains failing BY
+  DESIGN (it pins the filed remedy).
+- **Doc correction (live README + draft):** a populated `NO ACTION`/
+  `RESTRICT` child does NOT stop the rebuild — `defer_foreign_keys`
+  defers RESTRICT too (probed, fact F3); both READMEs claimed it
+  fails loudly. Engine comment fix follows the same fact.
+
+### Shared-helper audit (seed 2, graded) + generators (seed 3)
+
+`autoincrement_declared?` and `primary_key_members` = shared blind
+spots proven live (both wrong together, post-check blind);
+`surviving_primary_key_members` = engine decisions computed with
+model semantics (safe by luck pre-fix, now the DELIBERATE shared
+rule); `default_spec`/`rendered_default`/`default_expr` had already
+drifted (F-B7-34) — now one function; key placement had drifted
+(F-B7-37/40) — now shared. Law generators widened: case-varied
+change names; inline/table-level `ASC`/`DESC` keys + composite
+per-member direction; fragment/stored-expression/map/list/boolean
+defaults; `primary_key:` grants and de-keys (single + composite
+moves, narrowing-by-de-key); the conditional family; ten refusal
+flavors added (virtual, trigger-reads-removed, three stranded
+shapes, grants beside kept keys, de-keyed-keyless pair,
+partial-de-key grant). Arm-fire measured: 166 narrowing + 84
+composite-move hits per 2000; law + refusal properties GREEN at
+2000 runs each. Rowid facts in the snapshot would have caught
+F-B7-19 (Run 22's S1) — now they exist.
+
+### CLEAN legs (RED-controlled, orchestrator-re-driven)
+
+Mid-dance failure atomicity on wrapped AND self-wrapped paths
+(table/rows/index/`defer_foreign_keys`/pool intact); the Run 21 B5
+handoff re-anchored (custom-named unique indexes survive as named,
+origin `'c'` — the rebuild cannot manufacture the F-B5-9 shape);
+populated CASCADE still refused; populated RESTRICT correctly NOT
+refused (see doc correction); probes 1344 (17 SQLite ground-truth
+facts) and 1552 (15 controls) green before AND after all three
+batches; full final matrix green except the two by-design legs.
+
+### Dryness + re-wets
+
+Thirteen findings — **B7 stays 0 of 2, NOT DRY**, and the gate's own
+fixes re-wet the axis wholesale. Re-wet triggers ALSO:
+`fetch_existing_columns!`/`resolve_change`, `fetch_table_storage!`/
+`refuse_virtual_table!`, `on_one_connection/4`,
+`refuse_triggers_reading_removed_columns!`/`word_pattern/1`,
+`refuse_stranded_constraints!`, `DataType.json_default/1`,
+`without_string_literals/1`/`blanked/1`, `confirm_dependents/4`
+(the savepoint rename), `refuse_key_grant_beside_kept_key!`/
+`surviving_primary_key_members` as shared rule, `read_sequence`
+tolerance, the snapshot's `primary_key_order`+`rowid` facts, and the
+widened law generators.
+
+### Completeness critic (next B7 pass)
+
+Cancel mid-dance (a `:timeout` during the rebuild → the disconnect
+guard fires while the rescue wants ROLLBACK and the after wants the
+defer restore — reads as safe, never run). External-content fts5
+OVER a rebuilt table (`content='t'` — the dependent scan sees views
+and triggers only; this is also F-B7-30's true-data-loss variant).
+TEMP views/triggers (`sqlite_temp_schema` invisible to both scans).
+The shared-predicate decision (which facts must be read by
+INDEPENDENT code — the post-check can only catch what the halves
+disagree on; now partially deliberate via the shared key rule, still
+undecided for autoincrement). Second loud-but-bare pass once the
+stranded pre-flight exists (`foreign_key_check` violations,
+deferred-FK COMMIT failures, transient-name collision).
+`composite_pk_clause`'s remaining raw-name compare (`&1.name ==
+name` — safe only while survivors keep stored spellings; latent
+Run 15/22 root-pattern instance). The savepoint-confirm itself needs
+an adversarial lap (transient-name collision path, nested-savepoint
+interplay, a candidate whose stored SQL the rename rewrites
+SPURIOUSLY). The literal-blanking's four quoting forms vs SQLite's
+lexer corner cases. The refusal-exception design: every pre-flight
+refusal is a bare `ArgumentError` with NO structured fields —
+neighbors regex message prose in tests (violating the
+no-text-assertion doctrine); a refusal struct with a reason atom is
+FILED as a maintainer menu. The single-key
+grant-to-own-column exception edge (`grants_own_key?`) under
+case-varied spellings.

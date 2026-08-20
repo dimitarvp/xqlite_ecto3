@@ -55,6 +55,15 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B7-41-menu] (maintainer menu, from Run 28's gate) Every rebuild
+  pre-flight refusal is a bare `ArgumentError` with no structured
+  fields, so refusal tests can only assert the exception type plus
+  observable state — and several older neighbors regex the message
+  prose, against the no-text-assertion doctrine. Menu: a dedicated
+  refusal exception struct carrying a reason atom (+ construct/column
+  fields), then migrate the prose-matching tests. Until ruled, new
+  refusal tests assert type + state only. (Run 28, B7)
+
 - [F-B5-14-fork] (maintainer menu; the S2 itself is FIXED in-run with a
   fixed 500 ms budget when the pragma reports zero). The lookup budget's
   source of truth is still `PRAGMA busy_timeout`, which cannot tell a
@@ -239,6 +248,11 @@ after the S0–S2 burn-down.
   ANALYZE statistics and suggest re-running ANALYZE — the doc line is
   owed to the Gate-3 docs pass (the STE README drafts must gain it
   too). (Run 22, B7)
+  Addendum (Run 28): `sqlite_stat4` rows are dropped too — STAT4 is
+  compiled into the bundled SQLite (measured 1 stat1 + 8 stat4 rows
+  before a rebuild, 0/0 after), and the stat4 histograms matter more
+  for skewed columns. The STE draft's line now names both tables; the
+  capture-and-reinsert remedy option must cover both if chosen.
 - [F-B7-25-feature] (feature candidate, from Run 22) The rebuild engine
   already reconstructs foreign keys as table-level clauses from
   `foreign_key_list`; merging an added or modified
@@ -405,6 +419,13 @@ after the S0–S2 burn-down.
   identifier can spuriously match). Same ruling applies (reachability
   ≈ nil, stripper risk > benefit); the docs fine-print line should say
   "regex scans over stored CREATE text" generally.
+  Addendum (Run 28): the STRING-LITERAL half of the class is CLOSED —
+  the scans now blank quoted-literal contents (all four SQLite quoting
+  forms) before matching, so a `DEFAULT 'check pending'` no longer
+  false-positives and a literal AUTOINCREMENT no longer spuriously
+  matches. The COMMENT half stays accepted-as-limitation, now with
+  live consequence evidence on record (ledger Run 28): the comment
+  evasion silently drops AUTOINCREMENT and re-hands a freed id.
 - 2026-07-21 [F-B3-3] (S2) A rebuild migration under
   `Ecto.Adapters.SQL.Sandbox` leaked `defer_foreign_keys = ON`,
   silently disabling FK enforcement for the rest of the sandbox

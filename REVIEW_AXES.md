@@ -814,6 +814,52 @@ harness-vs-lib triage rule). DRYNESS: heavy finding-run — **B7 stays 0 of
 `refuse_reference_changes!` / `strip_outer_parens` / the widened
 `autoincrement_declared?` / the `pk_removed` tracking / the model's
 `predict` grant allowance / the law generator's normalize rules.
+COVERING RE-RUN (Run 28, 2026-08-20 — lap 4, the program's heaviest:
+**THIRTEEN findings fixed in-run, 4 S1 + 8 S2 + 1 S3**, engine code
+byte-unchanged since Run 22 when the cover began). S1s: F-B7-29 PK
+sort order invisible (`INTEGER PRIMARY KEY DESC` is NOT a rowid alias;
+flattening rewrote a NULL key to 11 — key's backing index now read,
+DESC re-emitted everywhere, rowids carried, snapshot gains
+key-order + rowid facts); F-B7-30 fts5/virtual tables silently
+replaced by plain tables (now refused via `table_list.type`);
+F-B7-31 the self-wrapped dance split across pooled connections above
+pool_size 1, strandable open write transaction (now checkout-pinned,
+`defer_foreign_keys` read moved inside); F-B7-32 re-created triggers
+reading removed columns bricked all writes (pre-flight word-scan
+refusal). S2s: F-B7-28 conditional changes compared names raw
+(folded); F-B7-33 stranded-constraint removals died mid-dance in raw
+SQLite text (named pre-flight refusals); F-B7-34 map/list defaults
+crashed the rebuild path (one shared JSON renderer, booleans
+aligned); F-B7-35 the keyword scan read literals — `DEFAULT 'check
+pending'` blocked a table forever (four-quoting-forms blanking, also
+behind AUTOINCREMENT detection — closes F-B7-6's literal half);
+F-B7-36 a view selecting a column named like the table blocked the
+rebuild (savepointed test-rename confirm against SQLite);
+F-B7-37+F-B7-39 grants beside a kept key emitted two primary keys
+(composite AND single — unified rule: refuse iff any current member
+survives keyed; own-column single grant excepted); F-B7-40
+`primary_key: false` on composite members ignored (now narrows like
+removal; de-key-all+grant = legal key move; keyless refusal counts
+de-keys). S3: F-B7-38 post-check bang-read of `sqlite_sequence`
+(tolerated). Gate: three serialized Opus implementation batches, the
+THIRD fixing two S2s the gate's OWN widened generators exposed;
+stash-RED 79/108 → 108/108; full probe matrix green except two
+by-design legs (F-B7-27's stat survival, F-B7-6's comment evasion).
+Doc correction landed: populated RESTRICT does NOT stop the rebuild
+(`defer_foreign_keys` defers it — probed); README+draft+comments
+aligned. F-B7-27 addendum: `sqlite_stat4` dropped too. Generators
+widened (case-varied names, DESC keys, map/list/fragment defaults,
+grants/de-keys/moves, conditionals, ten refusal flavors; law+refusal
+properties green at 2000). DRYNESS: **B7 stays 0 of 2, NOT DRY** —
+the gate's fixes re-wet the axis wholesale (trigger list in the
+ledger entry). Next-pass seeds: cancel mid-dance × the disconnect
+guard; external-content fts5 over a rebuilt table (the true-data-loss
+variant); TEMP-schema objects invisible to both scans; the
+independent-facts decision (post-check catches only what the halves
+disagree on); loud-but-bare second pass; `composite_pk_clause`'s
+raw-name compare; the savepoint-confirm's own adversarial lap; the
+literal-blanking vs SQLite's lexer corners; the refusal-exception
+struct (menu); `grants_own_key?` under case-varied spellings.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
