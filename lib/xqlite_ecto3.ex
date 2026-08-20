@@ -697,6 +697,7 @@ defmodule XqliteEcto3 do
 
     table = resolve_stored_table_name!(meta, table, opts)
 
+    refuse_reference_changes!(table, changes)
     refuse_unpreservable_constraints!(meta, table, opts)
     refuse_incoming_actions_on_populated!(meta, table, opts)
     refuse_dependent_schema_objects!(meta, table, opts)
@@ -715,13 +716,15 @@ defmodule XqliteEcto3 do
     {new_columns, copy_pairs, primary_key} =
       plan_new_schema(existing_columns, changes, autoincrement: autoincrement?)
 
+    copy_rowid? = rowid_copy_needed?(existing_columns, changes)
+
     table_constraints = primary_key ++ foreign_keys ++ unique_constraints
 
     statements =
       [
         "PRAGMA defer_foreign_keys = ON",
         create_rebuild_table_sql(table, new_columns, table_constraints),
-        copy_rows_sql(table, copy_pairs),
+        copy_rows_sql(table, copy_pairs, copy_rowid?),
         "DROP TABLE #{quote_name(table.name)}",
         "ALTER TABLE " <>
           quote_name(transient_name(table.name)) <> " RENAME TO " <> quote_name(table.name),
@@ -871,6 +874,31 @@ defmodule XqliteEcto3 do
       "recreate them."
   end
 
+  # The rebuild reconstructs foreign keys from the existing schema; a
+  # references/2 inside the change set would need that reconstruction to
+  # merge in a new clause, which the engine does not do. Without this check
+  # the type layer rejects the %Reference{} with an error that blames the
+  # type system and hints at nothing.
+  defp refuse_reference_changes!(table, changes) do
+    case Enum.find(changes, &reference_change?/1) do
+      nil -> :ok
+      change -> raise ArgumentError, reference_change_message(table.name, change)
+    end
+  end
+
+  defp reference_change?({op, _name, %Ecto.Migration.Reference{}, _opts})
+       when op in [:add, :add_if_not_exists, :modify], do: true
+
+  defp reference_change?(_change), do: false
+
+  defp reference_change_message(table_name, {op, name, ref, _opts}) do
+    "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: #{op} " <>
+      "#{inspect(name)} uses references(#{inspect(ref.table)}), and the table " <>
+      "rebuild cannot add or repoint a foreign key. Add the column with " <>
+      "references/2 in its own alter block without any :modify (plain ALTER " <>
+      "supports it), or make the change by hand with execute/1."
+  end
+
   # A rebuild re-emits the primary key over the key columns that survive the
   # change set. Removing every one of them turns a keyed table into a keyless
   # one — the rows stay, but nothing identifies them any more, and no
@@ -886,7 +914,17 @@ defmodule XqliteEcto3 do
     case {members, survivors} do
       {[], _none} -> :ok
       {_members, [_kept | _rest]} -> :ok
-      {removed, []} -> raise ArgumentError, removed_primary_key_message(table.name, removed)
+      {removed, []} -> refuse_unless_key_granted!(table, removed, changes)
+    end
+  end
+
+  # A change set that de-keys every current member but grants another
+  # column primary_key: true moves the key rather than removing it.
+  defp refuse_unless_key_granted!(table, removed, changes) do
+    if Enum.any?(changes, &grants_inline_key?/1) do
+      :ok
+    else
+      raise ArgumentError, removed_primary_key_message(table.name, removed)
     end
   end
 
@@ -894,9 +932,10 @@ defmodule XqliteEcto3 do
     listing = Enum.map_join(removed, ", ", &inspect/1)
 
     "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: the change set removes " <>
-      "every primary-key column (#{listing}), leaving the table with no primary key at " <>
-      "all. Keep at least one of them, or make the change by hand with execute/1, " <>
-      "recreating the table with the key you want it to have."
+      "or de-keys every primary-key column (#{listing}), leaving the table with no " <>
+      "primary key at all. Keep at least one of them, grant another column " <>
+      "primary_key: true, or make the change by hand with execute/1, recreating the " <>
+      "table with the key you want it to have."
   end
 
   # Foreign keys and UNIQUE constraints are reconstructed from the structural
@@ -1210,12 +1249,14 @@ defmodule XqliteEcto3 do
   defp fetch_user_indexes!(meta, %Ecto.Migration.Table{name: name}, opts) do
     # User-created indexes have non-nil `sql`; auto-created ones (from UNIQUE
     # constraints etc.) have NULL sql and will be recreated automatically when
-    # the new table is created with the same constraints.
+    # the new table is created with the same constraints. `tbl_name` is
+    # matched with SQLite's own ASCII case folding: for indexes SQLite
+    # happens to normalize the stored spelling, but the rule stays one rule.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT name, sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = ?1 " <>
-          "AND sql IS NOT NULL",
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'index' " <>
+          "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL",
         [to_string(name)],
         opts
       )
@@ -1224,11 +1265,14 @@ defmodule XqliteEcto3 do
   end
 
   defp fetch_table_triggers!(meta, %Ecto.Migration.Table{name: name}, opts) do
+    # For a trigger, sqlite_schema.tbl_name records the spelling the
+    # CREATE TRIGGER statement used — not the table's stored spelling — so
+    # a raw compare would skip the trigger and the rebuild would drop it.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 " <>
-          "AND sql IS NOT NULL",
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' " <>
+          "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL",
         [to_string(name)],
         opts
       )
@@ -1385,7 +1429,21 @@ defmodule XqliteEcto3 do
   end
 
   defp default_clause(nil), do: ""
-  defp default_clause(value), do: [" DEFAULT ", to_string(value)]
+  defp default_clause(value), do: [" DEFAULT ", carried_default(to_string(value))]
+
+  @literal_default_pattern ~r/^(?:[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?|'(?:[^']|'')*'|[xX]'[0-9A-Fa-f]*'|NULL|TRUE|FALSE|CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME)$/i
+
+  # pragma table_xinfo reports an expression DEFAULT without the parentheses
+  # SQLite's grammar requires around it, so a carried-over default that is
+  # not a plain literal must be re-wrapped or the emitted CREATE fails to
+  # parse.
+  defp carried_default(text) do
+    if literal_default?(text), do: text, else: ["(", text, ")"]
+  end
+
+  defp literal_default?(text) do
+    Regex.match?(@literal_default_pattern, String.trim(text))
+  end
 
   defp apply_change(cols, {:add, name, type, opts}) do
     cols ++
@@ -1393,7 +1451,7 @@ defmodule XqliteEcto3 do
   end
 
   defp apply_change(cols, {:add_if_not_exists, name, type, opts}) do
-    if Enum.any?(cols, &(&1.name == to_string(name))) do
+    if Enum.any?(cols, &same_column?(&1.name, name)) do
       cols
     else
       apply_change(cols, {:add, name, type, opts})
@@ -1403,22 +1461,23 @@ defmodule XqliteEcto3 do
   defp apply_change(cols, {:remove, name, _type, _opts}), do: apply_change(cols, {:remove, name})
 
   defp apply_change(cols, {:remove, name}) do
-    Enum.reject(cols, &(&1.name == to_string(name)))
+    refuse_unknown_column!(cols, name, :remove)
+    Enum.reject(cols, &same_column?(&1.name, name))
   end
 
   defp apply_change(cols, {:remove_if_exists, name, _type}),
     do: apply_change(cols, {:remove_if_exists, name})
 
   defp apply_change(cols, {:remove_if_exists, name}) do
-    Enum.reject(cols, &(&1.name == to_string(name)))
+    Enum.reject(cols, &same_column?(&1.name, name))
   end
 
   defp apply_change(cols, {:modify, name, type, opts}) do
-    name_s = to_string(name)
+    refuse_unknown_column!(cols, name, :modify)
 
     Enum.map(cols, fn col ->
-      if col.name == name_s do
-        %{col | spec: modify_spec(col, name, type, opts)}
+      if same_column?(col.name, name) do
+        %{col | spec: modify_spec(col, col.name, type, opts)}
       else
         col
       end
@@ -1426,6 +1485,24 @@ defmodule XqliteEcto3 do
   end
 
   defp apply_change(cols, _other), do: cols
+
+  # SQLite resolves column names ASCII-case-insensitively, so the rebuild
+  # matches them the same way — a raw compare made a differently-spelled
+  # change a silent no-op. The emitted definition keeps the stored spelling.
+  defp same_column?(stored_name, change_name) do
+    ascii_equal_fold?(stored_name, to_string(change_name))
+  end
+
+  defp refuse_unknown_column!(cols, name, kind) do
+    if Enum.any?(cols, &same_column?(&1.name, name)) do
+      :ok
+    else
+      raise ArgumentError,
+            "cannot rebuild for ALTER ... MODIFY: #{kind} names the column " <>
+              "#{inspect(to_string(name))}, and the table has no such column. " <>
+              "Nothing was changed."
+    end
+  end
 
   # Ecto's contract for modify/3: an option not given leaves that aspect of
   # the column untouched (":null — … If this option is not set, the nullable
@@ -1509,7 +1586,37 @@ defmodule XqliteEcto3 do
     ])
   end
 
-  defp copy_rows_sql(table, copy_pairs) do
+  # A rowid table with no INTEGER PRIMARY KEY alias keeps its row identity
+  # only in the implicit rowid, and INSERT ... SELECT does not carry it —
+  # the copy renumbers every row behind a deleted gap, silently breaking
+  # anything keyed on rowids (an external-content FTS5 index, manual rowid
+  # joins). Copy it explicitly. Skipped when a change grants a new inline
+  # key (the identity moves to it) or a stored column shadows the name.
+  defp rowid_copy_needed?(existing, changes) do
+    pk_members = Enum.count(existing, &(&1.pk > 0))
+
+    aliased? =
+      Enum.any?(existing, fn col ->
+        col.pk == 1 and pk_members == 1 and String.upcase(col.type || "") == "INTEGER"
+      end)
+
+    shadowed? =
+      Enum.any?(existing, fn col ->
+        String.downcase(col.name, :ascii) in ["rowid", "_rowid_", "oid"]
+      end)
+
+    not aliased? and not shadowed? and not Enum.any?(changes, &grants_inline_key?/1)
+  end
+
+  defp grants_inline_key?({op, _name, _type, opts})
+       when op in [:add, :add_if_not_exists, :modify],
+       do: Keyword.get(opts, :primary_key, false) == true
+
+  defp grants_inline_key?(_change), do: false
+
+  defp copy_rows_sql(table, copy_pairs, copy_rowid?) do
+    copy_pairs = if copy_rowid?, do: [{"rowid", "rowid"} | copy_pairs], else: copy_pairs
+
     if copy_pairs != [] do
       {old_cols, new_cols} = Enum.unzip(copy_pairs)
 

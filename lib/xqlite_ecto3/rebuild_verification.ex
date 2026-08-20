@@ -327,7 +327,13 @@ defmodule XqliteEcto3.RebuildVerification do
   """
   @spec autoincrement_declared?(String.t()) :: boolean()
   def autoincrement_declared?(create_sql) when is_binary(create_sql) do
-    Regex.match?(~r/\bPRIMARY\s+KEY\s+AUTOINCREMENT\b/i, create_sql)
+    # The grammar allows a sort order and an ON CONFLICT clause between
+    # KEY and AUTOINCREMENT (`PRIMARY KEY ASC AUTOINCREMENT` is legal and
+    # autoincrements), so the two keywords are not always adjacent.
+    Regex.match?(
+      ~r/\bPRIMARY\s+KEY(?:\s+(?:ASC|DESC))?(?:\s+ON\s+CONFLICT\s+\w+)?\s+AUTOINCREMENT\b/i,
+      create_sql
+    )
   end
 
   defp read_autoincrement?(table_name, query) do
@@ -364,7 +370,19 @@ defmodule XqliteEcto3.RebuildVerification do
     members = primary_key_members(before.columns)
     survivors = surviving(members, planned)
 
-    if members != [] and survivors == [] do
+    # A change set that de-keys every current member but grants another
+    # column primary_key: true moves the key rather than removing it —
+    # the engine allows it, so the prediction must too.
+    granted_key? =
+      Enum.any?(changes, fn
+        {op, _name, _type, opts} when op in [:add, :add_if_not_exists, :modify] ->
+          Keyword.get(opts, :primary_key, false) == true
+
+        _other ->
+          false
+      end)
+
+    if members != [] and survivors == [] and not granted_key? do
       {:refused, :primary_key_fully_removed}
     else
       {:ok, expected_snapshot(before, planned, members, survivors)}
@@ -395,6 +413,10 @@ defmodule XqliteEcto3.RebuildVerification do
   # survivors, and SQLite numbers them by their place in that clause. A
   # single-member key rides inline on its column, where the position is
   # always 1.
+  # An inline key wins first: a column granted primary_key: true is the
+  # key even when the change set de-keyed a composite's members.
+  defp key_position(%{pk_inline: true}, _members, _survivors), do: 1
+
   defp key_position(col, members, survivors) when length(members) > 1 do
     case Enum.find_index(survivors, &(&1 == col.name)) do
       nil -> 0
@@ -402,7 +424,6 @@ defmodule XqliteEcto3.RebuildVerification do
     end
   end
 
-  defp key_position(%{pk_inline: true}, _members, _survivors), do: 1
   defp key_position(_col, _members, _survivors), do: 0
 
   defp initial_plan(columns, autoincrement?) do
@@ -425,6 +446,7 @@ defmodule XqliteEcto3.RebuildVerification do
         default: declared.default,
         pk_inline: declared.pk_inline,
         autoincrement: declared.autoincrement,
+        pk_removed: false,
         declared: declared
       }
     end)
@@ -441,7 +463,7 @@ defmodule XqliteEcto3.RebuildVerification do
   end
 
   defp apply_change(planned, {:add_if_not_exists, name, type, opts}) do
-    if Enum.any?(planned, &(&1.name == to_string(name))) do
+    if Enum.any?(planned, &same_column_name?(&1.name, name)) do
       planned
     else
       apply_change(planned, {:add, name, type, opts})
@@ -461,14 +483,12 @@ defmodule XqliteEcto3.RebuildVerification do
   end
 
   defp apply_change(planned, {:remove, name}) do
-    Enum.reject(planned, &(&1.name == to_string(name)))
+    Enum.reject(planned, &same_column_name?(&1.name, name))
   end
 
   defp apply_change(planned, {:modify, name, type, opts}) do
-    target = to_string(name)
-
     Enum.map(planned, fn col ->
-      if col.name == target do
+      if same_column_name?(col.name, name) do
         modified_column(col, type, opts)
       else
         col
@@ -478,6 +498,12 @@ defmodule XqliteEcto3.RebuildVerification do
 
   defp apply_change(planned, _other), do: planned
 
+  # SQLite resolves column names ASCII-case-insensitively; the model must
+  # match a change to its column the same way the engine (and SQLite) do.
+  defp same_column_name?(planned_name, change_name) do
+    String.downcase(planned_name, :ascii) == String.downcase(to_string(change_name), :ascii)
+  end
+
   defp added_column(name, type, opts) do
     %{
       name: to_string(name),
@@ -486,6 +512,7 @@ defmodule XqliteEcto3.RebuildVerification do
       default: added_default(Keyword.fetch(opts, :default)),
       pk_inline: Keyword.get(opts, :primary_key, false),
       autoincrement: false,
+      pk_removed: false,
       declared: nil
     }
   end
@@ -508,7 +535,8 @@ defmodule XqliteEcto3.RebuildVerification do
         notnull: merged_notnull(declared, opts),
         default: merged_default(declared, opts),
         pk_inline: inline_key?,
-        autoincrement: declared.autoincrement and inline_key?
+        autoincrement: declared.autoincrement and inline_key?,
+        pk_removed: Keyword.fetch(opts, :primary_key) == {:ok, false}
     }
   end
 
@@ -541,16 +569,55 @@ defmodule XqliteEcto3.RebuildVerification do
   defp rendered_default(nil), do: "NULL"
   defp rendered_default(true), do: "1"
   defp rendered_default(false), do: "0"
-  defp rendered_default({:fragment, expression}), do: IO.iodata_to_binary(expression)
+
+  defp rendered_default({:fragment, expression}) do
+    expression |> IO.iodata_to_binary() |> strip_outer_parens()
+  end
+
   defp rendered_default(value) when is_integer(value) or is_float(value), do: to_string(value)
 
   defp rendered_default(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "''") <> "'"
   end
 
+  # SQLite's grammar requires parentheses around an expression DEFAULT and
+  # strips them before storing, so the pragma reports the inside text. A
+  # miscount (parentheses inside string literals) leaves the text
+  # unstripped and the comparison fails loudly — never silently.
+  defp strip_outer_parens(text) do
+    trimmed = String.trim(text)
+    inner = String.slice(trimmed, 1..-2//1)
+
+    if String.starts_with?(trimmed, "(") and String.ends_with?(trimmed, ")") and
+         balanced?(inner) do
+      inner
+    else
+      trimmed
+    end
+  end
+
+  defp balanced?(text) do
+    text
+    |> String.to_charlist()
+    |> Enum.reduce_while(0, fn
+      ?(, depth -> {:cont, depth + 1}
+      ?), 0 -> {:halt, -1}
+      ?), depth -> {:cont, depth - 1}
+      _ch, depth -> {:cont, depth}
+    end)
+    |> Kernel.==(0)
+  end
+
+  # A member survives only while it is still a key member: present in the
+  # plan and not de-keyed by a `modify ..., primary_key: false` (which
+  # reaches the keyless end state through a different door than :remove).
   defp surviving(members, planned) do
-    names = MapSet.new(planned, & &1.name)
-    Enum.filter(members, &MapSet.member?(names, &1))
+    keyed =
+      planned
+      |> Enum.reject(& &1.pk_removed)
+      |> MapSet.new(& &1.name)
+
+    Enum.filter(members, &MapSet.member?(keyed, &1))
   end
 
   defp compare(table, expected, actual) do

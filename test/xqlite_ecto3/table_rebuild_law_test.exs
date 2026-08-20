@@ -554,6 +554,17 @@ defmodule XqliteEcto3.TableRebuildLawTest do
     normalize_removal({:remove, name}, name, state)
   end
 
+  # The engine refuses a change naming a column the table no longer has,
+  # so a modify of a column an earlier change removed is not something a
+  # migration could really ask for.
+  defp normalize_change({:modify, name, type, opts}, state) do
+    if name in state.names do
+      {[{:modify, name, type, opts}], state}
+    else
+      {[], state}
+    end
+  end
+
   defp normalize_change(change, state), do: {[change], state}
 
   defp normalize_removal(change, name, state) do
@@ -561,7 +572,9 @@ defmodule XqliteEcto3.TableRebuildLawTest do
     surviving_key = state.key_members -- [name]
 
     cond do
-      name not in state.names -> {[change], state}
+      # Already removed by an earlier change: the engine refuses a removal
+      # naming a column the table no longer has, so drop it.
+      name not in state.names -> {[], state}
       remaining == [] -> {[], state}
       state.key_members != [] and surviving_key == [] -> {[], state}
       true -> {[change], %{state | names: remaining, key_members: surviving_key}}

@@ -405,4 +405,175 @@ defmodule XqliteEcto3.TableRebuildTest do
       TestRepo.query!("PRAGMA defer_foreign_keys = OFF")
     end
   end
+
+  describe "column names resolve the way SQLite resolves them" do
+    test "a modify spelled in another case reaches the stored column" do
+      create("CREATE TABLE rb_fold(id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+
+      assert {:ok, []} = run_alter(:rb_fold, [{:modify, :NAME, :text, [null: true]}])
+
+      assert %{rows: [["name", 0]]} =
+               TestRepo.query!(
+                 "SELECT name, \"notnull\" FROM pragma_table_xinfo('rb_fold') WHERE name = 'name'"
+               )
+    end
+
+    test "a remove spelled in another case drops the stored column on the rebuild path" do
+      create("CREATE TABLE rb_fold2(id INTEGER PRIMARY KEY, name TEXT, gone TEXT)")
+
+      assert {:ok, []} =
+               run_alter(:rb_fold2, [{:modify, :name, :text, [null: true]}, {:remove, :GONE}])
+
+      assert %{rows: [["id"], ["name"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_fold2') ORDER BY cid")
+    end
+
+    test "a change naming a column the table does not have refuses loudly" do
+      create("CREATE TABLE rb_fold3(id INTEGER PRIMARY KEY, name TEXT)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_fold3, [{:modify, :nope, :text, [null: true]}])
+      end
+
+      assert %{rows: [[2]]} =
+               TestRepo.query!("SELECT count(*) FROM pragma_table_xinfo('rb_fold3')")
+    end
+  end
+
+  describe "schema objects follow the table whatever spelling created them" do
+    test "a trigger created with another table spelling survives the rebuild" do
+      create("CREATE TABLE rb_trig(id INTEGER PRIMARY KEY, name TEXT, n INTEGER DEFAULT 0)")
+
+      create(
+        "CREATE TRIGGER rb_trig_ai AFTER INSERT ON \"RB_TRIG\" " <>
+          "BEGIN UPDATE rb_trig SET n = 1 WHERE id = NEW.id; END"
+      )
+
+      assert {:ok, []} = run_alter(:rb_trig, [{:modify, :name, :text, [null: true]}])
+
+      TestRepo.query!("INSERT INTO rb_trig(id, name) VALUES (1, 'a')")
+      assert %{rows: [[1]]} = TestRepo.query!("SELECT n FROM rb_trig WHERE id = 1")
+    end
+  end
+
+  describe "defaults carry through a rebuild" do
+    test "an expression default survives untouched" do
+      create(
+        "CREATE TABLE rb_def(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "created_at TEXT DEFAULT (datetime('now')))"
+      )
+
+      assert {:ok, []} = run_alter(:rb_def, [{:modify, :name, :text, [null: true]}])
+
+      assert %{rows: [["datetime('now')"]]} =
+               TestRepo.query!(
+                 "SELECT dflt_value FROM pragma_table_xinfo('rb_def') WHERE name = 'created_at'"
+               )
+
+      TestRepo.query!("INSERT INTO rb_def(id, name) VALUES (1, 'a')")
+
+      assert %{rows: [[value]]} = TestRepo.query!("SELECT created_at FROM rb_def WHERE id = 1")
+      assert is_binary(value) and value != ""
+    end
+
+    test "a fragment default given to modify lands on the column" do
+      create("CREATE TABLE rb_frag(id INTEGER PRIMARY KEY, seen_at TEXT)")
+
+      assert {:ok, []} =
+               run_alter(:rb_frag, [
+                 {:modify, :seen_at, :text, [default: {:fragment, "(datetime('now'))"}]}
+               ])
+
+      TestRepo.query!("INSERT INTO rb_frag(id) VALUES (1)")
+
+      assert %{rows: [[value]]} = TestRepo.query!("SELECT seen_at FROM rb_frag WHERE id = 1")
+      assert is_binary(value) and value != ""
+    end
+  end
+
+  describe "row identity survives a rebuild" do
+    test "implicit rowids are preserved for a table without an integer primary key" do
+      create("CREATE TABLE rb_rowid(v TEXT NOT NULL)")
+      TestRepo.query!("INSERT INTO rb_rowid(v) VALUES ('a'), ('b'), ('c')")
+      TestRepo.query!("DELETE FROM rb_rowid WHERE v = 'a'")
+
+      assert {:ok, []} = run_alter(:rb_rowid, [{:modify, :v, :text, [null: true]}])
+
+      assert %{rows: [[2, "b"], [3, "c"]]} =
+               TestRepo.query!("SELECT rowid, v FROM rb_rowid ORDER BY rowid")
+    end
+  end
+
+  describe "AUTOINCREMENT spellings" do
+    test "PRIMARY KEY ASC AUTOINCREMENT keeps AUTOINCREMENT through a rebuild" do
+      create("CREATE TABLE rb_asc(id INTEGER PRIMARY KEY ASC AUTOINCREMENT, name TEXT)")
+      TestRepo.query!("INSERT INTO rb_asc(name) VALUES ('a'), ('b'), ('c')")
+      TestRepo.query!("DELETE FROM rb_asc WHERE id = 3")
+
+      assert {:ok, []} = run_alter(:rb_asc, [{:modify, :name, :text, [null: true]}])
+
+      assert %{rows: [[4]]} =
+               TestRepo.query!("INSERT INTO rb_asc(name) VALUES ('d') RETURNING id")
+    end
+  end
+
+  describe "keys cannot vanish through modify" do
+    test "de-keying the only primary key refuses" do
+      create("CREATE TABLE rb_dekey(id INTEGER PRIMARY KEY, name TEXT)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_dekey, [{:modify, :id, :integer, [primary_key: false]}])
+      end
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!("SELECT pk FROM pragma_table_xinfo('rb_dekey') WHERE name = 'id'")
+    end
+
+    test "moving the key to another column is allowed" do
+      create("CREATE TABLE rb_move(id INTEGER PRIMARY KEY, code INTEGER NOT NULL)")
+
+      assert {:ok, []} =
+               run_alter(:rb_move, [
+                 {:modify, :id, :integer, [primary_key: false]},
+                 {:modify, :code, :integer, [primary_key: true]}
+               ])
+
+      assert %{rows: [["code", 1], ["id", 0]]} =
+               TestRepo.query!("SELECT name, pk FROM pragma_table_xinfo('rb_move') ORDER BY name")
+    end
+  end
+
+  describe "references cannot slip into a rebuild" do
+    test "modify with references refuses before anything destructive" do
+      create("CREATE TABLE rb_refp(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TABLE rb_refc(id INTEGER PRIMARY KEY, " <>
+          "parent_id INTEGER REFERENCES rb_refp(id))"
+      )
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_refc, [
+          {:modify, :parent_id, %Ecto.Migration.Reference{table: "rb_refp2"}, []}
+        ])
+      end
+
+      assert %{rows: [["rb_refp"]]} =
+               TestRepo.query!("SELECT \"table\" FROM pragma_foreign_key_list('rb_refc')")
+    end
+
+    test "add with references inside a rebuild block refuses before anything destructive" do
+      create("CREATE TABLE rb_refa(id INTEGER PRIMARY KEY, name TEXT)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_refa, [
+          {:modify, :name, :text, [null: true]},
+          {:add, :parent_id, %Ecto.Migration.Reference{table: "rb_refp"}, []}
+        ])
+      end
+
+      assert %{rows: [[2]]} =
+               TestRepo.query!("SELECT count(*) FROM pragma_table_xinfo('rb_refa')")
+    end
+  end
 end
