@@ -64,6 +64,23 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end
   end
 
+  describe "busy_timeout validation" do
+    test "the int32 boundaries connect and read back exactly" do
+      zero = connect!(database: tmp_db!("busy_zero"), busy_timeout: 0)
+      max = connect!(database: tmp_db!("busy_max"), busy_timeout: 2_147_483_647)
+
+      assert pragma!(zero.conn, "busy_timeout") == 0
+      assert pragma!(max.conn, "busy_timeout") == 2_147_483_647
+    end
+
+    test "out-of-range and non-integer values are structured connect errors" do
+      for bad <- [:infinity, -1, 2_147_483_648, "3000", 1500.5] do
+        assert {:error, %XqliteEcto3.Error{type: :invalid_busy_timeout}} =
+                 Driver.connect(database: tmp_db!("busy_bad"), busy_timeout: bad)
+      end
+    end
+  end
+
   describe "URL round-trip" do
     test "every pragma the URL parser accepts takes effect at connect" do
       # The URL string stays platform-neutral: Windows absolute paths

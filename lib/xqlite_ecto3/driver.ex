@@ -55,12 +55,13 @@ defmodule XqliteEcto3.Driver do
       result =
         with {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
              {:ok, stmt_cache_size} <- validate_statement_cache_size(statement_cache_size),
+             {:ok, busy_timeout_ms} <- validate_busy_timeout(busy_timeout),
              {:ok, conn} <- open_database(database, mode),
              # auto_vacuum only sticks while the database file has no pages;
              # journal_mode=wal below writes the header, so this must go first
              # (existing databases additionally need VACUUM — SQLite semantics).
              {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", writable(auto_vacuum, mode)),
-             {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout),
+             {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout_ms),
              {:ok, _} <- set_writable_pragma(conn, "journal_mode", to_string(journal_mode), mode),
              {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", foreign_keys),
              {:ok, _} <- NIF.set_pragma(conn, "cache_size", cache_size),
@@ -99,6 +100,18 @@ defmodule XqliteEcto3.Driver do
 
   defp validate_statement_cache_size(other) do
     {:error, {:invalid_statement_cache_size, other}}
+  end
+
+  # SQLite stores busy_timeout as a C int: negatives and values past int32 max
+  # are clamped to 0 at the PRAGMA level, silently disabling the busy handler.
+  # Reject them (and :infinity, floats, strings) instead of letting the clamp
+  # decide; 2_147_483_647 ms (~24.8 days) is the accepted "wait forever".
+  defp validate_busy_timeout(ms) when is_integer(ms) and ms >= 0 and ms <= 2_147_483_647 do
+    {:ok, ms}
+  end
+
+  defp validate_busy_timeout(other) do
+    {:error, {:invalid_busy_timeout, other}}
   end
 
   # Repo-config hook subscribers: registered NAMES (not pids — config
