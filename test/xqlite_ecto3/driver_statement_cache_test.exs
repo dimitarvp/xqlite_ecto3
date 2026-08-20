@@ -105,7 +105,7 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
     end
 
     test "an invalid statement_cache_size is a structured connect error" do
-      assert {:error, {:invalid_statement_cache_size, :lots}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_statement_cache_size}} =
                Driver.connect(database: ":memory:", statement_cache_size: :lots)
     end
   end

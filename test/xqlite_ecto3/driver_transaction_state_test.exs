@@ -295,6 +295,56 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert state.transaction_status == :idle
     end
 
+    test "a line-comment-prefixed BEGIN updates the cached flag", %{state: state} do
+      begin = %XqliteEcto3.Query{statement: "-- audit tag\nBEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+      assert state.transaction_status == :transaction
+    end
+
+    test "a block-comment-prefixed COMMIT updates the cached flag", %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      commit = %XqliteEcto3.Query{statement: "/* audit tag */ COMMIT"}
+      {:ok, _query, _result, state} = Driver.handle_execute(commit, [], [], state)
+      assert state.transaction_status == :idle
+    end
+
+    test "a comment-prefixed BEGIN makes a later rollback-class violation disconnect",
+         %{state: state} do
+      {:ok, _} =
+        NIF.query(
+          state.conn,
+          "CREATE TABLE tc_cb(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO tc_cb(email) VALUES ('a@x')", [])
+
+      begin = %XqliteEcto3.Query{statement: "-- audit tag\nBEGIN IMMEDIATE"}
+      {:ok, _query, _result, state} = Driver.handle_execute(begin, [], [], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO tc_cb(email) VALUES ('a@x')"}
+
+      assert {:disconnect, %XqliteEcto3.Error{type: :constraint_violation}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+    end
+
+    test "a comment-prefixed COMMIT does not disconnect a later autocommit violation",
+         %{state: state} do
+      {:ok, _} =
+        NIF.query(state.conn, "CREATE TABLE tc_cc(id INTEGER PRIMARY KEY, v TEXT UNIQUE)", [])
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO tc_cc(v) VALUES ('a')", [])
+
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      commit = %XqliteEcto3.Query{statement: "/* audit tag */ COMMIT"}
+      {:ok, _query, _result, state} = Driver.handle_execute(commit, [], [], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO tc_cc(v) VALUES ('a')"}
+
+      assert {:error, %XqliteEcto3.Error{type: :constraint_violation}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+    end
+
     test "a raw BEGIN makes a later rollback-class violation disconnect", %{state: state} do
       {:ok, _} =
         NIF.query(
@@ -315,7 +365,7 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
     end
   end
 
-  describe "disconnect/2 resets transient state fields" do
+  describe "disconnect/2 closes the connection" do
     test "returns :ok after closing", %{state: state} do
       assert :ok = Driver.disconnect(nil, state)
     end

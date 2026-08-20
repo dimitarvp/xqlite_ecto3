@@ -219,6 +219,11 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: msg, type: :utf8_error, details: %{column: column}}
   end
 
+  def wrap({:cannot_open_database, path, code, msg})
+      when is_binary(path) and is_integer(code) and is_binary(msg) do
+    %__MODULE__{message: msg, type: :cannot_open_database, details: %{path: path, code: code}}
+  end
+
   def wrap({tag, msg}) when is_atom(tag) and is_binary(msg) do
     %__MODULE__{message: msg, type: tag}
   end

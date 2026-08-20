@@ -56,14 +56,14 @@ defmodule XqliteEcto3.ObservabilityTest do
     end
 
     test "unregistered subscriber name is a structured connect error" do
-      assert {:error, {:hook_subscriber_not_registered, :xq_obs_no_such_proc}} =
+      assert {:error, %XqliteEcto3.Error{type: :hook_subscriber_not_registered}} =
                Driver.connect(database: ":memory:", hooks: [update: :xq_obs_no_such_proc])
     end
 
     test "unknown hook kind is a structured connect error" do
       Process.register(self(), :xq_obs_bad_kind_listener)
 
-      assert {:error, {:invalid_hook_config, {:frobnicate, :xq_obs_bad_kind_listener}}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_hook_config}} =
                Driver.connect(
                  database: ":memory:",
                  hooks: [frobnicate: :xq_obs_bad_kind_listener]

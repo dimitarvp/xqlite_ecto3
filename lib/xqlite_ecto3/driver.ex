@@ -82,6 +82,11 @@ defmodule XqliteEcto3.Driver do
              rich_fk_diagnostics: rich_fk_diagnostics,
              stmt_cache_size: stmt_cache_size
            }}
+        else
+          # DBConnection's connect contract wants {:error, Exception.t()}: with a
+          # bare reason, `raise err` in its retry machinery becomes ArgumentError
+          # and the real cause is lost.
+          {:error, reason} -> {:error, XqliteEcto3.Error.wrap(reason)}
         end
 
       classify(result, start_md)
@@ -206,11 +211,6 @@ defmodule XqliteEcto3.Driver do
 
   @impl DBConnection
   def disconnect(err, state) do
-    # Reset transient fields for debug-consistency. The struct is local to
-    # this call but anything that captured it earlier (telemetry, traces)
-    # reads post-close values instead of stale mid-transaction cache.
-    _ = %{state | transaction_status: :idle, savepoint: 0}
-
     # Finalize every cached statement before closing: sqlite3_close with
     # outstanding statements leaks the handle until process exit.
     Enum.each(state.stmt_cache, fn {_sql, stmt} -> NIF.stmt_finalize(stmt) end)
@@ -523,6 +523,24 @@ defmodule XqliteEcto3.Driver do
       {:ok, true} -> %{state | transaction_status: :transaction}
       {:ok, false} -> %{state | transaction_status: :idle}
       {:error, _reason} -> state
+    end
+  end
+
+  # SQLite skips comments before the first token: a line comment runs to the
+  # next newline, a block comment to the first `*/` (never nested), and either
+  # kind may instead run to end of input — in which case no statement executes,
+  # so falling through to nil (no sync) is correct.
+  defp leading_keyword(<<"--", rest::binary>>) do
+    case :binary.match(rest, "\n") do
+      {i, 1} -> leading_keyword(binary_part(rest, i + 1, byte_size(rest) - i - 1))
+      :nomatch -> nil
+    end
+  end
+
+  defp leading_keyword(<<"/*", rest::binary>>) do
+    case :binary.match(rest, "*/") do
+      {i, 2} -> leading_keyword(binary_part(rest, i + 2, byte_size(rest) - i - 2))
+      :nomatch -> nil
     end
   end
 

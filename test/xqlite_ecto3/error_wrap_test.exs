@@ -199,10 +199,17 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
 
     test "four-element tuple keeps its tag as type" do
-      e = Error.wrap({:cannot_open_database, "/bad/path", 14, "unable to open database file"})
-      assert e.type == :cannot_open_database
+      e = Error.wrap({:mystery_failure, "/bad/path", 14, "no clue"})
+      assert e.type == :mystery_failure
       assert is_binary(e.message)
       assert e.details == nil
+    end
+
+    test "cannot_open_database carries path and code in details" do
+      e = Error.wrap({:cannot_open_database, "/bad/path", 14, "unable to open database file"})
+      assert e.type == :cannot_open_database
+      assert e.message == "unable to open database file"
+      assert e.details == %{path: "/bad/path", code: 14}
     end
   end
 

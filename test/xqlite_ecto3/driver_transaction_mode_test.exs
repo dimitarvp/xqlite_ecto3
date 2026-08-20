@@ -46,7 +46,7 @@ defmodule XqliteEcto3.DriverTransactionModeTest do
   end
 
   test "an invalid default_transaction_mode is a structured connect error" do
-    assert {:error, {:invalid_default_transaction_mode, :often}} =
+    assert {:error, %XqliteEcto3.Error{type: :invalid_default_transaction_mode}} =
              Driver.connect(database: ":memory:", default_transaction_mode: :often)
   end
 end

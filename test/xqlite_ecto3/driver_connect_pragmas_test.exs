@@ -103,17 +103,17 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end
 
     test "malformed entry is a structured connect error" do
-      assert {:error, {:invalid_custom_pragma, :oops}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_custom_pragma}} =
                Driver.connect(database: tmp_db!("bad_entry"), custom_pragmas: [:oops])
     end
 
     test "non-list value is a structured connect error" do
-      assert {:error, {:invalid_custom_pragmas, :nope}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_custom_pragmas}} =
                Driver.connect(database: tmp_db!("bad_shape"), custom_pragmas: :nope)
     end
 
     test "an invalid pragma name surfaces the NIF's structured error" do
-      assert {:error, {:invalid_pragma_name, _}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_pragma_name}} =
                Driver.connect(database: tmp_db!("bad_name"), custom_pragmas: [{"no;pe", 1}])
     end
   end
@@ -140,7 +140,7 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end
 
     test "invalid mode is a structured connect error" do
-      assert {:error, {:invalid_connection_mode, :turbo}} =
+      assert {:error, %XqliteEcto3.Error{type: :invalid_connection_mode}} =
                Driver.connect(database: tmp_db!("badmode"), mode: :turbo)
     end
   end
@@ -149,8 +149,13 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     test "a missing parent directory yields the structured open error carrying the path" do
       bad_path = "/nonexistent_xq_dir_#{:erlang.unique_integer([:positive])}/db.sqlite"
 
-      assert {:error, {:cannot_open_database, ^bad_path, _code, _reason}} =
-               Driver.connect(database: bad_path)
+      assert {:error,
+              %XqliteEcto3.Error{
+                type: :cannot_open_database,
+                details: %{path: ^bad_path, code: code}
+              }} = Driver.connect(database: bad_path)
+
+      assert is_integer(code)
     end
   end
 
