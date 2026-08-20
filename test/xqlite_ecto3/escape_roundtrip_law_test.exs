@@ -297,7 +297,11 @@ defmodule XqliteEcto3.EscapeRoundtripLawTest do
     check all(
             parent_suffix <- exotic_identifier(),
             child_suffix <- exotic_identifier(),
-            column <- exotic_identifier(),
+            # The child table already declares its own `id` primary key, and
+            # SQLite matches column names case-insensitively — a generated
+            # column of that name is a duplicate column, not an escaping case.
+            column <-
+              filter(exotic_identifier(), fn c -> String.downcase(c, :ascii) != "id" end),
             max_runs: @fk_runs
           ) do
       parent = "esc p " <> parent_suffix
