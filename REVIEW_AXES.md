@@ -685,6 +685,51 @@ degrade — measure, judge vs pre-Run-26); FK replay under a policy +
 in-sandbox under contention; streamed FK/CHECK/NOT-NULL subtypes;
 last_insert_rowid after replay rollback (lead); ATTACH-schema lookup;
 the 24-cap autoindex boundary; busy_timeout validation.
+COVERING RE-RUN (Run 35, 2026-08-20 — lap 5, batch 4: the Run-34
+routing handoff + the Run-27 seeds): **F-B5-20 (S2, FIXED,
+RED→green)** — `busy_timeout` config was unvalidated; `:infinity`
+(and strings, floats, negatives, past-int32) connected fine and
+meant busy_timeout 0 = never wait (1 ms give-up vs 3003 ms control);
+fix = `validate_busy_timeout/1` at connect (integers
+0..2_147_483_647; structured `:invalid_busy_timeout` otherwise;
+int32 max is the accepted "forever"), CLOSING F-B5-18. **F-B5-19
+(S2, docs-fixed)** — the migration guide's "changeset mapping works
+identically" promise is false for custom-named unique indexes (bare
+`unique_constraint/1` raises here, converts on ecto_sqlite3); the
+behavior is the ruled F-B5-2 Postgres parity, so the guide now
+states the difference + remedy. Docs-fixed S3s: F-B5-21 (README
+"Real unique index names" section + CHANGELOG feature entry — the
+Run-10 owed docs pass), F-B5-23 (replay leaves `last_insert_rowid`
+at the phantom row; moduledoc + README caveat; no code remedy
+exists), F-B5-24 (moduledoc claimed observer-held slots make reads
+wait; observer-only fails in 0 ms — three-way zero ambiguity now
+stated). Filed: F-B5-22 → F-B5-15 extended (stream skips the WHOLE
+enrichment incl. FK replay), F-B5-25 → F-B5-4 sharpened (the
+wrong-schema name is now EMITTED; TEMP shadow poisons main-table
+violations; `pragma_table_list` remedy probe-confirmed feasible).
+Filed sweep: 14-fork/15/16/17 all reproduce at HEAD (16's
+two-full-waits timing not re-hit a 2nd time — mechanism + cleanup
+proven over 76 iterations; 17's ordering intact through the
+Runs-29/32/33 guard churn); 18 reproduced then closed. CLEAN: the
+Run-34 handoff verified end-to-end (9-shape emission matrix + 3-flip
+RED control + 13/13 changeset matrix + spoof/quoting/two-autoindex
+adversarial legs + the mainstream conventional-name bare
+conversion); observer-only degradation measured (fail-fast is the
+right trade; `with_xqlite/3` already documents it); sandbox replay
+7/7; 24-cap counts autoindexes, structured refusal at 25; budget
+degradation structured onto the derived name. Observed-not-proven:
+the budget halt itself (both constructed shapes missed it,
+explained); Run 27's live 402 ms halt remains the only observation.
+DRYNESS: two S2s — **B5 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`validate_busy_timeout/1` / the busy_timeout config surface / the
+naming-contract prose in README+guide (re-wet on any emission-rule
+change). Next-pass seeds: deterministic budget-halt construction;
+F-B5-16's interleaving or a text downgrade; enrichment on a doomed
+connection (F-B5-17's other half); insert_all/update_all/
+on_conflict under the emission rule; equal cross-schema index
+names; DDL racing the candidate count; `Ecto.Multi` conversion
+shape. Handoff: [R35-handoff-config-validation] (B3/B8 court — the
+other dozen unvalidated repo-config pragmas).
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

@@ -102,15 +102,16 @@ after the S0–S2 burn-down.
   rebuild engine (which recreates the table and is unaffected), or
   refuse them loudly pre-flight so dev and prod fail the same way.
   Feature-taste call. (Run 34, B6 → B7)
-- [R34-handoff-unique-constraints] (seed, B5/B2 court, from Run 34's
-  churn scan) `to_constraints/2` now routes unique violations
-  through `unique_constraints/1` (connection.ex:106, :164-186),
-  which picks a live index name only when it is the single
-  non-autoindex candidate. Error-mapping surface, emits no SQL —
-  outside B6's court and deliberately unprobed at Run 34. The next
-  B5 (or B2) cover owns its verification: name-pick correctness,
-  the multi-candidate fallback, autoindex handling, and the
-  changeset-matching consequence. (Run 34, B6 → B5/B2)
+- [R35-handoff-config-validation] (seed, B3/B8 court, from Run 35's
+  gate) `driver.ex` reads a dozen repo-config values (`cache_size`,
+  `mmap_size`, `wal_autocheckpoint`, `journal_mode`, `synchronous`,
+  `temp_store`, …) and only three are validated
+  (`default_transaction_mode`, `statement_cache_size`, and now
+  `busy_timeout`). The silent-coercion class F-B5-20 fixed —
+  accepted config that quietly means something else at the pragma
+  level — likely sits under the rest. Sweep them: probe what each
+  accepts vs what the pragma reads back, validate or document per
+  value. (Run 35, B5 → B3/B8)
 - [F-B8-9-docs] (S3, docs, from Run 32) The
   `[:xqlite_ecto3, :disconnect]` event cannot distinguish our cancel
   from DBConnection's own checkout-deadline recycle — both carry
@@ -162,6 +163,13 @@ after the S0–S2 burn-down.
   SELECT and cannot raise a UNIQUE violation") was corrected in-run;
   the behavior decision — pipe `UniqueIndexNames.resolve/2` onto those
   branches vs document the gap — is the maintainer's. (Run 27, B5)
+  Extended (Run 35, F-B5-22): the same branches skip the ENTIRE
+  enrichment step, so the rich-FK replay is skipped too — the
+  advertised `fk_violations` list arrives empty with
+  `fk_diagnostics: :not_run` (truthful, and now documented in the
+  README's rich-FK caveats). Check/not-null/unique classification
+  itself survives the stream path (parsed in Rust). Whatever lands
+  here covers both enrichments. (Run 35, B5)
 - [F-B5-16] (S3) The rich-FK-diagnostics replay is a WRITE, so it
   contends for WAL's single write lock where the unique lookup's reads
   do not: measured a replay blocking 3,006 ms against a 3,000 ms
@@ -179,14 +187,6 @@ after the S0–S2 burn-down.
   enrichment on a doomed connection — interacts with the Run 23/25
   disconnect-at-damage guard; sequence any change with that surface.
   (Run 27, B5)
-- [F-B5-18] (S3, config footgun — public gotcha owed) `driver.ex`
-  accepts `busy_timeout` unvalidated, and SQLite clamps negatives and
-  anything past int32 to 0 at the PRAGMA level: `busy_timeout:
-  3_000_000_000` ("wait basically forever") silently means NO busy
-  handler at all — and, pre-Run-27, also "no lookup budget". Validate
-  the range at connect (structured error) or document the clamp; the
-  int32 ceiling belongs in a public gotcha line. `:infinity` and
-  non-integer values still unprobed. (Run 27, B5)
 
 - [F-B8-1] (S3) Operation `:timeout` does not interrupt a lock-contended
   write — `busy_timeout` dominates. Two handles on one file: A holds
@@ -248,6 +248,18 @@ after the S0–S2 burn-down.
   pragma_table_list WHERE name = ?` detects the ambiguity in one read;
   degrade to the derived name when more than one schema matches.
   (Run 14, B5)
+  Sharpened (Run 35, F-B5-25): since the single-candidate emission
+  rule, the wrong-schema name is EMITTED as the constraint name, so a
+  changeset declaring the correct name misses and a bare
+  `unique_constraint/1` raises — and a TEMP table shadowing a real
+  table's name poisons violations on the MAIN table too, not only on
+  the shadowed one (probe: all three of temp.t/aux.t/main.t emitted
+  temp's index name). The sketched remedy is probe-confirmed
+  feasible: `pragma_table_list` for the table name returned all
+  schemas in one read. Invisible residual: equal index names across
+  schemas make the mis-resolution undetectable and harmless-looking —
+  worth pinning if the remedy lands. Severity stays S3 (crafted
+  schema, same class as F-B5-5).
 - [F-B5-5] (S3) xqlite's violation-message parse (constraint_parse.rs
   splits columns on ", " and the table on the first ".") mis-parses a
   column name containing ", " — and the lookup then matches the

@@ -4690,3 +4690,148 @@ BY THE ORCHESTRATOR; stash-RED 4 red (exactly the predicted four) →
   escape_string/limit/quote_entity stay anchor-only until touched.
 
 FOURTEEN straight finding runs.
+
+## Run 35 — 2026-08-20 — lap 5, batch 4: B5 solo (the Run-34 routing handoff + the Run-27 seeds)
+
+Single Opus reviewer at `0a5386a`; xqlite 0.11.0 (hex), SQLite 3.53.2
+probe-confirmed. Gate: twelve probes re-driven by the orchestrator
+(p00/p01/p01_red/p02/p04/p06b/p06/p07/p07b/p08/p10/p12 — rc matched
+the manifest on each, load-bearing outputs read line-by-line); fixes
+implemented BY THE ORCHESTRATOR; stash-RED 1 red (exactly the
+predicted one: the rejection pin, red because connect succeeded on
+every bad value) → 15/15 green.
+
+- **F-B5-20 (S2, CONFIRMED, FIXED, RED→green).** `busy_timeout` repo
+  config went to `PRAGMA busy_timeout` unvalidated, and SQLite stores
+  it as a C int, clamping negatives and past-int32 values to 0 —
+  so `busy_timeout: :infinity` (the idiomatic "wait forever")
+  connected fine and then never waited on a single lock: probed
+  1 ms give-up vs the control's 3003 ms wait under an EXCLUSIVE
+  holder. Strings and floats were silently coerced. This settles the
+  two values F-B5-18 left unprobed, and worse than its clamp. FIX:
+  `validate_busy_timeout/1` at connect beside the two existing
+  validators — integers 0..2_147_483_647 accepted, everything else a
+  structured `{:invalid_busy_timeout, value}` through the same
+  tag-tuple wrap family (`type: :invalid_busy_timeout`); int32 max
+  (~24.8 days, probe-proven to survive the pragma exactly) is the
+  accepted "wait forever" spelling. Silent mapping of `:infinity`
+  was rejected on principle: silent coercion is the class being
+  eliminated. **CLOSES F-B5-18** (its remedy was exactly this
+  validation; entry removed, ceiling documented in the CHANGELOG
+  bullet + code comment). Committed pins (connect_pragmas +2): the
+  boundary values 0 and 2_147_483_647 connect AND read back exactly;
+  `:infinity`/-1/2_147_483_648/"3000"/1500.5 all reject structurally.
+- **F-B5-19 (S2, CONFIRMED, docs-fixed).** The migration guide
+  promised "the changeset mapping works identically — you likely
+  don't touch anything"; against a custom-named unique index a
+  by-the-book `unique_constraint(:col)` raises `Ecto.ConstraintError`
+  here and converts on ecto_sqlite3 (whose `constraint_name_hack/1`
+  always derives, never reading the schema). Probe: the same bare
+  declaration raises on the single-candidate table and converts on
+  the multi-candidate one — the raise IS the emission rule. The
+  behavior is the ruled F-B5-2 remedy (Postgres parity), so the
+  divergence is docs: the guide paragraph now states the one
+  difference, the `name:` remedy, which shapes keep matching bare
+  declarations, and points at the `UniqueIndexNames` moduledoc.
+- **F-B5-21 (S3, CONFIRMED, docs-fixed).** No user-facing doc
+  mentioned unique-index-name resolution (README documents the FK
+  sibling in full; CHANGELOG had only the budget bugfix). The
+  Run-10 owed docs pass, now paid: README "Real unique index names"
+  section (contract, both parity directions, degradation fields,
+  stream skip) + a CHANGELOG Added entry for the feature itself.
+- **F-B5-22 (S3, CONFIRMED, filed → F-B5-15 extended).** The
+  `handle_declare`/`handle_fetch` error branches skip the ENTIRE
+  enrichment step, so streamed DML skips the rich-FK replay too, not
+  only the unique lookup: same violation reports recovered
+  `fk_violations` through execute and `[]` + `:not_run` through the
+  stream (truthful degradation). Check/not-null/unique
+  classification survives the stream path (parsed in Rust). Filed
+  into F-B5-15's entry; README rich-FK caveats now say it.
+- **F-B5-23 (S3, CONFIRMED, docs-fixed).** The FK replay leaves
+  `last_insert_rowid()` pointing at the rolled-back phantom row
+  (probe: 5000 → 1 with replay on, 5000 → 5000 with it off; cleanup
+  otherwise clean). SQLite offers no restore; the adapter never
+  reads it (inserts use RETURNING) — raw-SQL/`with_xqlite/3` readers
+  are the exposed population. Caveat added to the FkDiagnostics
+  moduledoc + README caveats.
+- **F-B5-24 (S3, CONFIRMED, docs-fixed).** The UniqueIndexNames
+  moduledoc + `@zero_slot_budget_ms` comment said an observer-held
+  slot makes "reads wait for policy-governed durations" — under an
+  observer alone contended reads fail in 0 ms (probe: 2003-2004 ms
+  plain-timeout control vs 0 ms observer arm, observer fired). Both
+  spots now state the three-way zero ambiguity correctly;
+  `with_xqlite/3`'s moduledoc already had it right.
+- **F-B5-25 (S3, CONFIRMED, filed → F-B5-4 sharpened).** Since the
+  single-candidate emission rule, F-B5-4's wrong-schema name is
+  EMITTED: an aux-table violation blames main's index, and a TEMP
+  table shadowing a real name poisons violations on the MAIN table
+  too (all three of temp/aux/main emitted temp's index). Remedy
+  feasibility probe-confirmed (`pragma_table_list` returns all
+  schemas for the name in one read). Stays S3 — crafted schema, the
+  F-B5-5 calibration class.
+- **Filed-status sweep:** F-B5-14-fork REPRODUCES (no menu item
+  landed; `lookup_budget_ms`/`@zero_slot_budget_ms` unchurned since
+  Run 27's own `c80a762` — git-verified; live values re-anchored).
+  F-B5-15 REPRODUCES + extended (above). F-B5-16 mechanism
+  REPRODUCES (three unbudgeted writes, no budget code), the
+  two-full-waits timing NOT re-hit a second time — 30/30 policy-leg
+  recoveries median 313 µs max 10.5 ms, 8/8 long-hold recoveries max
+  1531 ms (one wait: the statement absorbed the window), cleanup
+  clean in all 76 iterations. F-B5-17 REPRODUCES at HEAD
+  (`wrap_execute_error |> disconnect_if_rolled_back`, driver.ex:458-459
+  — the Runs-29/32/33 guard churn did not reorder it; in-txn
+  ON-CONFLICT-ROLLBACK still yields `{:error, :rollback}`, names
+  never reach a changeset, plain ABORT in-txn still converts).
+  F-B5-18 REPRODUCED then CLOSED by the F-B5-20 fix.
+- **Clean census (controls named):** the Run-34 handoff VERIFIED
+  end-to-end — 9-shape emission matrix (single-named → real name;
+  two-named / autoindex+named → derived with candidates kept; lone
+  and composite autoindex → derived; innocent other-columns sibling
+  never a candidate; expression form unchanged incl. F-B5-11's
+  `table: nil, columns: []`; WITHOUT-ROWID PK never reaches the
+  lookup; dotted-name zero-candidate degrade) with a 3/3-flip RED
+  control mutating only candidate counts; changeset matrix 13/13
+  (`:exact`/`:suffix`/`:prefix`/regex against resolved names,
+  declare-both, derived-name conversions, the five raise arms as
+  structural controls); adversarial legs — `sqlite_autoindex_*`
+  spoof refused by SQLite itself, `we"ird` quoted identifier
+  resolves intact, two-autoindex tables pick by column match, and
+  the mainstream `create unique_index` conventional name resolves
+  to itself so bare `unique_constraint/1` converts. Observer-only
+  degradation measured end-to-end (150 iterations: median 118-149 µs
+  fail-fast vs 2.0 s control median; judgment: fail-fast-and-degrade
+  is the right trade, already documented on `with_xqlite/3` — the
+  only defect was F-B5-24's wording). Sandbox replay 7/7 (owner-txn
+  recovery, defer reset, no savepoint leak, checkin still rolls
+  back). 24-cap counts autoindexes (24 resolves; both 25-index
+  shapes refuse `{:unavailable, {:too_many_unique_indexes, 25}}` →
+  derived). Budget degradation structured on the derived name
+  (21/21 + 16/16 contended). Committed B5 tests 47/47 at review;
+  connect_pragmas 15/15 post-fix. Observed-not-proven (named
+  honestly): the wall-clock budget halt itself not re-hit in 80
+  contended iterations (two shapes, both misses explained:
+  blocked-then-failed reads short-circuit before the budget check;
+  block-and-succeed reads fit the writer's gap) — the halt's
+  OUTCOME (derived fallback) is proven via the read-failure branch;
+  F-B5-16's exact timing; p10's statistical control-resolution leg.
+- **Churn-scan handoff (B3/B8 court, seeded):** `driver.ex` reads a
+  dozen repo-config values (`cache_size`, `mmap_size`,
+  `wal_autocheckpoint`, …) and only three are validated now — the
+  same silent-coercion class F-B5-20 fixed likely sits under the
+  rest. B5 found the door; the sweep is B3/B8's. Filed
+  [R35-handoff-config-validation].
+- Dryness: two S2s — **B5 stays 0 of 2, NOT DRY**; the fix re-wets
+  `validate_busy_timeout/1` and the busy_timeout config surface, the
+  docs re-wet on any emission-rule change. Completeness critic (next
+  B5 pass): build the budget halt deterministically (policy sleep_ms
+  ≥ budget across retries) instead of statistically; F-B5-16's
+  interleaving deliberately or downgrade its text to
+  mechanism+ceiling; F-B5-17's OTHER half — what enrichment does TO
+  a doomed connection (pragma reads/savepoint writes on a
+  rolled-back conn); insert_all/update_all/on_conflict crosses under
+  the new emission rule; equal index names across schemas (the
+  invisible F-B5-25 residual); DDL racing the candidate COUNT
+  (two→one mid-flight changes the emitted name); `Ecto.Multi` as
+  the F-B5-19 population's real shape.
+
+FIFTEEN straight finding runs.
