@@ -716,7 +716,7 @@ defmodule XqliteEcto3.RebuildVerificationTest do
         end
 
       assert err.reason == :unsupported_shape
-      assert err.column == :tag
+      assert err.column == "tag"
     end
 
     test "a plain map default is still predicted as JSON text" do

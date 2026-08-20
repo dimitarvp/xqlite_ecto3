@@ -130,6 +130,30 @@ defmodule XqliteEcto3.DataTypeTest do
     end
   end
 
+  describe "REAL-affinity spellings are rewritten to NUMERIC" do
+    test "the named float family" do
+      assert DataType.column_type(:real, []) == "NUMERIC"
+      assert DataType.column_type(:double, []) == "NUMERIC"
+      assert DataType.column_type(:double_precision, []) == "NUMERIC"
+    end
+
+    test "PostgreSQL float spellings that previously passed through" do
+      assert DataType.column_type(:float8, []) == "NUMERIC"
+      assert DataType.column_type(:float4, []) == "NUMERIC"
+      assert DataType.column_type(:"double precision", []) == "NUMERIC"
+    end
+
+    test "any unrecognized spelling SQLite would give REAL affinity" do
+      assert DataType.column_type(:floatish, []) == "NUMERIC"
+      assert DataType.column_type(:big_real, []) == "NUMERIC"
+    end
+
+    test "spellings an earlier SQLite affinity rule claims pass through" do
+      assert DataType.column_type(:smallint, []) == "SMALLINT"
+      assert DataType.column_type(:varchar, []) == "VARCHAR"
+    end
+  end
+
   describe "unsupported types" do
     test "non-atom, non-tuple types raise UnsupportedTypeError carrying the offender" do
       err =

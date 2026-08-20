@@ -53,14 +53,35 @@ defmodule XqliteEcto3.DataType do
   def column_type({:map, _}, _opts), do: "TEXT"
   def column_type(:uuid, _opts), do: binary_id_column_type()
 
+  # Unrecognized atoms pass through upcased so DB-specific spellings keep
+  # working — except any spelling SQLite would give REAL affinity, which
+  # becomes NUMERIC for the same reason :real does above. SQLite's affinity
+  # rules decide in order: INT wins first, then CHAR/CLOB/TEXT, then BLOB,
+  # and only then REAL/FLOA/DOUB — so a marker from an earlier rule keeps
+  # the spelling out of the rewrite.
   def column_type(type, _) when is_atom(type) do
-    type
-    |> Atom.to_string()
-    |> String.upcase()
+    declared =
+      type
+      |> Atom.to_string()
+      |> String.upcase()
+
+    if real_affinity?(declared) do
+      "NUMERIC"
+    else
+      declared
+    end
   end
 
   def column_type(type, _) do
     raise XqliteEcto3.UnsupportedTypeError, type: type
+  end
+
+  @real_affinity_markers ["REAL", "FLOA", "DOUB"]
+  @overriding_affinity_markers ["INT", "CHAR", "CLOB", "TEXT", "BLOB"]
+
+  defp real_affinity?(declared) do
+    Enum.any?(@real_affinity_markers, &String.contains?(declared, &1)) and
+      not Enum.any?(@overriding_affinity_markers, &String.contains?(declared, &1))
   end
 
   # A map or list given as a column `default:` is stored as JSON text. Every
@@ -101,9 +122,15 @@ defmodule XqliteEcto3.DataType do
     raise XqliteEcto3.UnsupportedDefaultError,
       value: value,
       reason: reason,
-      column: Keyword.get(context, :column),
+      column: context |> Keyword.get(:column) |> normalize_column(),
       type: Keyword.get(context, :type)
   end
+
+  # The plain path knows the column as the atom from the migration AST; the
+  # rebuild's modify leg knows it as the string from pragma_table_xinfo. One
+  # error, one shape: always a string.
+  defp normalize_column(nil), do: nil
+  defp normalize_column(column), do: to_string(column)
 
   defp encode_default(value, context) do
     library = Application.get_env(:xqlite_ecto3, :json_library, Jason)
@@ -169,7 +196,7 @@ defmodule XqliteEcto3.UnsupportedDefaultError do
   @type t :: %__MODULE__{
           value: term(),
           reason: :unsupported_shape | :unencodable,
-          column: atom() | String.t() | nil,
+          column: String.t() | nil,
           type: term(),
           cause: Exception.t() | nil
         }

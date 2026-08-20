@@ -231,7 +231,7 @@ defmodule XqliteEcto3.MigrationTest do
 
       assert err.reason == :unsupported_shape
       assert Decimal.equal?(err.value, Decimal.new("1.5"))
-      assert err.column == :c
+      assert err.column == "c"
       assert err.type == :string
     end
 
@@ -287,7 +287,7 @@ defmodule XqliteEcto3.MigrationTest do
 
       assert err.reason == :unsupported_shape
       assert err.value == <<42::6>>
-      assert err.column == :bs_with_default
+      assert err.column == "bs_with_default"
     end
 
     test "plain maps, lists and the other literal shapes still render" do

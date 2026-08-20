@@ -754,7 +754,7 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       assert err.reason == :unsupported_shape
       assert err.value == :active
-      assert err.column == :tag
+      assert err.column == "tag"
     end
 
     test "a fragment default given to modify lands on the column" do
