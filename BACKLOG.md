@@ -133,6 +133,23 @@ after the S0–S2 burn-down.
   index being built does not exist yet) all collapse into the same
   silent derived-name fallback. Reporting gap only; refine the status
   shape when a consumer materializes. (Run 14, B5)
+- [F-B7-16] (S3, maintainer taste) Removing a composite primary-key
+  member silently narrows the key to the survivors; removing EVERY
+  member leaves a table with no primary key at all, silently.
+  Evidence for the call: narrowing only TIGHTENS uniqueness (never
+  admits data the old key rejected), and a survivor with duplicates
+  fails the copy loudly with full rollback — so the narrowing case is
+  defensible as-is. The all-members-removed case deserves a refusal
+  (recommendation: refuse when the original table had a PK and the
+  surviving member set is empty). (Run 15, B7)
+- [B7 enhancement candidate, unranked] A structural before/after
+  verification at the end of the rebuild — compare table_xinfo,
+  foreign_key_list, index_list, and table_list.wr/strict against the
+  pre-rebuild reads, raising on any difference the change set does not
+  explain — would catch whole classes of silent-drop bugs in one
+  check instead of per-construct fixes. Evaluate as one remedy at the
+  next B7 churn. Related: making the rebuild recreate dependent VIEWS
+  (currently a loud refusal) is a potential future feature. (Run 15)
 - [B3 seed, ORCHESTRATOR-UNVERIFIED] (reviewer-driven; Run 14's ON
   CONFLICT ROLLBACK probe walked into it): `INSERT OR ROLLBACK` /
   `ON CONFLICT ROLLBACK` inside `Repo.transaction` leaves the adapter

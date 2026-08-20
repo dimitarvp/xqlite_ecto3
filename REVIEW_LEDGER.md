@@ -2227,3 +2227,127 @@ event-surface probe 9/9, OTel path unchanged.
   lookup; WITHOUT ROWID × partial × expression crosses; hook
   (update/commit/rollback) interaction during the lookup (read-only,
   nothing should fire — unverified).
+
+---
+
+## Run 15 — 2026-08-20 — mini-lap batch 3: B7 (adversarial pass on the rebuild-engine fixes)
+
+- Commit at scan: `71a9b0f`. Deps at xqlite 0.10.0 (`XQLITE_PATH` unset).
+  Single Opus reviewer over the Run 11 fixes + the Run 13 defer-reset as a
+  set (churn attribution git-verified: only `57389e1` + `ded4dcc` touch the
+  engine since Run 11). The orchestrator re-ran ALL EIGHT probe scripts
+  pre-fix (exit/failure signatures matched the reviewer's exactly), wrote
+  13 committed RED tests, implemented the fix wave itself, re-ran all eight
+  probes post-fix (every fixed finding's legs flipped clean; only the two
+  deliberate divergences remain), and ran its own `mix verify` (exit 0,
+  40/40 on the two rebuild files).
+- **The heaviest finding run of the program: 2× S0 + 3× S1 + 2× S2 + 3× S3,
+  including two re-openings of holes the Run 11 fixes were written to
+  close.** Root pattern (the reviewer's own synthesis): the engine read its
+  schema through TWO matching disciplines — SQLite resolves identifiers
+  ASCII-case-insensitively while several engine reads compared names as raw
+  TEXT — and everything in the gap silently "did not exist".
+
+### Findings and dispositions (all orchestrator-reproduced pre-fix)
+
+- **F-B7-7 (S0, FIXED).** A self-referencing FK whose REFERENCES clause
+  spells the table in a different case escaped `fk_target/2`'s exact
+  compare — the rebuilt clause pointed at the ORIGINAL table, and DROP
+  TABLE cascade-deleted the rows just copied (probe: 3 rows → 1, migration
+  "succeeded", `foreign_key_check` clean). Fixed: ASCII-fold compare
+  (`ascii_equal_fold?/2`), matching SQLite's own folding.
+- **F-B7-8 (S0, FIXED).** Under `@disable_ddl_transaction true`, any
+  mid-dance failure lost the table for good (probe: table gone, rows only
+  in the transient copy). Fixed: a pre-flight refusal when no wrapping
+  transaction exists. Detection subtlety: `in_transaction?/1` is
+  process-local nesting (blind to the SQL Sandbox) and
+  `DBConnection.status/2` may probe a different pool member than the one
+  running the rebuild (blind to a real migration's txn) — the guard
+  refuses only when BOTH say no; each mechanism is confirmed on its own
+  turf by the committed tests.
+- **F-B7-9 (S1, FIXED).** `:modify` rebuilt the column definition from the
+  migration options alone, silently dropping NOT NULL, DEFAULT, PRIMARY
+  KEY, and AUTOINCREMENT — directly against Ecto's documented modify/3
+  contract ("if this option is not set, the nullable behaviour … is not
+  modified"); a modified pk column left the table with NO key (duplicates
+  + NULL ids accepted). Fixed: `modify_spec/4` merges the migration's
+  options OVER the column's stored declaration (`existing_to_column` now
+  carries the raw attributes); AUTOINCREMENT preserved via the
+  sequence-presence signal. The shared ecto_sql suite could never catch
+  this (every shared `modify` passes `null:`/`default:` explicitly; the pk
+  case hides behind the excluded `:alter_primary_key` tag).
+- **F-B7-10 (S1, FIXED).** The Run 11 options-tail scan mis-anchored on a
+  `)` inside a trailing comment (`) STRICT -- keyed on (id)`) — sqlite
+  stores CREATE text verbatim including comments — silently dropping
+  STRICT/WITHOUT ROWID again. Fixed structurally: `pragma_table_list`'s
+  `wr`/`strict` columns replace the text scan entirely (the reviewer
+  proved 3.53.2 exposes both); the text-scan hole class is gone for these
+  two options.
+- **F-B7-11 (S1, FIXED).** `alter table(:posts)` against a table stored as
+  `Posts` turned OFF the refusal scan and silently dropped indexes,
+  triggers, and the AUTOINCREMENT sequence — the case-sensitive half of
+  the two-discipline split (sqlite_schema/sqlite_sequence reads with raw
+  `= ?1`). Fixed at the root: `resolve_stored_table_name!/3` resolves the
+  stored spelling ONCE up front (loud error when no table matches) and
+  every later read, quote, and the final RENAME use it.
+- **F-B7-12 (S2, FIXED).** The Run 13 defer_foreign_keys reset ran only on
+  the success path — a failed rebuild under the Sandbox left FK
+  enforcement silently off for the session. Fixed: the dance now runs in
+  `try/after`, and the `after` RESTORES the pragma to its pre-rebuild
+  value (best-effort non-bang, so a dead connection cannot mask the
+  original error). Restoring rather than forcing OFF also closes
+  **F-B7-15 (S3, FIXED)** — a caller's own deliberate
+  `defer_foreign_keys = ON` now survives the rebuild.
+- **F-B7-13 (S2, FIXED as a refusal).** A view over the table — or a
+  trigger on another table naming it — killed the dance mid-way at the
+  RENAME (SQLite ≥3.25 re-parses all views/triggers) with a misleading
+  "no such table" error; combined with F-B7-8 it was the likeliest
+  data-loss trigger. Fixed: `refuse_dependent_schema_objects!/3` refuses
+  up front, naming the dependents (word-boundary scan over stored SQL —
+  over-approximates, so the failure mode is a safe refusal). NOTE: the
+  reviewer's probes asserted rebuild-SUCCESS with dependents as the
+  desired end state; the refusal was the orchestrator's call (consistent
+  with the engine's refusal philosophy) — recreating views through the
+  dance is filed as a future-feature candidate.
+- **F-B7-14 (S3, FIXED).** `DESC` inside a table-level UNIQUE silently
+  flattened to ASC (uniqueness unchanged; mixed-direction ORDER BY loses
+  the covering index — plan regression proven). Fixed:
+  `unique_constraint_clause` reads `pragma_index_xinfo` (which carries
+  `desc`) instead of `index_info`, emitting per-column DESC.
+- **F-B7-16 (S3, BACKLOG — maintainer taste).** `:remove` of a composite
+  pk member silently narrows the key to the survivors; removing every
+  member leaves a keyless table. Narrowing only tightens uniqueness and a
+  duplicate-bearing survivor fails loudly with full rollback — defensible;
+  the all-members case deserves a refusal (recommendation filed).
+- **CLEAN (reviewer-driven, orchestrator re-ran):** non-ASCII-case
+  incoming-FK matching (SQLite folds ASCII-only too — a dangling
+  non-ASCII-case reference can never hold rows, so there is nothing to
+  refuse); transient-name collision fails loudly pre-destruction; defer
+  reset across multi-rebuild sequences (committing AND sandboxed);
+  composite-pk member ordering under a same-migration rename; the full
+  quoting dance on a `we"ird'name` AUTOINCREMENT table incl. sequence
+  restore, self-ref repoint, and a literal-injection attempt; partial and
+  expression indexes through the rebuild; FK cycles; zero-row tables;
+  own-table triggers recreated and firing.
+
+### Verdict + dryness
+
+- 2 S0 + 3 S1 + 2 S2 + 2 S3 FIXED at gate (13 committed RED→green tests
+  across both rebuild files, 40/40); 1 S3 filed as maintainer taste; 1
+  future-feature candidate filed. `mix verify` GREEN — the orchestrator's
+  OWN run.
+- Dryness: heavy finding-run + fix churn — **B7 stays 0 of 2, NOT DRY.**
+  Re-wet triggers extended: `resolve_stored_table_name!` / `modify_spec` /
+  `refuse_dependent_schema_objects!` / `unpreservable_table_option` (now
+  pragma-based) / `unique_constraint_clause` (xinfo) / `fk_target` fold /
+  the transaction guard / `add_spec`+`apply_change`.
+- Completeness critic (next B7 pass, from the reviewer + the gate): sweep
+  every REMAINING raw string compare against schema names in the engine
+  and decide the rule once; the modify-merge fix needs its own adversarial
+  lap (modified column that is an FK member / UNIQUE member / composite-pk
+  member; `modify :id, :integer, primary_key: true` × AUTOINCREMENT;
+  `from:` shapes); the structural before/after verification candidate
+  (backlog) as a class-level remedy; unprobed: sqlite_stat1 through the
+  rebuild, FTS5/virtual-table shadows, an open `Repo.stream` cursor during
+  the rebuild, `flush()` mid-migration, concurrent readers on a second
+  connection during the drop-rename window.

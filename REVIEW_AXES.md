@@ -534,6 +534,45 @@ risks its own bugs — filed. `table_rebuild_preservation_test.exs` +4. DRYNESS:
 three new confirmed → **B7 stays 0 of 2, NOT DRY**; the fixes re-wet. Re-wets
 ALSO on: any `composite_pk_clause` / `unpreservable_table_option` / `quote_name`
 / `quote_string` / `existing_to_column` / `plan_new_schema` change.
+COVERING RE-RUN (Run 15, 2026-08-20 — the owed adversarial pass on the Run 11
+fixes + Run 13 defer-reset): the HEAVIEST finding run of the program — 2× S0 +
+3× S1 + 2× S2 + 3× S3, two of them re-openings of the very holes under review.
+Root pattern: the engine read its schema through two matching disciplines
+(SQLite folds identifiers ASCII-case-insensitively; several engine reads
+compared raw TEXT) and everything in the gap silently "did not exist".
+FIXED at gate (13 RED→green committed tests, 40/40): **F-B7-7 (S0)**
+case-mismatched self-ref FK → rebuild cascade-deleted its own copied rows
+(`fk_target` now ASCII-folds); **F-B7-8 (S0)** `@disable_ddl_transaction` +
+mid-dance failure lost the table (pre-flight refusal; guard = union of
+`in_transaction?/1` and `DBConnection.status/2`, each half-blind alone);
+**F-B7-9 (S1)** `:modify` rebuilt the column from options alone, silently
+dropping NOT NULL/DEFAULT/PK/AUTOINCREMENT (new `modify_spec` merges options
+OVER the stored declaration); **F-B7-10 (S1)** the options-tail scan
+mis-anchored on `)` inside trailing comments (replaced with
+`pragma_table_list` wr/strict — structural); **F-B7-11 (S1)** case-mismatched
+`alter table` spelling dropped indexes/triggers/sequence and disarmed the
+refusal scan (`resolve_stored_table_name!` resolves the stored spelling once,
+used everywhere); **F-B7-12 (S2)** defer-reset only on success (now try/after
+RESTORE of the prior value — also closing **F-B7-15 (S3)**, a caller's own ON
+survives); **F-B7-13 (S2)** dependent views/foreign triggers killed the dance
+at RENAME with a misleading error (pre-flight refusal naming dependents;
+recreating views = future-feature candidate); **F-B7-14 (S3)** DESC in
+table-level UNIQUE flattened to ASC (`index_xinfo` now preserves it). FILED:
+F-B7-16 (S3 taste — composite-pk `:remove` narrowing; all-members case
+recommended refusal). CLEAN: non-ASCII-case incoming FKs (nothing to refuse —
+dangling), transient-collision, defer sequences, quoting dance incl.
+injection attempt, partial/expression indexes, FK cycles, own-table triggers.
+DRYNESS: **B7 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`resolve_stored_table_name!` / `modify_spec` /
+`refuse_dependent_schema_objects!` / the transaction guard / `add_spec` /
+`fetch_user_indexes!` / `fetch_table_triggers!` / `fetch_autoincrement_value!`
+/ `scan_create_sql_for_unpreservable` / `unique_constraint_clause` /
+`fk_target`. Next-pass seeds: complete the schema-name compare sweep
+(`table_has_rows?`, `fetch_incoming_action_fks`, transient/copy legs);
+adversarial lap on the modify-merge (FK/UNIQUE/composite-pk member modified;
+`primary_key: true` × AUTOINCREMENT; `from:` shapes); the structural
+before/after verification candidate; sqlite_stat1 / virtual-table shadows /
+open stream cursor / `flush()` / concurrent readers during drop-rename.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
