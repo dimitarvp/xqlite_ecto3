@@ -646,6 +646,50 @@ future covering runs lean on the law instead of re-deriving preservation
 by hand. Re-wets ALSO on: `rebuild_verification.ex` /
 `fetch_autoincrement_flag!` / `refuse_removed_primary_key!` /
 `verify_structure!`.
+COVERING RE-RUN (Run 22, 2026-08-20 — lap 3, the post-law-layer adversarial
+pass): NINE findings — the column-level twin of Run 15's root pattern plus
+the law layer's first blind spots. FIXED at gate (12 committed tests, 11
+RED via the stash pattern): **F-B7-19 (S1)** implicit rowids silently
+renumbered on tables without an INTEGER-pk alias (`primary_key: false`
+shape) — an external-content FTS5 then returned the WRONG ROW; the copy
+now carries `rowid` explicitly (`rowid_copy_needed?`); **F-B7-20 (S2)**
+`PRIMARY KEY ASC AUTOINCREMENT` failed the shared adjacency regex — engine
+dropped the keyword and the post-check, sharing the ONE predicate, agreed
+(the seeded false-negative, found); regex now follows the grammar;
+**F-B7-21 (S2)** raw-text column-name compares made case-mismatched
+changes silent no-ops on the rebuild path (both engine and model) —
+`same_column?` ASCII-folds both sides, stored spelling kept, and unknown
+column names now REFUSE loudly; **F-B7-22 (S2)** trigger `tbl_name`
+records the CREATE TRIGGER's spelling — a differently-spelled trigger was
+dropped (post-check aborted, blaming the library); both schema-object
+fetches now fold; **F-B7-23 (S2)** expression DEFAULTs (pragma strips the
+required parens) made every rebuild of such a table die on a bare syntax
+error — `carried_default` re-wraps non-literals; **F-B7-24 (S2)** the
+model rendered fragment defaults WITH parens vs SQLite's stripped storage
+— a correct `default: fragment(...)` modify was aborted as an engine bug;
+`strip_outer_parens` mirrors the parser; **F-B7-25 (S2)**
+`references(...)` in a rebuild block died as `UnsupportedTypeError` with
+zero guidance — `refuse_reference_changes!` pre-flight now says what to
+do (FK-merge = filed feature candidate); **F-B7-26 (S3, ruled)**
+`modify ..., primary_key: false` stripped the key past the F-B7-16
+refusal — `pk_removed` tracking closes the second door, key MOVES stay
+allowed. FILED: F-B7-27 (S3, sqlite_stat1 dropped and never restored —
+doc remedy owed to the docs pass). CLEAN: table-name reads, modify-merge
+controls, the F-B7-17 anchors, stranded-constraint refusals, flush(),
+concurrent-reader race (loud + consistent), the Run 21 B5 handoff (named
+unique indexes survive AS named — the rebuild cannot manufacture the
+F-B5-9 shape), Run 17 delta wiring, four ungenerated refusal flavours.
+Gate self-check: the first verify came back RED on the gate's own fixes —
+the key-move allowance needed mirroring into the model's `predict`
+(+ `key_position` inline-first), and the law property found within 31 runs
+that the generator emitted changes naming already-removed columns (now
+loudly refused by the engine — generator normalize rules fixed per the
+harness-vs-lib triage rule). DRYNESS: heavy finding-run — **B7 stays 0 of
+2, NOT DRY**. Re-wets ALSO on: `same_column?` / `refuse_unknown_column!` /
+`carried_default` / `rowid_copy_needed?` / `grants_inline_key?` /
+`refuse_reference_changes!` / `strip_outer_parens` / the widened
+`autoincrement_declared?` / the `pk_removed` tracking / the model's
+`predict` grant allowance / the law generator's normalize rules.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);

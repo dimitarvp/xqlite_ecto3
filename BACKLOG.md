@@ -158,6 +158,22 @@ after the S0–S2 burn-down.
   contention block into a 0.05 ms structured busy failure with the
   same status — documented xqlite behavior, and the one existing
   mitigation for the lookup's residual single-read block.
+- [F-B7-27] (S3) A table rebuild drops the table's `sqlite_stat1` rows
+  (DROP TABLE deletes them; nothing restores them, and the re-created
+  indexes start unanalyzed), so the query planner falls back to built-in
+  guesses until the next ANALYZE. Silent; the structural post-check does
+  not read statistics. Remedy: either capture and re-insert the rows
+  under the re-created names, or document that a rebuild discards
+  ANALYZE statistics and suggest re-running ANALYZE — the doc line is
+  owed to the Gate-3 docs pass (the STE README drafts must gain it
+  too). (Run 22, B7)
+- [F-B7-25-feature] (feature candidate, from Run 22) The rebuild engine
+  already reconstructs foreign keys as table-level clauses from
+  `foreign_key_list`; merging an added or modified
+  `%Ecto.Migration.Reference{}` into that clause list would make
+  `modify :col, references(...)` — Ecto's documented FK repoint — work
+  on SQLite for the first time. Today it refuses loudly with guidance
+  (`refuse_reference_changes!`). (Run 22, B7)
 - [F-B5-8-residual] (S3, design fork — the full remedy for the Run 21
   S2) The shipped budget bound caps the lookup's contention cost at
   ~one `busy_timeout`; the residual single blocked read (rollback
@@ -295,6 +311,13 @@ after the S0–S2 burn-down.
   and immune. Recorded in the announcement honesty ledger; surface a
   fine-print line in the rebuild docs with the next docs pass.
   (Run 11, B7)
+  Widened (Run 22): the class covers every regex scan over stored
+  CREATE text, not the ON CONFLICT refusal alone —
+  `autoincrement_declared?/1` has the same shape (`PRIMARY /* c */ KEY
+  ... AUTOINCREMENT` evades it, and the phrase inside a quoted
+  identifier can spuriously match). Same ruling applies (reachability
+  ≈ nil, stripper risk > benefit); the docs fine-print line should say
+  "regex scans over stored CREATE text" generally.
 - 2026-07-21 [F-B3-3] (S2) A rebuild migration under
   `Ecto.Adapters.SQL.Sandbox` leaked `defer_foreign_keys = ON`,
   silently disabling FK enforcement for the rest of the sandbox

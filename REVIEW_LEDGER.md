@@ -2795,3 +2795,172 @@ event-surface probe 9/9, OTel path unchanged.
   names; whether the rebuild engine can manufacture the F-B5-9 shape (a
   named unique index converted to a table-level UNIQUE while a named
   sibling survives) — handed to the next B7 pass as a seed.
+
+---
+
+## Run 22 — 2026-08-20 — lap 3, batch 2: B7 (post-law-layer adversarial pass)
+
+- Commit at scan: `cce4fe2`. Deps at xqlite 0.11.0 from Hex. Single Opus
+  reviewer over seven seeded legs (Run 15/17 critics + the Run 21 B5
+  handoff). Orchestrator gate: both ground-truth fact probes (13/13) and
+  all four failing leg probes re-driven verbatim pre-fix (every FAIL/PASS
+  identical), all seven code fixes implemented by the orchestrator, suite
+  RED captured via the stash pattern (lib files stashed under the new
+  tests → exactly 11/12 new tests fail on the old engine; the 12th is the
+  key-move companion that passes by design), own exit-file-gated
+  `mix verify`.
+
+### B7 — nine findings: the column-level twin of Run 15's root pattern, plus the law layer's first blind spots
+
+- **F-B7-19 (S1, CONFIRMED + FIXED AT GATE, RED→green).** The copy step
+  names only declared columns, so a rowid table with no INTEGER PRIMARY
+  KEY alias (Ecto's `primary_key: false` shape) got every rowid behind a
+  deleted gap silently renumbered — and an external-content FTS5 index
+  keyed on those rowids then returned the WRONG ROW (searching "beta"
+  found the "gamma" row). The post-check reads no rowids, so it stayed
+  silent. Graded S1 not S0: the demonstrated wrong-results leg needs a
+  raw-SQL FTS5 setup; the silent renumbering itself is unconditional.
+  FIX: `rowid_copy_needed?` — when the table has no single-column INTEGER
+  pk alias, no stored column shadows `rowid`/`_rowid_`/`oid`, and no
+  change grants a new inline key, the copy carries `rowid` explicitly.
+- **F-B7-20 (S2, CONFIRMED + FIXED, RED→green).** `PRIMARY KEY ASC
+  AUTOINCREMENT` (legal grammar: sort order and ON CONFLICT may sit
+  between the keywords) failed the shared adjacency regex, so the rebuild
+  silently dropped AUTOINCREMENT — and because engine and post-check share
+  the ONE predicate, the check agreed with the bug (the leg-3 false
+  negative, found exactly where seeded). A freed id was handed out again
+  (the F-B7-17 consequence through a different door). FIX: the regex now
+  follows the grammar. The shared-predicate independence question is a
+  filed next-pass seed, not solved.
+- **F-B7-21 (S2, CONFIRMED + FIXED, RED→green).** Column names were
+  compared as raw text on the rebuild path (engine `apply_change` AND the
+  model's twin), so a case-mismatched `:modify`/`:remove` was a silent
+  no-op the post-check confirmed as correct — while the same `:remove`
+  alone (plain-ALTER path) really dropped the column. The column-level
+  twin of Run 15's table-name root pattern. FIX: `same_column?` ASCII-folds
+  in both engine and model; the emitted definition keeps the stored
+  spelling; and a change naming a column the table does not have now
+  REFUSES loudly (`refuse_unknown_column!`) instead of silently doing
+  nothing.
+- **F-B7-22 (S2, CONFIRMED + FIXED, RED→green).** For triggers,
+  `sqlite_schema.tbl_name` stores the spelling the CREATE TRIGGER used —
+  not the table's stored spelling — so `fetch_table_triggers!` missed a
+  differently-spelled trigger and the rebuild dropped it. The Run 17
+  post-check (which folds) caught the drop and aborted with an error
+  blaming the library, making the migration impossible; without the check
+  it is a silent trigger loss. FIX: `lower(tbl_name) = lower(?1)` in the
+  trigger fetch AND the index fetch (indexes happen to be normalized by
+  SQLite; the rule is now one rule).
+- **F-B7-23 (S2, CONFIRMED + FIXED, RED→green).** `pragma table_xinfo`
+  strips the parentheses SQLite's grammar REQUIRES around an expression
+  DEFAULT, and the engine re-emitted the bare inside text — so any table
+  carrying `DEFAULT (datetime('now'))` (the standard timestamp idiom)
+  could never be rebuilt: every `:modify` died on `near "(": syntax
+  error` pointing at nothing. FIX: `carried_default` re-wraps a
+  carried-over default that is not a plain literal
+  (`@literal_default_pattern`: numbers, quoted strings, blob literals,
+  NULL/TRUE/FALSE, CURRENT_*).
+- **F-B7-24 (S2, CONFIRMED + FIXED, RED→green).** The model rendered a
+  `{:fragment, "(...)"}` default WITH its parentheses while SQLite stores
+  it stripped — so a correct, idiomatic `modify ..., default:
+  fragment("(datetime('now'))")` was aborted by the post-check as an
+  engine bug (a false ALARM, blocking the migration outright). FIX:
+  `strip_outer_parens` (one balanced outer pair; a miscount leaves the
+  text unstripped and fails loudly, never silently). The law generator's
+  literals-only default coverage — the reason neither default bug
+  surfaced in Run 17 — is a filed generator-widening seed.
+- **F-B7-25 (S2, CONFIRMED + FIXED, RED→green).** `references(...)` in a
+  rebuild block raised `UnsupportedTypeError` inspecting the whole
+  `%Reference{}` struct at the user — wrong classification (it is not a
+  type) and zero guidance, for two idiomatic shapes: `add ...,
+  references(...)` beside a `:modify` (the add alone works on the plain
+  path), and `modify :col, references(...)` (Ecto's documented way to
+  repoint an FK, which SQLite can only do via rebuild). FIX:
+  `refuse_reference_changes!` pre-flight (before the model can trip over
+  the struct) raising an ArgumentError that says what to do instead. The
+  natural follow-up — merging an added/modified reference into the
+  reconstructed FK clause list, making `modify references` actually work —
+  is filed as a feature candidate.
+- **F-B7-26 (S3, CONFIRMED + IMPLEMENTED under the F-B7-16 ruling).**
+  `modify :id, ..., primary_key: false` reached the keyless end state
+  through a different door than `:remove` and met no refusal ("a rebuild
+  never silently strips a table's key" is the ratified rule). FIX: the
+  shared `surviving_primary_key_members` now tracks de-keying
+  (`pk_removed`, last-wins per the pinned repeated-modify contract), and
+  the engine refusal covers both doors — while a change set that GRANTS
+  another column `primary_key: true` (a key MOVE) stays allowed, with a
+  companion test pinning it.
+- **F-B7-27 (S3, FILED).** A rebuild drops the table's `sqlite_stat1`
+  rows (DROP TABLE deletes them; nothing restores them), so the query
+  planner falls back to built-in guesses until the next ANALYZE. Silent,
+  invisible to the post-check. BACKLOG with the doc remedy owed to the
+  Gate-3 docs pass (the STE README drafts must gain the line too).
+- **CLEAN (reviewer-driven; orchestrator re-drove the failing legs and the
+  fact probes; clean-leg probes accepted on the reviewer's RED controls):**
+  table-name reads (`fetch_user_indexes!` normalization, the
+  populated-referencing refusal incl. `table_has_rows?` +
+  `fetch_incoming_action_fks`, case-mismatched `alter table(:UPPER)`
+  end-to-end); modify-merge controls (FK/UNIQUE/composite-member modifies,
+  `primary_key: true` × AUTOINCREMENT, `from:` inertness); the adjacent
+  AUTOINCREMENT spelling + the F-B7-17 empty-table anchor; stranded
+  constraints refuse loudly pre-destruction (table-level UNIQUE / FK over
+  a removed column); `flush()` mid-migration; a rebuild racing an open
+  read transaction fails loudly with a consistent reader snapshot +
+  integrity_check ok; the Run 21 B5 handoff CLOSED CLEAN (a custom-named
+  standalone unique index survives a rebuild AS a named index — origin
+  "u" only feeds table-level clauses — and post-rebuild
+  `unique_constraint(:col, name:)` still converts, with the B5 emission
+  rule interacting correctly); churn review (B5's Run 21 commits touch
+  zero engine files; the Run 17 delta's wiring is correct: post-check
+  before COMMIT, sanctioned rescue, defer restore — its two new-code bugs
+  are F-B7-20/24 above); four refusal flavours OUTSIDE the law
+  property's ten (foreign trigger, populated SET DEFAULT, transient-name
+  collision, missing table) all loud and mutation-free.
+
+- **Gate self-check (the law layer catching the gate's own fixes, the
+  Run 17 dynamic again):** the first gate verify came back RED twice-over
+  on the orchestrator's own changes. (1) The key-move allowance was
+  implemented engine-side only — the model's `predict` still refused
+  `survivors == []`, so the post-check aborted the new key-move companion
+  test as an engine bug; the allowance is now mirrored in `predict`
+  (same grants rule), and `key_position`'s inline-key clause moved first
+  so a granted key predicts `pk = 1` even after a composite de-key.
+  (2) The law property found a GENERATOR case within 31 runs: it emitted
+  `remove :col` followed by `modify :col` — previously a silent no-op on
+  both sides, now loudly refused by `refuse_unknown_column!`. Triaged
+  per the harness-vs-lib rule (the `14e6692` precedent): refusing a
+  change that names a dropped column is the intended new contract, so
+  the generator's `normalize_change`/`normalize_removal` now drop
+  changes naming already-removed columns (a modify of one, and the
+  keep-a-double-removal branch flipped to drop). Second verify GREEN.
+
+### Verdict + dryness
+
+- 1 S1 + 5 S2 fixed at gate + 1 S2 fixed as loud pre-flight
+  reclassification + 1 S3 implemented under a standing ruling + 1 S3
+  filed. 12 committed tests (11 RED on the old engine via the stash
+  pattern + 1 key-move companion). `mix verify` GREEN — the
+  orchestrator's own exit-file-gated run (second attempt; the first was
+  the RED self-check above).
+- Dryness: heavy finding-run + fix churn — **B7 stays 0 of 2, NOT DRY**.
+  Re-wet triggers extended: `same_column?`/`refuse_unknown_column!` /
+  `carried_default`/`@literal_default_pattern` / `rowid_copy_needed?` /
+  `grants_inline_key?` / `refuse_reference_changes!` /
+  `strip_outer_parens` / the widened `autoincrement_declared?` / the
+  `pk_removed` tracking in `surviving_primary_key_members`.
+- Completeness critic (next B7 pass, from the reviewer + the gate): finish
+  the COLUMN-name sweep beyond `apply_change` (`fetch_existing_columns!`'s
+  raw MapSet on the plain conditional path; copy-pair matching); enumerate
+  every engine↔model SHARED helper and decide per case whether shared
+  answers are agreement or a shared blind spot (F-B7-20's class);
+  widen the law generators (fragment/expression defaults, references,
+  `primary_key: false` merges, case-varied change names, the ASC
+  AUTOINCREMENT spelling, the four ungenerated refusal flavours); put
+  rowid (presence + min/max) into the structural snapshot; the
+  comment-interposed-keyword class is wider than F-B7-6's entry (the
+  autoincrement predicate shares the shape — reworded in BACKLOG);
+  `read_sequence`'s bang-read asymmetry (post-check raises a bare
+  no-such-table on a spurious predicate match in an AUTOINCREMENT-free
+  database — reachable only through that door); error-quality pass on
+  the loud-but-bare paths (stranded-constraint removals surface raw
+  SQLite text a pre-flight check could name in domain terms).
