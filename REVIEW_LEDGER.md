@@ -2609,3 +2609,32 @@ event-surface probe 9/9, OTel path unchanged.
   `binary_id_storage: :binary` is a global env (racy to flip under
   async) — its BLOB shape is lawed via `Types.UUID storage: :binary`
   instead. `mix verify` GREEN (exit-file); file budget ~11s in-suite.
+
+---
+
+## Run 20 — 2026-08-20 — property/law layer, item 4: telemetry pairing + placeholder permutation
+
+- Base: `63627f5`. Opus implementer; orchestrator gate: fresh-seed re-runs
+  (8, 55555 — untouched by the implementer, green), own `mix verify`
+  (exit-file). Implementer's mutation checks (orphan injection, forced
+  zero-error expectation, permutation-ignoring control) each failed
+  exactly the mutated law — non-vacuous.
+- **Span-pairing law:** all EIGHT span families (connect, begin, commit,
+  rollback, execute, declare, fetch, deallocate) over generated operation
+  sequences incl. failing connects, syntax errors, constraint conflicts,
+  and mid-transaction failures — 12,000 runs/seed. Pins the actual
+  contract: every span closes with `:stop` (failures carry
+  `result_class: :error` + non-nil `error_reason`); `:exception` never
+  occurs; join key = telemetry's own span ref; the full start metadata
+  reappears byte-identical on the close; durations non-negative.
+  Handlers discriminated by conn/database per the house async-safety
+  rule. Savepoint spans unreachable through Repo nesting (a constraint
+  failure returns before Ecto opens one) — stays covered by the
+  example-based test; recorded, not a gap.
+- **`?N` permutation law:** 10,000 runs/seed proving the emitted
+  parameter LIST reorders with clause order (asserted per-run, plus a
+  pinned to_sql evidence test) while the result set stays identical —
+  crossed bindings would flip results, never error. Both dynamic-compose
+  and where-chain forms.
+- **Findings: NONE** across ~105k total cases. `mix verify` GREEN
+  (exit-file); file budget ~8-10s in-suite.
