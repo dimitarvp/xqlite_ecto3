@@ -409,6 +409,18 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     end
   end
 
+  defmodule NoTxnFailingRebuildMigration do
+    use Ecto.Migration
+
+    @disable_ddl_transaction true
+
+    def up do
+      alter table(:rp_ntfail) do
+        modify(:v, :text, null: false)
+      end
+    end
+  end
+
   defp migrate!(module, version), do: Ecto.Migrator.up(PoolRepo, version, module, log: false)
 
   defp fk_rows(table), do: PoolRepo.query!("PRAGMA foreign_key_list('#{table}')").rows
@@ -767,10 +779,8 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
   test "DESC inside a table-level UNIQUE survives the rebuild" do
     migrate!(DescUniqueMigration, 20_260_820_100_006)
 
-    assert [[uq_name]] =
-             PoolRepo.query!(
-               ~s|SELECT name FROM pragma_index_list('rp_desc') WHERE "unique" = 1|
-             ).rows
+    uq_list_sql = ~s|SELECT name FROM pragma_index_list('rp_desc') WHERE "unique" = 1|
+    assert [[uq_name]] = PoolRepo.query!(uq_list_sql).rows
 
     assert [["a", 1], ["b", 0]] =
              PoolRepo.query!(
@@ -781,15 +791,33 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     insert_rejected("INSERT INTO rp_desc(a, b, v) VALUES ('x', 'y', '2')")
   end
 
-  test "a rebuild outside a transaction refuses before any destructive step" do
+  test "a rebuild outside a transaction wraps itself and succeeds" do
     PoolRepo.query!("DROP TABLE IF EXISTS rp_notxn")
-    PoolRepo.query!("CREATE TABLE rp_notxn(id INTEGER PRIMARY KEY, v TEXT)")
+    PoolRepo.query!("CREATE TABLE rp_notxn(id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
     PoolRepo.query!("INSERT INTO rp_notxn(id, v) VALUES (1, 'keep')")
 
-    assert_raise ArgumentError, ~r/transaction/, fn ->
-      migrate!(NoTxnRebuildMigration, 20_260_820_100_007)
-    end
+    migrate!(NoTxnRebuildMigration, 20_260_820_100_007)
 
     assert count("rp_notxn") == 1
+    PoolRepo.query!("INSERT INTO rp_notxn(id, v) VALUES (2, NULL)")
+    assert count("rp_notxn") == 2
+  end
+
+  test "a mid-dance failure outside a transaction rolls its own transaction back" do
+    PoolRepo.query!("DROP TABLE IF EXISTS rp_ntfail")
+    PoolRepo.query!("CREATE TABLE rp_ntfail(id INTEGER PRIMARY KEY, v TEXT)")
+    PoolRepo.query!("INSERT INTO rp_ntfail(id, v) VALUES (1, NULL)")
+    PoolRepo.query!("INSERT INTO rp_ntfail(id, v) VALUES (2, 'x')")
+
+    assert_raise XqliteEcto3.Error, fn ->
+      migrate!(NoTxnFailingRebuildMigration, 20_260_820_100_008)
+    end
+
+    assert count("rp_ntfail") == 2
+
+    assert [] =
+             PoolRepo.query!(
+               "SELECT name FROM sqlite_schema WHERE name = 'rp_ntfail__xqlite_new'"
+             ).rows
   end
 end

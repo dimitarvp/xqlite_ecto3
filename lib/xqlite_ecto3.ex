@@ -695,24 +695,6 @@ defmodule XqliteEcto3 do
               "and rewrites every row."
     end
 
-    # Two half-blind signals, refuse only when both say no: in_transaction?/1
-    # tracks this process's explicit transaction nesting (true under a real
-    # migration's DDL transaction, blind to the SQL Sandbox), while
-    # DBConnection.status/2 reaches the driver's handle_status, which asks
-    # SQLite itself (true under the Sandbox's wrapping transaction, but it
-    # may probe a different pool member than the one running this rebuild).
-    in_wrapping_transaction? =
-      in_transaction?(meta) or DBConnection.status(meta.pid, opts) == :transaction
-
-    if !in_wrapping_transaction? do
-      raise ArgumentError,
-            "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY outside a " <>
-              "transaction: the rebuild drops and recreates the table in several " <>
-              "statements, and only the surrounding transaction makes a mid-rebuild " <>
-              "failure safe. Remove @disable_ddl_transaction from this migration, or " <>
-              "wrap the operation in a transaction."
-    end
-
     table = resolve_stored_table_name!(meta, table, opts)
 
     refuse_unpreservable_constraints!(meta, table, opts)
@@ -747,6 +729,19 @@ defmodule XqliteEcto3 do
     %{rows: [[prior_defer]]} =
       Ecto.Adapters.SQL.query!(meta, "PRAGMA defer_foreign_keys", [], opts)
 
+    # The dance is only safe under a transaction: it drops and recreates the
+    # table in several statements. A normal migration's DDL transaction,
+    # Repo.transaction, or the SQL Sandbox already provide one; when none is
+    # open (@disable_ddl_transaction, a raw Ecto.Migration.Runner drive),
+    # open one for the dance and roll it back on any mid-dance failure. Raw
+    # BEGIN/COMMIT via query is safe here: the driver's handle_status asks
+    # SQLite itself, so transaction bookkeeping cannot drift.
+    self_wrap? = not in_wrapping_transaction?(meta, opts)
+
+    if self_wrap? do
+      Ecto.Adapters.SQL.query!(meta, "BEGIN IMMEDIATE", [], opts)
+    end
+
     try do
       statements
       |> List.flatten()
@@ -762,6 +757,10 @@ defmodule XqliteEcto3 do
              opts
            ) do
         %{rows: []} ->
+          if self_wrap? do
+            Ecto.Adapters.SQL.query!(meta, "COMMIT", [], opts)
+          end
+
           {:ok, []}
 
         %{rows: violations} ->
@@ -770,6 +769,17 @@ defmodule XqliteEcto3 do
                   ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
                   "dependent tables that reference this one."
       end
+    rescue
+      # The one sanctioned rescue on this path: a self-opened transaction
+      # must not leak past a mid-dance failure — roll it back (best-effort;
+      # a dead connection has nothing to roll back) and let the original
+      # error keep flying.
+      e ->
+        if self_wrap? do
+          _ = Ecto.Adapters.SQL.query(meta, "ROLLBACK", [], opts)
+        end
+
+        reraise e, __STACKTRACE__
     after
       # SQLite auto-resets defer_foreign_keys only at COMMIT, which a
       # sandboxed transaction never reaches and a failed rebuild never gets
@@ -780,6 +790,16 @@ defmodule XqliteEcto3 do
       # flag left to leak and no error worth masking the original one with.
       _ = Ecto.Adapters.SQL.query(meta, "PRAGMA defer_foreign_keys = #{prior_defer}", [], opts)
     end
+  end
+
+  # Two half-blind signals, trust either: in_transaction?/1 tracks this
+  # process's explicit transaction nesting (true under a real migration's
+  # DDL transaction, blind to the SQL Sandbox), while DBConnection.status/2
+  # reaches the driver's handle_status, which asks SQLite itself (true under
+  # the Sandbox's wrapping transaction, but it may probe a different pool
+  # member than the one about to run the rebuild).
+  defp in_wrapping_transaction?(meta, opts) do
+    in_transaction?(meta) or DBConnection.status(meta.pid, opts) == :transaction
   end
 
   # SQLite resolves table names case-insensitively (ASCII folding), but
