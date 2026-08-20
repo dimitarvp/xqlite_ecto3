@@ -57,6 +57,19 @@ defmodule XqliteEcto3.DataType do
     raise XqliteEcto3.UnsupportedTypeError, type: type
   end
 
+  # A map or list given as a column `default:` is stored as JSON text. Every
+  # path that writes such a column — the plain ALTER, the table rebuild, and
+  # the rebuild's own prediction of what it wrote — renders it here, so one
+  # migration option can only ever produce one stored default.
+  @spec json_default(map() | list()) :: String.t()
+  def json_default(value) do
+    library = Application.get_env(:xqlite_ecto3, :json_library, Jason)
+
+    value
+    |> library.encode_to_iodata!()
+    |> IO.iodata_to_binary()
+  end
+
   # Reads `config :xqlite_ecto3, :binary_id_storage` (default `:string`) and
   # picks the corresponding SQLite column type for `:binary_id` / `:uuid`
   # fields in migrations. `:string` → TEXT, `:binary` → BLOB. Governs both

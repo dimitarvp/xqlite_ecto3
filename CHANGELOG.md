@@ -146,6 +146,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Table-rebuild hardening, one review wave.** The opt-in
+  ALTER-via-table-rebuild engine closed thirteen defects found by an
+  adversarial review of its surface:
+  - A primary key's per-member sort order now survives a rebuild:
+    `INTEGER PRIMARY KEY DESC` is not a rowid alias (it takes NULLs
+    and keeps real rowids), and flattening it silently rewrote stored
+    key values. The rebuild reads the key's backing index and re-emits
+    `DESC` inline, in `modify`, and in composite table-level keys, and
+    carries rowids for a DESC key explicitly. The structural
+    post-check now also snapshots rowid facts (presence, count,
+    min/max), so a copy that renumbers rows fails loudly.
+  - Virtual tables (fts5 and friends) and their shadow tables now
+    refuse a rebuild up front. Previously every pre-flight check
+    passed and the rebuild silently replaced the virtual table with a
+    plain one, dropping the module's storage and breaking `MATCH`.
+  - A rebuild outside a transaction (`@disable_ddl_transaction`) now
+    pins one pooled connection for the whole dance. Previously each
+    statement could take a different connection, failing
+    non-deterministically above `pool_size: 1` and sometimes leaving
+    a pooled connection stuck inside an open write transaction.
+  - Removing a column that a trigger on the table reads now refuses
+    up front (SQLite compiles trigger bodies lazily, so the rebuild
+    used to succeed and every later write failed). Removing a column
+    that a table-level UNIQUE, a foreign key, or a standalone index
+    still needs also refuses up front in domain terms, instead of
+    dying mid-dance with raw SQLite text.
+  - `add_if_not_exists` / `remove_if_exists` now compare column names
+    with SQLite's ASCII case folding, matching the rebuild path and
+    SQLite itself. Previously `remove_if_exists :firstname` against a
+    stored `"firstName"` was a silent no-op.
+  - Map and list column defaults now work inside a rebuild block and
+    render identically on the plain-ALTER path, the rebuild path, and
+    the post-check (one JSON rule); boolean defaults render as
+    `true`/`false` everywhere.
+  - The unpreservable-construct scan no longer reads keywords inside
+    string literals: a column default like `'check pending'`
+    permanently blocked every future rebuild of its table. The same
+    literal-blanking applies to AUTOINCREMENT detection.
+  - The dependent-object check now confirms its word-scan hits
+    against SQLite itself (a savepointed test rename): a view that
+    merely selects a COLUMN named like the table no longer blocks the
+    rebuild, while genuinely dependent views and triggers still
+    refuse.
+  - Granting `primary_key: true` while any current key member is
+    still keyed now refuses in domain terms (it used to emit two
+    primary keys and die mid-dance — on composite AND single-column
+    keys). `modify ..., primary_key: false` on a composite member is
+    now honored: it narrows the key like removing the member does,
+    de-keying every member with a grant moves the key, and de-keying
+    every member without a grant refuses (a rebuild never silently
+    strips a table's key).
+  - The post-check tolerates a database with no `sqlite_sequence`
+    table (reachable when AUTOINCREMENT detection false-matches),
+    instead of failing the migration before its first statement.
+
 - **A `busy_timeout` of 0 no longer disables unique-index-name
   resolution.** The lookup that resolves real unique index names on a
   UNIQUE violation reuses the connection's `busy_timeout` as its

@@ -447,6 +447,24 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     end
   end
 
+  # A repo of its own, because the shared one keeps a single connection and
+  # the point of this pair is a pool with several.
+  defmodule ManyConnectionsRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  defmodule ManyConnectionsNoTxnMigration do
+    use Ecto.Migration
+
+    @disable_ddl_transaction true
+
+    def up do
+      alter table(:rp_pooled) do
+        modify(:label, :text, null: false)
+      end
+    end
+  end
+
   defp migrate!(module, version), do: Ecto.Migrator.up(PoolRepo, version, module, log: false)
 
   defp fk_rows(table), do: PoolRepo.query!("PRAGMA foreign_key_list('#{table}')").rows
@@ -851,6 +869,62 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
 
     PoolRepo.query!("INSERT INTO rp_qdflt(id) VALUES (1)")
     assert [["it's"]] = PoolRepo.query!("SELECT name FROM rp_qdflt WHERE id = 1").rows
+  end
+
+  test "a rebuild outside a transaction holds one connection when the pool has several" do
+    database =
+      Path.join(
+        System.tmp_dir!(),
+        "xqlite_ecto3_rebuild_pool_#{System.unique_integer([:positive])}.db"
+      )
+
+    config = [
+      adapter: XqliteEcto3,
+      database: database,
+      pool_size: 4,
+      busy_timeout: 1_000,
+      support_alter_via_table_rebuild: true
+    ]
+
+    Application.put_env(:xqlite_ecto3, ManyConnectionsRepo, config)
+    :ok = XqliteEcto3.storage_up(config)
+    start_supervised!({ManyConnectionsRepo, config})
+
+    on_exit(fn ->
+      Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(database <> suffix) end)
+    end)
+
+    ManyConnectionsRepo.query!(
+      "CREATE TABLE rp_pooled(id INTEGER PRIMARY KEY, label TEXT, weight REAL)"
+    )
+
+    ManyConnectionsRepo.query!(
+      "INSERT INTO rp_pooled(id, label, weight) VALUES (1, 'a', 1.5), (2, 'b', 2.5)"
+    )
+
+    assert :ok =
+             Ecto.Migrator.up(
+               ManyConnectionsRepo,
+               20_260_820_100_011,
+               ManyConnectionsNoTxnMigration,
+               log: false
+             )
+
+    assert [[1, "a", 1.5], [2, "b", 2.5]] =
+             ManyConnectionsRepo.query!("SELECT id, label, weight FROM rp_pooled ORDER BY id").rows
+
+    assert [["label", 1]] =
+             ManyConnectionsRepo.query!(
+               ~s|SELECT name, "notnull" FROM pragma_table_xinfo('rp_pooled') WHERE name = 'label'|
+             ).rows
+
+    # A connection from outside the pool has to be able to take the write
+    # lock: a BEGIN IMMEDIATE stranded on one pooled connection blocks it.
+    {:ok, outside} = Xqlite.open(database)
+    {:ok, _} = Xqlite.set_pragma(outside, "busy_timeout", 1_000)
+    assert {:ok, _} = Xqlite.execute(outside, "BEGIN IMMEDIATE")
+    {:ok, _} = Xqlite.execute(outside, "ROLLBACK")
+    :ok = Xqlite.close(outside)
   end
 
   test "a mid-dance failure outside a transaction rolls its own transaction back" do

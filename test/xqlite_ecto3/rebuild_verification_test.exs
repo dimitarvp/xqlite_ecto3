@@ -31,17 +31,21 @@ defmodule XqliteEcto3.RebuildVerificationTest do
         column("name", "TEXT", notnull: true),
         column("price", "REAL", default: "0.0")
       ],
+      primary_key_order: [],
       foreign_keys: [],
       unique_constraints: [],
       indexes: %{schema: [], index_list: []},
       triggers: [],
       table_options: %{without_rowid: false, strict: false},
       autoincrement: false,
+      rowid: %{present: true, count: 2, min: 1, max: 2},
       sequence: nil
     }
 
     Map.merge(base, Map.new(overrides))
   end
+
+  defp key_column(name, desc), do: %{column: name, desc: desc}
 
   defp put_column(snap, name, changes) do
     columns =
@@ -216,6 +220,26 @@ defmodule XqliteEcto3.RebuildVerificationTest do
       assert error.actual == []
     end
 
+    test "a DESC the key recorded and the rebuild flattened" do
+      before = snapshot(primary_key_order: [key_column("id", true)])
+      actual = %{before | primary_key_order: [key_column("id", false)]}
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, [], actual)
+      assert error.construct == :primary_key_sort_order
+      assert error.expected == [key_column("id", true)]
+      assert error.actual == [key_column("id", false)]
+    end
+
+    test "row ids the copy renumbered instead of carrying over" do
+      before = snapshot()
+      actual = %{before | rowid: %{present: true, count: 2, min: 10, max: 11}}
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, [], actual)
+      assert error.construct == :rowid
+      assert error.expected == %{present: true, count: 2, min: 1, max: 2}
+      assert error.actual == %{present: true, count: 2, min: 10, max: 11}
+    end
+
     test "a lost STRICT table option" do
       before = snapshot(table_options: %{without_rowid: false, strict: true})
       actual = %{before | table_options: %{without_rowid: false, strict: false}}
@@ -307,6 +331,22 @@ defmodule XqliteEcto3.RebuildVerificationTest do
       assert :ok = verify(before, changes, actual)
     end
 
+    test "a map default is written as quoted JSON" do
+      before = snapshot()
+      changes = [{:modify, :name, :string, [default: %{"a" => 1}]}]
+      actual = put_column(before, "name", default: ~s|'{"a":1}'|)
+
+      assert :ok = verify(before, changes, actual)
+    end
+
+    test "a boolean default is written as the word SQLite stores" do
+      before = snapshot()
+      changes = [{:modify, :name, :string, [default: true]}]
+      actual = put_column(before, "name", default: "true")
+
+      assert :ok = verify(before, changes, actual)
+    end
+
     test "a composite key narrows to the members that survive" do
       before =
         snapshot(
@@ -344,6 +384,202 @@ defmodule XqliteEcto3.RebuildVerificationTest do
       assert error.construct == :primary_key
       assert error.expected == {:refused, :primary_key_fully_removed}
       assert error.actual == :rebuilt
+    end
+
+    test "granting the key while a composite key stands is refused, not predicted" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ]
+        )
+
+      changes = [{:modify, :label, :string, [primary_key: true]}]
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, changes, before)
+      assert error.construct == :primary_key
+      assert error.expected == {:refused, :primary_key_grant_beside_kept_key}
+      assert error.actual == :rebuilt
+    end
+
+    test "granting the key while a single-column key stands is refused, not predicted" do
+      before = snapshot()
+      changes = [{:modify, :name, :string, [primary_key: true]}]
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, changes, before)
+      assert error.construct == :primary_key
+      assert error.expected == {:refused, :primary_key_grant_beside_kept_key}
+      assert error.actual == :rebuilt
+    end
+
+    test "a grant on the single key's own column asks for the key the table has" do
+      before = snapshot()
+
+      assert :ok = verify(before, [{:modify, "ID", :integer, [primary_key: true]}], before)
+    end
+
+    test "de-keying one member of a composite key narrows it to the rest" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ]
+        )
+
+      changes = [{:modify, :tenant, :integer, [primary_key: false]}]
+
+      actual = %{
+        before
+        | columns: [
+            column("tenant", "INTEGER"),
+            column("code", "TEXT", pk: 1),
+            column("label", "TEXT")
+          ]
+      }
+
+      assert :ok = verify(before, changes, actual)
+    end
+
+    test "de-keying every member without a grant is refused" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ]
+        )
+
+      changes = [
+        {:modify, :tenant, :integer, [primary_key: false]},
+        {:modify, :code, :string, [primary_key: false]}
+      ]
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, changes, before)
+      assert error.construct == :primary_key
+      assert error.expected == {:refused, :primary_key_fully_removed}
+      assert error.actual == :rebuilt
+    end
+
+    test "the same grant is predicted once the change set de-keys every member" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ]
+        )
+
+      changes = [
+        {:modify, :tenant, :integer, [primary_key: false]},
+        {:modify, :code, :string, [primary_key: false]},
+        {:modify, :label, :string, [primary_key: true]}
+      ]
+
+      actual = %{
+        before
+        | columns: [
+            column("tenant", "INTEGER"),
+            column("code", "TEXT"),
+            column("label", "TEXT", pk: 1)
+          ]
+      }
+
+      assert :ok = verify(before, changes, actual)
+    end
+
+    test "a de-key takes the sort-order and row-id claims off the table" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ],
+          primary_key_order: [key_column("tenant", true), key_column("code", false)]
+        )
+
+      changes = [{:modify, :code, :string, [primary_key: false]}]
+
+      actual = %{
+        before
+        | columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT"),
+            column("label", "TEXT")
+          ],
+          primary_key_order: [],
+          rowid: %{present: true, count: 2, min: 40, max: 41}
+      }
+
+      assert :ok = verify(before, changes, actual)
+    end
+
+    test "the same grant is predicted once the change set removes every member" do
+      before =
+        snapshot(
+          columns: [
+            column("tenant", "INTEGER", pk: 1),
+            column("code", "TEXT", pk: 2),
+            column("label", "TEXT")
+          ]
+        )
+
+      changes = [
+        {:remove, :tenant, :integer, []},
+        {:remove, :code, :string, []},
+        {:modify, :label, :string, [primary_key: true]}
+      ]
+
+      actual = %{before | columns: [column("label", "TEXT", pk: 1)]}
+
+      assert :ok = verify(before, changes, actual)
+    end
+
+    test "a key the change set leaves alone keeps the sort order it recorded" do
+      before =
+        snapshot(primary_key_order: [key_column("tenant", true), key_column("code", false)])
+
+      assert :ok = verify(before, [{:modify, :name, :string, []}], before)
+    end
+
+    test "a change naming a key member drops the claim on the key's sort order" do
+      before = snapshot(primary_key_order: [key_column("id", true)])
+      retyped = put_column(before, "id", type: "TEXT")
+      actual = %{retyped | primary_key_order: []}
+
+      assert :ok = verify(before, [{:modify, :id, :string, []}], actual)
+    end
+
+    test "a change naming a key member drops the claim on the row ids" do
+      before = snapshot()
+      retyped = put_column(before, "id", type: "TEXT")
+      actual = %{retyped | rowid: %{present: true, count: 2, min: 5, max: 9}}
+
+      assert :ok = verify(before, [{:modify, :id, :string, []}], actual)
+    end
+
+    test "the row count is claimed even when the key moved" do
+      before = snapshot()
+      retyped = put_column(before, "id", type: "TEXT")
+      actual = %{retyped | rowid: %{present: true, count: 1, min: 5, max: 9}}
+
+      assert {:error, %RebuildVerificationError{} = error} =
+               verify(before, [{:modify, :id, :string, []}], actual)
+
+      assert error.construct == :rowid
+    end
+
+    test "a column named after the row id drops the claim on the row ids" do
+      before = snapshot(columns: [column("rowid", "TEXT"), column("v", "TEXT")])
+      actual = %{before | rowid: %{present: true, count: 2, min: "a", max: "b"}}
+
+      assert :ok = verify(before, [], actual)
     end
 
     test "a column declared without a type is rebuilt as BLOB" do
@@ -392,6 +628,66 @@ defmodule XqliteEcto3.RebuildVerificationTest do
       columns = [column("id", "INTEGER", pk: 1), column("name", "TEXT")]
 
       assert RebuildVerification.surviving_primary_key_members(columns, [{:remove, :id}]) == []
+    end
+  end
+
+  describe "reading the AUTOINCREMENT sequence" do
+    @declared "CREATE TABLE widgets (id INTEGER PRIMARY KEY AUTOINCREMENT)"
+
+    test "a database with no sqlite_sequence table has no sequence to report" do
+      query = fn sql, _params ->
+        cond do
+          String.contains?(sql, "name = 'sqlite_sequence'") ->
+            []
+
+          String.contains?(sql, "FROM sqlite_sequence") ->
+            flunk("read sqlite_sequence on a database that does not have it")
+
+          String.contains?(sql, "SELECT sql FROM sqlite_schema") ->
+            [[@declared]]
+
+          true ->
+            []
+        end
+      end
+
+      assert %{autoincrement: true, sequence: nil} = RebuildVerification.read("widgets", query)
+    end
+
+    test "the sequence is read where the table exists" do
+      query = fn sql, _params ->
+        cond do
+          String.contains?(sql, "name = 'sqlite_sequence'") -> [["sqlite_sequence"]]
+          String.contains?(sql, "FROM sqlite_sequence") -> [[42]]
+          String.contains?(sql, "SELECT sql FROM sqlite_schema") -> [[@declared]]
+          true -> []
+        end
+      end
+
+      assert %{autoincrement: true, sequence: 42} = RebuildVerification.read("widgets", query)
+    end
+  end
+
+  describe "keywords hidden inside string literals" do
+    test "a literal naming AUTOINCREMENT is not a declaration" do
+      declared =
+        "CREATE TABLE notes (title TEXT PRIMARY KEY, " <>
+          "hint TEXT DEFAULT 'PRIMARY KEY AUTOINCREMENT')"
+
+      refute RebuildVerification.autoincrement_declared?(declared)
+    end
+
+    test "a quoted identifier carrying an apostrophe does not open a literal" do
+      declared = ~s|CREATE TABLE "it's" (id INTEGER PRIMARY KEY AUTOINCREMENT)|
+
+      assert RebuildVerification.autoincrement_declared?(declared)
+    end
+
+    test "only the contents of a literal are emptied" do
+      declared = ~s|CREATE TABLE t (a TEXT DEFAULT 'it''s check time', "b's" TEXT)|
+
+      assert RebuildVerification.without_string_literals(declared) ==
+               ~s|CREATE TABLE t (a TEXT DEFAULT '', "b's" TEXT)|
     end
   end
 end

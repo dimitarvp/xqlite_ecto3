@@ -127,6 +127,63 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert count == 1
     end
 
+    test "refuses a virtual table and the shadow tables behind it" do
+      create("CREATE VIRTUAL TABLE rb_fts USING fts5(body)")
+      TestRepo.query!("INSERT INTO rb_fts(body) VALUES ('alpha beta')")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_fts, [{:modify, :body, :text, []}])
+      end
+
+      # The module's own storage tables are just as unrebuildable.
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_fts_data, [{:modify, :block, :binary, []}])
+      end
+
+      assert %{rows: [["virtual"]]} =
+               TestRepo.query!(
+                 "SELECT type FROM pragma_table_list WHERE schema = 'main' AND name = 'rb_fts'"
+               )
+
+      assert %{rows: [["alpha beta"]]} =
+               TestRepo.query!("SELECT body FROM rb_fts WHERE rb_fts MATCH 'beta'")
+    end
+
+    test "the word CHECK inside a string default is not a declaration" do
+      create(
+        "CREATE TABLE rb_lit(id INTEGER PRIMARY KEY, " <>
+          "status TEXT DEFAULT 'check pending', v REAL)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_lit(id, v) VALUES (1, 1.0)")
+
+      assert {:ok, []} = run_alter(:rb_lit, [{:modify, :v, :float, [null: false]}])
+
+      assert %{rows: [["'check pending'"]]} =
+               TestRepo.query!(
+                 "SELECT dflt_value FROM pragma_table_xinfo('rb_lit') WHERE name = 'status'"
+               )
+    end
+
+    test "PRIMARY KEY AUTOINCREMENT inside a string default is not a declaration" do
+      create(
+        "CREATE TABLE rb_ailit(id INTEGER PRIMARY KEY, " <>
+          "hint TEXT DEFAULT 'PRIMARY KEY AUTOINCREMENT', body TEXT)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_ailit(id, body) VALUES (1, 'first')")
+
+      assert {:ok, []} = run_alter(:rb_ailit, [{:modify, :body, :text, [null: false]}])
+
+      # Without AUTOINCREMENT SQLite hands the highest freed id out again;
+      # with it, the rebuild would have made ids monotonic instead.
+      TestRepo.query!("INSERT INTO rb_ailit(body) VALUES ('second')")
+      TestRepo.query!("DELETE FROM rb_ailit WHERE body = 'second'")
+      TestRepo.query!("INSERT INTO rb_ailit(body) VALUES ('third')")
+
+      assert %{rows: [[2]]} = TestRepo.query!("SELECT id FROM rb_ailit WHERE body = 'third'")
+    end
+
     test "refuses when the table has generated columns, leaving them intact" do
       create("""
       CREATE TABLE rb_gen(
@@ -300,6 +357,24 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert {:ok, []} = run_alter(:rb_viewed, [{:modify, :v, :string, [null: true]}])
     end
 
+    test "a view naming the table only as a column does not block the rebuild" do
+      create("CREATE TABLE rb_state(id INTEGER PRIMARY KEY, v REAL)")
+      create("CREATE TABLE rb_tickets(id INTEGER PRIMARY KEY, rb_state TEXT)")
+
+      create("CREATE VIEW rb_open AS SELECT id, rb_state FROM rb_tickets WHERE rb_state = 'open'")
+
+      TestRepo.query!("INSERT INTO rb_state(id, v) VALUES (1, 1.0)")
+
+      assert {:ok, []} = run_alter(:rb_state, [{:modify, :v, :float, [null: false]}])
+
+      assert %{rows: [["v", 1]]} =
+               TestRepo.query!(
+                 ~s|SELECT name, "notnull" FROM pragma_table_xinfo('rb_state') WHERE name = 'v'|
+               )
+
+      assert %{rows: [[0]]} = TestRepo.query!("SELECT count(*) FROM rb_open")
+    end
+
     test "a trigger on another table naming this one refuses the rebuild" do
       create("CREATE TABLE rb_trg_target(id INTEGER PRIMARY KEY, v TEXT)")
       create("CREATE TABLE rb_trg_other(id INTEGER PRIMARY KEY)")
@@ -372,6 +447,100 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert key == [["code", 1]]
     end
 
+    test "removing a column a trigger on the table reads refuses" do
+      create("CREATE TABLE rb_trg_col(id INTEGER PRIMARY KEY, a TEXT, v REAL)")
+      create("CREATE TABLE rb_trg_col_log(note TEXT)")
+
+      create(
+        "CREATE TRIGGER rb_trg_col_ins AFTER INSERT ON rb_trg_col " <>
+          "BEGIN INSERT INTO rb_trg_col_log(note) VALUES (NEW.a); END"
+      )
+
+      TestRepo.query!("INSERT INTO rb_trg_col(id, a, v) VALUES (1, 'x', 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_trg_col, [
+          {:remove, :a, :string, []},
+          {:modify, :v, :float, [null: false]}
+        ])
+      end
+
+      # SQLite compiles a trigger body when the trigger fires, so a trigger
+      # left reading a column that is gone only shows on the next write.
+      TestRepo.query!("INSERT INTO rb_trg_col(id, a, v) VALUES (2, 'y', 2.0)")
+      assert %{rows: [[2]]} = TestRepo.query!("SELECT count(*) FROM rb_trg_col")
+    end
+
+    test "removing a column a table-level UNIQUE covers refuses" do
+      create(
+        "CREATE TABLE rb_uq_gone(id INTEGER PRIMARY KEY, a TEXT, b TEXT, v REAL, UNIQUE (a, b))"
+      )
+
+      TestRepo.query!("INSERT INTO rb_uq_gone(id, a, b, v) VALUES (1, 'x', 'y', 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_uq_gone, [
+          {:remove, :b, :string, []},
+          {:modify, :v, :float, [null: false]}
+        ])
+      end
+
+      assert %{rows: [["id"], ["a"], ["b"], ["v"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_uq_gone') ORDER BY cid")
+
+      assert %{rows: [["u"]]} =
+               TestRepo.query!("SELECT origin FROM pragma_index_list('rb_uq_gone')")
+    end
+
+    test "removing a column a foreign key uses refuses" do
+      create("CREATE TABLE rb_fk_parent(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TABLE rb_fk_child(id INTEGER PRIMARY KEY, " <>
+          "pid INTEGER REFERENCES rb_fk_parent(id), v REAL)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_fk_parent(id) VALUES (1)")
+      TestRepo.query!("INSERT INTO rb_fk_child(id, pid, v) VALUES (1, 1, 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_fk_child, [
+          {:remove, :pid, :integer, []},
+          {:modify, :v, :float, [null: false]}
+        ])
+      end
+
+      assert %{rows: [["id"], ["pid"], ["v"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_fk_child') ORDER BY cid")
+
+      assert %{rows: [["rb_fk_parent", "pid", "id"]]} =
+               TestRepo.query!(
+                 ~s|SELECT "table", "from", "to" FROM pragma_foreign_key_list('rb_fk_child')|
+               )
+    end
+
+    test "removing a column a standalone index covers refuses" do
+      create("CREATE TABLE rb_ix_gone(id INTEGER PRIMARY KEY, a TEXT, v REAL)")
+      create("CREATE INDEX rb_ix_gone_a ON rb_ix_gone(a)")
+      TestRepo.query!("INSERT INTO rb_ix_gone(id, a, v) VALUES (1, 'x', 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_ix_gone, [
+          {:remove, :a, :string, []},
+          {:modify, :v, :float, [null: false]}
+        ])
+      end
+
+      assert %{rows: [["id"], ["a"], ["v"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_ix_gone') ORDER BY cid")
+
+      assert %{rows: [["rb_ix_gone_a"]]} =
+               TestRepo.query!(
+                 "SELECT name FROM sqlite_schema WHERE type = 'index' AND " <>
+                   "tbl_name = 'rb_ix_gone' AND sql IS NOT NULL"
+               )
+    end
+
     test "defer_foreign_keys is restored when the rebuild fails mid-dance" do
       create("CREATE TABLE rb_dfr_parent(id INTEGER PRIMARY KEY)")
 
@@ -428,6 +597,47 @@ defmodule XqliteEcto3.TableRebuildTest do
                TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_fold2') ORDER BY cid")
     end
 
+    test "a conditional removal spelled in another case drops the stored column" do
+      create(~s|CREATE TABLE rb_cond(id INTEGER PRIMARY KEY, "firstName" TEXT)|)
+
+      assert {:ok, _logs} = run_alter(:rb_cond, [{:remove_if_exists, :firstname, :string}])
+
+      assert %{rows: [["id"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_cond') ORDER BY cid")
+    end
+
+    test "a conditional add spelled in another case leaves the column alone" do
+      create(~s|CREATE TABLE rb_cond2(id INTEGER PRIMARY KEY, "displayName" TEXT)|)
+
+      assert {:ok, _logs} =
+               run_alter(:rb_cond2, [{:add_if_not_exists, :displayname, :string, []}])
+
+      assert %{rows: [["id"], ["displayName"]]} =
+               TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_cond2') ORDER BY cid")
+    end
+
+    test "a conditional removal reaches the same column with or without a modify" do
+      create(~s|CREATE TABLE rb_cond3(id INTEGER PRIMARY KEY, "serialNo" TEXT, note TEXT)|)
+      create(~s|CREATE TABLE rb_cond4(id INTEGER PRIMARY KEY, "serialNo" TEXT, note TEXT)|)
+
+      assert {:ok, _logs} = run_alter(:rb_cond3, [{:remove_if_exists, :serialno, :string}])
+
+      assert {:ok, []} =
+               run_alter(:rb_cond4, [
+                 {:modify, :note, :text, []},
+                 {:remove_if_exists, :serialno, :string}
+               ])
+
+      %{rows: plain} =
+        TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_cond3') ORDER BY cid")
+
+      %{rows: rebuilt} =
+        TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_cond4') ORDER BY cid")
+
+      assert plain == [["id"], ["note"]]
+      assert rebuilt == plain
+    end
+
     test "a change naming a column the table does not have refuses loudly" do
       create("CREATE TABLE rb_fold3(id INTEGER PRIMARY KEY, name TEXT)")
 
@@ -476,6 +686,40 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert is_binary(value) and value != ""
     end
 
+    test "map, list and boolean defaults land the same on both paths" do
+      create("CREATE TABLE rb_dflt_plain(id INTEGER PRIMARY KEY, v REAL)")
+      create("CREATE TABLE rb_dflt_built(id INTEGER PRIMARY KEY, v REAL)")
+
+      added = [
+        {:add, :meta, :map, [default: %{"a" => 1}]},
+        {:add, :tags, :map, [default: []]},
+        {:add, :flag, :boolean, [default: true]}
+      ]
+
+      assert {:ok, _logs} = run_alter(:rb_dflt_plain, added)
+
+      assert {:ok, []} =
+               run_alter(:rb_dflt_built, [{:modify, :v, :float, [null: false]} | added])
+
+      defaults = fn table ->
+        %{rows: rows} =
+          TestRepo.query!(
+            "SELECT name, dflt_value FROM pragma_table_xinfo('#{table}') " <>
+              "WHERE name IN ('meta', 'tags', 'flag') ORDER BY cid"
+          )
+
+        rows
+      end
+
+      assert defaults.("rb_dflt_plain") == [
+               ["meta", ~s|'{"a":1}'|],
+               ["tags", "'[]'"],
+               ["flag", "true"]
+             ]
+
+      assert defaults.("rb_dflt_built") == defaults.("rb_dflt_plain")
+    end
+
     test "a fragment default given to modify lands on the column" do
       create("CREATE TABLE rb_frag(id INTEGER PRIMARY KEY, seen_at TEXT)")
 
@@ -501,6 +745,61 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       assert %{rows: [[2, "b"], [3, "c"]]} =
                TestRepo.query!("SELECT rowid, v FROM rb_rowid ORDER BY rowid")
+    end
+  end
+
+  describe "a primary key's sort order survives a rebuild" do
+    test "a DESC single-column INTEGER key stays a key and keeps the table's row ids" do
+      create("CREATE TABLE rb_desc_pk(x INTEGER PRIMARY KEY DESC, memo TEXT)")
+      TestRepo.query!("INSERT INTO rb_desc_pk(x, memo) VALUES (10, 'ten')")
+      TestRepo.query!("INSERT INTO rb_desc_pk(x, memo) VALUES (NULL, 'unkeyed')")
+
+      assert {:ok, []} = run_alter(:rb_desc_pk, [{:modify, :memo, :text, [null: false]}])
+
+      # An index of its own is what makes the column a key rather than
+      # another name for the row id.
+      assert %{rows: [["pk", 1]]} =
+               TestRepo.query!(~s|SELECT origin, "unique" FROM pragma_index_list('rb_desc_pk')|)
+
+      assert %{rows: [["x", 1]]} =
+               TestRepo.query!(
+                 ~s|SELECT xi.name, xi."desc" FROM pragma_index_list('rb_desc_pk') AS il, | <>
+                   ~s|pragma_index_xinfo(il.name) AS xi WHERE il.origin = 'pk' AND xi.key = 1|
+               )
+
+      # A key that is not the row id takes NULL, and the copy carried the
+      # row ids the rows already had.
+      assert %{rows: [[1, 10, "ten"], [2, nil, "unkeyed"]]} =
+               TestRepo.query!("SELECT rowid, x, memo FROM rb_desc_pk ORDER BY rowid")
+
+      TestRepo.query!("INSERT INTO rb_desc_pk(x, memo) VALUES (NULL, 'also unkeyed')")
+
+      assert %{rows: [[2]]} =
+               TestRepo.query!("SELECT count(*) FROM rb_desc_pk WHERE x IS NULL")
+    end
+
+    test "a composite key keeps DESC on the member that declared it" do
+      create("CREATE TABLE rb_desc_ck(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a DESC, b))")
+      TestRepo.query!("INSERT INTO rb_desc_ck(a, b, v) VALUES (1, 'x', 1.5)")
+
+      assert {:ok, []} = run_alter(:rb_desc_ck, [{:modify, :v, :float, [null: false]}])
+
+      assert %{rows: [["a", 1], ["b", 0]]} =
+               TestRepo.query!(
+                 ~s|SELECT xi.name, xi."desc" FROM pragma_index_list('rb_desc_ck') AS il, | <>
+                   ~s|pragma_index_xinfo(il.name) AS xi | <>
+                   "WHERE il.origin = 'pk' AND xi.key = 1 ORDER BY xi.seqno"
+               )
+
+      err =
+        assert_raise XqliteEcto3.Error, fn ->
+          TestRepo.query!("INSERT INTO rb_desc_ck(a, b, v) VALUES (1, 'x', 2.5)")
+        end
+
+      assert err.type == :constraint_violation
+
+      assert %XqliteEcto3.Error.Constraint{subtype: :constraint_primary_key, columns: ["a", "b"]} =
+               err.details
     end
   end
 
@@ -540,6 +839,155 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       assert %{rows: [["code", 1], ["id", 0]]} =
                TestRepo.query!("SELECT name, pk FROM pragma_table_xinfo('rb_move') ORDER BY name")
+    end
+
+    test "granting the key to a column while a composite key stands refuses" do
+      create("CREATE TABLE rb_ckey(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_ckey(a, b, v) VALUES (1, 'x', 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_ckey, [{:modify, :v, :float, [primary_key: true]}])
+      end
+
+      # A member of the key is no different: the key still stands either way.
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_ckey, [{:modify, :a, :integer, [primary_key: true]}])
+      end
+
+      # De-keying only part of the key leaves the rest of it standing.
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_ckey, [
+          {:modify, :a, :integer, [primary_key: false]},
+          {:modify, :v, :float, [primary_key: true]}
+        ])
+      end
+
+      assert %{rows: [["a", 1], ["b", 2]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_ckey') WHERE pk > 0 ORDER BY pk"
+               )
+    end
+
+    test "granting the key to a column while a single-column key stands refuses" do
+      create("CREATE TABLE rb_skey(id INTEGER PRIMARY KEY, v REAL)")
+      TestRepo.query!("INSERT INTO rb_skey(id, v) VALUES (1, 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_skey, [{:modify, :v, :float, [primary_key: true]}])
+      end
+
+      # An added column asking for the key is the same ask.
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_skey, [
+          {:modify, :v, :float, [null: false]},
+          {:add, :k, :integer, [primary_key: true]}
+        ])
+      end
+
+      assert %{rows: [["id", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_skey') WHERE pk > 0 ORDER BY pk"
+               )
+    end
+
+    test "granting the key to the column that already has it keeps that one key" do
+      create("CREATE TABLE rb_regrant(id INTEGER PRIMARY KEY, v REAL)")
+      TestRepo.query!("INSERT INTO rb_regrant(id, v) VALUES (1, 1.0)")
+
+      assert {:ok, []} =
+               run_alter(:rb_regrant, [{:modify, :id, :integer, [primary_key: true]}])
+
+      assert %{rows: [["id", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_regrant') WHERE pk > 0 ORDER BY pk"
+               )
+    end
+
+    test "granting the key still works when the change set de-keys every member" do
+      create("CREATE TABLE rb_ckey3(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_ckey3(a, b, v) VALUES (1, 'x', 1.0)")
+
+      assert {:ok, []} =
+               run_alter(:rb_ckey3, [
+                 {:modify, :a, :integer, [primary_key: false]},
+                 {:modify, :b, :string, [primary_key: false]},
+                 {:modify, :v, :float, [primary_key: true]}
+               ])
+
+      assert %{rows: [["v", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_ckey3') WHERE pk > 0 ORDER BY pk"
+               )
+
+      assert %{rows: [[1, "x"]]} = TestRepo.query!("SELECT a, b FROM rb_ckey3")
+    end
+
+    test "de-keying every member without a grant refuses" do
+      create("CREATE TABLE rb_ckey4(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_ckey4(a, b, v) VALUES (1, 'x', 1.0)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_ckey4, [
+          {:modify, :a, :integer, [primary_key: false]},
+          {:modify, :b, :string, [primary_key: false]}
+        ])
+      end
+
+      assert %{rows: [["a", 1], ["b", 2]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_ckey4') WHERE pk > 0 ORDER BY pk"
+               )
+    end
+
+    test "de-keying one member narrows a composite key to the rest" do
+      create("CREATE TABLE rb_narrow(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_narrow(a, b, v) VALUES (1, 'x', 1.0)")
+
+      assert {:ok, []} =
+               run_alter(:rb_narrow, [{:modify, :a, :integer, [primary_key: false]}])
+
+      assert %{rows: [["b", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_narrow') WHERE pk > 0 ORDER BY pk"
+               )
+
+      assert %{rows: [[1, "x", 1.0]]} = TestRepo.query!("SELECT a, b, v FROM rb_narrow")
+    end
+
+    # A single-column INTEGER key written as a table-level clause is the
+    # table's row id under another name, exactly like the inline spelling:
+    # SQLite gives it no index of its own.
+    test "narrowing to one INTEGER member leaves the row id under that name" do
+      create("CREATE TABLE rb_narrow_i(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_narrow_i(a, b, v) VALUES (7, 'x', 1.0)")
+
+      assert {:ok, []} =
+               run_alter(:rb_narrow_i, [{:modify, :b, :string, [primary_key: false]}])
+
+      assert %{rows: [["a", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_narrow_i') WHERE pk > 0 ORDER BY pk"
+               )
+
+      assert %{rows: []} = TestRepo.query!("SELECT name FROM pragma_index_list('rb_narrow_i')")
+      assert %{rows: [[7, 7]]} = TestRepo.query!("SELECT rowid, a FROM rb_narrow_i")
+    end
+
+    test "granting the key still works when the change set removes every member" do
+      create("CREATE TABLE rb_ckey2(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
+      TestRepo.query!("INSERT INTO rb_ckey2(a, b, v) VALUES (1, 'x', 1.0)")
+
+      assert {:ok, []} =
+               run_alter(:rb_ckey2, [
+                 {:remove, :a, :integer, []},
+                 {:remove, :b, :string, []},
+                 {:modify, :v, :float, [primary_key: true]}
+               ])
+
+      assert %{rows: [["v", 1]]} =
+               TestRepo.query!(
+                 "SELECT name, pk FROM pragma_table_xinfo('rb_ckey2') WHERE pk > 0 ORDER BY pk"
+               )
     end
   end
 

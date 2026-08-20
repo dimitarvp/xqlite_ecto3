@@ -14,8 +14,9 @@ defmodule XqliteEcto3.RebuildVerificationError do
     * `table` — the table being rebuilt.
     * `construct` — what did not match: `:columns` (the column list itself),
       `:column_type`, `:column_null`, `:column_default`, `:primary_key`,
-      `:foreign_keys`, `:unique_constraints`, `:indexes`, `:triggers`,
-      `:table_options`, `:autoincrement` or `:sequence`.
+      `:primary_key_sort_order`, `:foreign_keys`, `:unique_constraints`,
+      `:indexes`, `:triggers`, `:table_options`, `:autoincrement`, `:rowid`
+      or `:sequence`.
     * `column` — the column involved, for the per-column constructs.
     * `expected` / `actual` — the predicted and observed values.
   """
@@ -76,14 +77,28 @@ defmodule XqliteEcto3.RebuildVerification do
   #     declaration, so a later `modify` of it is written from the options
   #     alone.
   #   * primary key — a single-member key rides inline on its column. A key
-  #     with several members is re-emitted over the members that survived the
-  #     removals, in declared key order. Removing every member of a key is
-  #     refused outright.
+  #     with several members is re-emitted over the members the change set
+  #     leaves keyed, in declared key order: removing a member and giving it
+  #     `primary_key: false` both narrow the key the same way. Leaving no
+  #     member keyed at all is refused outright, and so is granting a column
+  #     primary_key: true while a member is still keyed — one table, one key.
+  #   * the key's sort order — the DESC a member was declared with — has to
+  #     come back with it, but only while the change set leaves the key
+  #     alone. A key that moves can also stop having a sort order to record:
+  #     a single-column INTEGER key is the table's row id under another name
+  #     and SQLite gives it no index, which is where the order is kept.
+  #   * row ids — the count of rows and the lowest and highest row id. The
+  #     copy has to carry them, again only while the change set leaves the
+  #     key alone: a key that moves takes row identity with it, and a column
+  #     named after the row id answers for it in the reading.
   #   * foreign keys, unique constraints, indexes, triggers, the WITHOUT
   #     ROWID / STRICT table options and the AUTOINCREMENT sequence value are
   #     carried over untouched.
 
   alias XqliteEcto3.RebuildVerificationError
+
+  # The names SQLite answers with the row id itself unless a column takes one.
+  @rowid_names ["rowid", "_rowid_", "oid"]
 
   @type column :: %{
           name: String.t(),
@@ -103,15 +118,24 @@ defmodule XqliteEcto3.RebuildVerification do
 
   @type index_column :: %{column: String.t() | nil, desc: boolean()}
 
+  @type rowid :: %{
+          present: boolean(),
+          count: non_neg_integer() | nil,
+          min: term(),
+          max: term()
+        }
+
   @type snapshot :: %{
           table: String.t(),
           columns: [column()],
+          primary_key_order: [index_column()],
           foreign_keys: [foreign_key()],
           unique_constraints: [[index_column()]],
           indexes: %{schema: [String.t()], index_list: [String.t()]},
           triggers: [String.t()],
           table_options: %{without_rowid: boolean(), strict: boolean()},
           autoincrement: boolean(),
+          rowid: rowid(),
           sequence: integer() | nil
         }
 
@@ -130,12 +154,14 @@ defmodule XqliteEcto3.RebuildVerification do
   """
   @spec read(String.t(), query()) :: snapshot()
   def read(table_name, query) when is_function(query, 2) do
-    {unique_constraints, index_names} = read_indexes(table_name, query)
+    {unique_constraints, index_names, key_sort_order} = read_indexes(table_name, query)
     autoincrement? = read_autoincrement?(table_name, query)
+    table_options = read_table_options(table_name, query)
 
     %{
       table: table_name,
       columns: read_columns(table_name, query),
+      primary_key_order: key_sort_order,
       foreign_keys: read_foreign_keys(table_name, query),
       unique_constraints: unique_constraints,
       indexes: %{
@@ -143,8 +169,9 @@ defmodule XqliteEcto3.RebuildVerification do
         index_list: index_names
       },
       triggers: read_schema_objects(table_name, "trigger", query),
-      table_options: read_table_options(table_name, query),
+      table_options: table_options,
       autoincrement: autoincrement?,
+      rowid: read_rowid(table_name, table_options, query),
       sequence: read_sequence(table_name, autoincrement?, query)
     }
   end
@@ -262,7 +289,17 @@ defmodule XqliteEcto3.RebuildVerification do
         fn [_name, _origin, _unique, column, desc] -> %{column: column, desc: desc == 1} end
       )
 
-    {unique_constraint_columns(grouped), standalone_index_names(grouped)}
+    {unique_constraint_columns(grouped), standalone_index_names(grouped),
+     primary_key_columns(grouped)}
+  end
+
+  # The key's own backing index, when it has one. A single-column INTEGER key
+  # with no DESC is the table's row id under another name and SQLite builds it
+  # no index at all, so an empty list also says "this key is the row id".
+  defp primary_key_columns(grouped) do
+    grouped
+    |> Enum.filter(fn {{_name, origin, _unique}, _cols} -> origin == "pk" end)
+    |> Enum.flat_map(fn {_key, columns} -> columns end)
   end
 
   # A table-level UNIQUE is backed by an index SQLite names itself, and it
@@ -316,6 +353,22 @@ defmodule XqliteEcto3.RebuildVerification do
     end
   end
 
+  # Row identity: a copy that renumbers the rows keeps every value and still
+  # breaks everything keyed on the row id. A WITHOUT ROWID table has no row
+  # id to read — the column list is its whole identity. The table name cannot
+  # travel as a bound parameter here, so it is quoted into the statement.
+  defp read_rowid(_table_name, %{without_rowid: true}, _query),
+    do: %{present: false, count: nil, min: nil, max: nil}
+
+  defp read_rowid(table_name, _table_options, query) do
+    case query.("SELECT count(*), min(rowid), max(rowid) FROM " <> quoted(table_name), []) do
+      [[count, min, max]] -> %{present: true, count: count, min: min, max: max}
+      _missing -> %{present: true, count: nil, min: nil, max: nil}
+    end
+  end
+
+  defp quoted(name), do: ~s|"| <> String.replace(name, ~s|"|, ~s|""|) <> ~s|"|
+
   @doc """
   Whether a stored `CREATE TABLE` text declares `AUTOINCREMENT`.
 
@@ -330,11 +383,41 @@ defmodule XqliteEcto3.RebuildVerification do
     # The grammar allows a sort order and an ON CONFLICT clause between
     # KEY and AUTOINCREMENT (`PRIMARY KEY ASC AUTOINCREMENT` is legal and
     # autoincrements), so the two keywords are not always adjacent.
+    scannable = without_string_literals(create_sql)
+
     Regex.match?(
       ~r/\bPRIMARY\s+KEY(?:\s+(?:ASC|DESC))?(?:\s+ON\s+CONFLICT\s+\w+)?\s+AUTOINCREMENT\b/i,
-      create_sql
+      scannable
     )
   end
+
+  # Every way SQLite's own lexer quotes a piece of text: a string literal in
+  # single quotes, and the three forms of quoted identifier. All four are
+  # scanned in one left-to-right pass, which is what keeps the quote in
+  # `"it's_v"` from opening a literal that runs to the next one.
+  @quoted_text ~r/"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|'(?:[^']|'')*'/
+
+  @doc """
+  A stored `CREATE TABLE` text with the contents of its string literals
+  emptied out.
+
+  SQLite keeps the text of a CREATE statement exactly as it was typed, so a
+  scan for a keyword also reads the words inside `DEFAULT 'check pending'`
+  and would take that table for one declaring a CHECK constraint. Emptying
+  what sits between the quotes leaves a text with the same structure and no
+  words to trip on; a literal escapes a quote by doubling it, which makes
+  the boundaries unambiguous without parsing anything.
+
+  Comments are left as they are: a keyword written inside one still counts
+  as declared, which keeps the scan on the safe side.
+  """
+  @spec without_string_literals(String.t()) :: String.t()
+  def without_string_literals(create_sql) when is_binary(create_sql) do
+    Regex.replace(@quoted_text, create_sql, &blanked/1)
+  end
+
+  defp blanked(<<?', _rest::binary>>), do: "''"
+  defp blanked(quoted_name), do: quoted_name
 
   defp read_autoincrement?(table_name, query) do
     rows =
@@ -351,9 +434,20 @@ defmodule XqliteEcto3.RebuildVerification do
 
   # sqlite_sequence exists only once some table in the database declares
   # AUTOINCREMENT, so only a table that declares it can be looked up there.
+  # The declaration is read from the stored CREATE text, which can name the
+  # keyword where SQLite never created the table — so a database without one
+  # answers "no sequence", exactly as the engine's own read of the same value
+  # does, instead of failing the rebuild over a table that is not there.
   defp read_sequence(_table_name, false, _query), do: nil
 
   defp read_sequence(table_name, true, query) do
+    case query.("SELECT name FROM sqlite_schema WHERE name = 'sqlite_sequence'", []) do
+      [[_present]] -> read_sequence_row(table_name, query)
+      _missing -> nil
+    end
+  end
+
+  defp read_sequence_row(table_name, query) do
     case query.("SELECT seq FROM sqlite_sequence WHERE name = ?1", [table_name]) do
       [[seq]] -> seq
       _missing -> nil
@@ -373,30 +467,78 @@ defmodule XqliteEcto3.RebuildVerification do
     # A change set that de-keys every current member but grants another
     # column primary_key: true moves the key rather than removing it —
     # the engine allows it, so the prediction must too.
-    granted_key? =
-      Enum.any?(changes, fn
-        {op, _name, _type, opts} when op in [:add, :add_if_not_exists, :modify] ->
-          Keyword.get(opts, :primary_key, false) == true
+    granted = granted_key_columns(changes)
+    granted_key? = granted != []
 
-        _other ->
-          false
-      end)
+    cond do
+      # SQLite gives a table one primary key, so a grant only works once the
+      # key the table has is gone: every member removed or de-keyed. A member
+      # left keyed would ask for a second key, which the engine refuses.
+      granted_key? and grant_beside_kept_key?(members, survivors, granted) ->
+        {:refused, :primary_key_grant_beside_kept_key}
 
-    if members != [] and survivors == [] and not granted_key? do
-      {:refused, :primary_key_fully_removed}
-    else
-      {:ok, expected_snapshot(before, planned, members, survivors)}
+      members != [] and survivors == [] and not granted_key? ->
+        {:refused, :primary_key_fully_removed}
+
+      true ->
+        key_untouched? = not granted_key? and not names_key_member?(changes, members)
+        {:ok, expected_snapshot(before, planned, members, survivors, key_untouched?)}
     end
   end
 
+  # Whether the change set leaves the primary key alone. A change that names
+  # a key member — retyping it, de-keying it, removing it — and a change that
+  # grants the key to another column both move which column owns the table's
+  # row ids, and with it whether SQLite records a sort order for the key at
+  # all. The two facts that depend on that are only claimed when neither
+  # happens.
+  defp names_key_member?(changes, members) do
+    Enum.any?(changes, fn change ->
+      case changed_column(change) do
+        nil -> false
+        name -> Enum.any?(members, &same_column_name?(&1, name))
+      end
+    end)
+  end
+
+  defp changed_column({_op, name, _type, _opts}), do: name
+  defp changed_column({_op, name, _type}), do: name
+  defp changed_column({_op, name}), do: name
+  defp changed_column(_change), do: nil
+
   # Everything the prediction does not rewrite is carried over from the
   # reading taken before the rebuild — that is the whole preservation claim.
-  defp expected_snapshot(before, planned, members, survivors) do
+  defp expected_snapshot(before, planned, members, survivors, key_untouched?) do
     %{
       before
       | columns: Enum.map(planned, &planned_column(&1, members, survivors)),
-        autoincrement: Enum.any?(planned, & &1.autoincrement)
+        autoincrement: Enum.any?(planned, & &1.autoincrement),
+        primary_key_order: expected_key_sort_order(before, key_untouched?),
+        rowid: expected_rowid(before, planned, key_untouched?)
     }
+  end
+
+  # An empty expectation claims nothing: the comparison below only asks that
+  # no DESC went missing, so a key the change set moved is not held to the
+  # sort order the old key recorded.
+  defp expected_key_sort_order(before, true), do: before.primary_key_order
+  defp expected_key_sort_order(_before, false), do: []
+
+  defp expected_rowid(before, planned, key_untouched?) do
+    if key_untouched? and not shadowed_rowid?(before.columns, planned) do
+      before.rowid
+    else
+      %{before.rowid | min: :not_compared, max: :not_compared}
+    end
+  end
+
+  # A column named after the row id answers `SELECT rowid` in its place, so
+  # the reading is about that column's values rather than about row identity —
+  # and the rebuild leaves the row ids themselves to SQLite in that case.
+  defp shadowed_rowid?(columns, planned) do
+    Enum.any?(columns ++ planned, fn %{name: name} ->
+      String.downcase(name, :ascii) in @rowid_names
+    end)
   end
 
   defp planned_column(col, members, survivors) do
@@ -565,19 +707,25 @@ defmodule XqliteEcto3.RebuildVerification do
   defp added_default({:ok, value}), do: rendered_default(value)
 
   # The literal the rebuild writes into the new CREATE TABLE, which is also
-  # the text SQLite reads back as the column's default.
+  # the text SQLite reads back as the column's default. Every shape here is
+  # rendered the way the two writing paths render it — SQLite stores `DEFAULT
+  # true` as the word, not as 1, and a map or a list as quoted JSON text.
   defp rendered_default(nil), do: "NULL"
-  defp rendered_default(true), do: "1"
-  defp rendered_default(false), do: "0"
 
   defp rendered_default({:fragment, expression}) do
     expression |> IO.iodata_to_binary() |> strip_outer_parens()
   end
 
-  defp rendered_default(value) when is_integer(value) or is_float(value), do: to_string(value)
+  defp rendered_default(value) when is_number(value) or is_boolean(value), do: to_string(value)
 
   defp rendered_default(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "''") <> "'"
+  end
+
+  defp rendered_default(value) when is_map(value) or is_list(value) do
+    encoded = XqliteEcto3.DataType.json_default(value)
+
+    "'" <> String.replace(encoded, "'", "''") <> "'"
   end
 
   # SQLite's grammar requires parentheses around an expression DEFAULT and
@@ -620,17 +768,74 @@ defmodule XqliteEcto3.RebuildVerification do
     Enum.filter(members, &MapSet.member?(keyed, &1))
   end
 
+  # The members whose column the change set leaves in the table, de-keyed or
+  # not: what the rebuild writes a table-level key clause over.
+  defp granted_key_columns(changes) do
+    for {op, name, _type, opts} <- changes,
+        op in [:add, :add_if_not_exists, :modify],
+        Keyword.get(opts, :primary_key, false) == true,
+        do: to_string(name)
+  end
+
+  # The one grant that is not a second key: a single-column key re-declared on
+  # the very column it already sits on.
+  defp grant_beside_kept_key?(_members, [], _granted), do: false
+
+  defp grant_beside_kept_key?([_only], [kept], [granted]),
+    do: not same_column_name?(kept, granted)
+
+  defp grant_beside_kept_key?(_members, _survivors, _granted), do: true
+
   defp compare(table, expected, actual) do
     with :ok <- compare_columns(table, expected.columns, actual.columns),
+         :ok <- compare_key_sort_order(table, expected, actual),
          :ok <- compare_one(table, :foreign_keys, expected, actual, :foreign_keys),
          :ok <- compare_one(table, :unique_constraints, expected, actual, :unique_constraints),
          :ok <- compare_one(table, :indexes, expected, actual, :indexes),
          :ok <- compare_one(table, :triggers, expected, actual, :triggers),
          :ok <- compare_one(table, :table_options, expected, actual, :table_options),
-         :ok <- compare_one(table, :autoincrement, expected, actual, :autoincrement) do
+         :ok <- compare_one(table, :autoincrement, expected, actual, :autoincrement),
+         :ok <- compare_rowid(table, expected.rowid, actual.rowid) do
       compare_sequence(table, expected.sequence, actual.sequence)
     end
   end
+
+  # One-directional on purpose: every member the key keeps has to keep the
+  # sort order the key gave it, but a key is free to lose its index entirely
+  # by becoming the table's row id, which is SQLite's own doing rather than a
+  # construct the rebuild dropped.
+  defp compare_key_sort_order(table, expected, actual) do
+    case descending(expected.primary_key_order) -- descending(actual.primary_key_order) do
+      [] ->
+        :ok
+
+      _flattened ->
+        {:error,
+         mismatch(
+           table,
+           :primary_key_sort_order,
+           nil,
+           expected.primary_key_order,
+           actual.primary_key_order
+         )}
+    end
+  end
+
+  defp descending(order), do: for(%{column: column, desc: true} <- order, do: column)
+
+  defp compare_rowid(table, expected, actual) do
+    case {expected, narrowed_rowid(expected, actual)} do
+      {same, same} -> :ok
+      {want, got} -> {:error, mismatch(table, :rowid, nil, want, got)}
+    end
+  end
+
+  # The row ids themselves are only claimed when the prediction kept them;
+  # the row count is the claim either way.
+  defp narrowed_rowid(%{min: :not_compared}, actual),
+    do: %{actual | min: :not_compared, max: :not_compared}
+
+  defp narrowed_rowid(_expected, actual), do: actual
 
   # sqlite_sequence holds 0 after an insert statement that inserted no rows,
   # and no row at all before any insert ran — behaviorally identical states

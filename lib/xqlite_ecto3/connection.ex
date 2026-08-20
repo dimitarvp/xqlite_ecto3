@@ -2036,8 +2036,7 @@ defmodule XqliteEcto3.Connection do
   end
 
   defp default_expr({:ok, value}) when is_map(value) or is_list(value) do
-    library = Application.get_env(:xqlite_ecto3, :json_library, Jason)
-    expression = IO.iodata_to_binary(library.encode_to_iodata!(value))
+    expression = json_default(value)
 
     [" DEFAULT ('", escape_string(expression), "')"]
   end
