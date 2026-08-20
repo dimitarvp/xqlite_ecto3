@@ -170,7 +170,7 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     # equality assertion; a guard false-reject would fail nothing here but is
     # covered by the exact-round-trip examples above.
     property "every finite Decimal either round-trips exactly or is refused, never silently mismatched" do
-      check all(dec <- finite_decimal()) do
+      check all(dec <- finite_decimal(), max_runs: 2000) do
         if XqliteEcto3.DecimalPrecision.representable?(dec) do
           loaded = roundtrip(:dec_field, dec)
 

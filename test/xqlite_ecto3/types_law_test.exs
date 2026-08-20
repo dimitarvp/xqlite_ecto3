@@ -88,7 +88,7 @@ defmodule XqliteEcto3.TypesLawTest do
   # case is one INSERT plus one primary-key SELECT, and most add a second
   # SELECT for the raw stored value, so the cost per case is roughly flat
   # across the properties.
-  @runs 1100
+  @runs 2000
 
   setup_all do
     database =
@@ -452,7 +452,7 @@ defmodule XqliteEcto3.TypesLawTest do
   # opposite of `Types.UUID`, which normalizes before writing, and the two
   # laws are worth having side by side.
   property "an upper-case Ecto.UUID is stored as written and read back lower-cased" do
-    check all(value <- uuid_value(), max_runs: div(@runs, 2)) do
+    check all(value <- uuid_value(), max_runs: @runs) do
       upper = String.upcase(value)
 
       {loaded, stored} = written_back_with_stored(:euuid_field, upper)
@@ -620,7 +620,7 @@ defmodule XqliteEcto3.TypesLawTest do
   # it to the lower-case form on the way in, so that is what storage and the
   # read-back both hold.
   property "an upper-case Types.UUID is normalized to lower case" do
-    check all(value <- uuid_value(), max_runs: div(@runs, 2)) do
+    check all(value <- uuid_value(), max_runs: @runs) do
       upper = String.upcase(value)
 
       {loaded_string, stored_string} = written_back_with_stored(:uuid_str_field, upper)

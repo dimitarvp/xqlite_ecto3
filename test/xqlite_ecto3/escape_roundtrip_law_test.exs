@@ -76,9 +76,9 @@ defmodule XqliteEcto3.EscapeRoundtripLawTest do
   @literal_runs 3000
   @default_runs 2000
   @identifier_runs 2000
-  @rebuild_runs 400
+  @rebuild_runs 2000
   @unique_runs 2000
-  @fk_runs 1500
+  @fk_runs 2000
   @json_runs 3000
 
   setup_all do

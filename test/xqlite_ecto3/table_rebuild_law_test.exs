@@ -30,9 +30,9 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   end
 
   # Every run creates a table, seeds it, rebuilds it and reads its structure
-  # twice; these counts put the whole file at about five seconds.
-  @law_runs 600
-  @refusal_runs 300
+  # twice. The house floor for property runs is 2000.
+  @law_runs 2000
+  @refusal_runs 2000
 
   @types ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"]
   @modify_types [:integer, :string, :float, :binary, :decimal]
@@ -74,15 +74,13 @@ defmodule XqliteEcto3.TableRebuildLawTest do
 
   # --- the law ---------------------------------------------------------------
 
-  # Currently failing, on a real drop rather than a bad prediction. The
-  # rebuild decides whether to write AUTOINCREMENT again by looking the table
-  # up in sqlite_sequence, and SQLite only puts a row there on the first
-  # insert — so rebuilding a table that has never been written to turns
-  # `id INTEGER PRIMARY KEY AUTOINCREMENT` into a plain `PRIMARY KEY`, and
-  # ids become reusable. Shrunk counterexample at ExUnit seed 1: one column
-  # `id INTEGER PRIMARY KEY AUTOINCREMENT`, no rows, one `modify` of that
-  # column. The shared Ecto migration suite's "modify column" test alters a
-  # freshly created table the same way and loses AUTOINCREMENT too.
+  # This property's first run caught a real drop: the rebuild used to decide
+  # whether to write AUTOINCREMENT again by looking the table up in
+  # sqlite_sequence, and SQLite only puts a row there on the first insert —
+  # so rebuilding a never-written table silently lost the keyword and ids
+  # became reusable (shrunk to one empty AUTOINCREMENT column at ExUnit
+  # seed 1). The flag now comes from the stored CREATE text; empty tables
+  # stay in the generator so the case can never quietly return.
   property "a rebuilt table carries over everything the changes did not touch" do
     check all(
             plan <- table_plan(),
