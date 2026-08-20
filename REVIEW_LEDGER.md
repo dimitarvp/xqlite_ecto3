@@ -3110,3 +3110,78 @@ event-surface probe 9/9, OTel path unchanged.
   with the F-B9-4 span; count `:checkout` events against actual
   checkouts; after the docs remedies, re-read both doc surfaces
   against a fresh live capture.
+
+---
+
+## Run 24 — 2026-08-20 — lap 3, batch 4: B2 second cover (post-refusal-churn audit)
+
+- Commit at scan: `3eb465e`. Single Opus reviewer; orchestrator re-drove
+  the four load-bearing isolate-runs (migration.exs:640 → the reference
+  refusal at `refuse_reference_changes!/2`; :705 → SQLite's own "Cannot
+  add a PRIMARY KEY column", no adapter frame; type.exs:85 → Jason
+  `Protocol.UndefinedError` on `%Duration{}`; migrator.exs:197 vs :198 →
+  the line-filter snap), implemented every doc fix, own exit-file-gated
+  `mix verify`. The Run-16-banked vendored-file isolation method was the
+  instrument throughout (26 tag sites + 6 locations, all isolate-run).
+- **F-B2-12 (S2 doc divergence, CONFIRMED + FIXED as docs).** The three
+  ALTER rationales (`:alter_primary_key`/`:alter_foreign_key` block, the
+  migration.exs:664 block, four tags-doc rows) still blamed the missing
+  `DataType.column_type/2` clause — a code path Run 22's
+  `refuse_reference_changes!` made UNREACHABLE (the refusal now fires
+  first with guidance). A maintainer following them was sent to the
+  wrong fix. All reworded to name the refusal and point at
+  F-B7-25-feature; F-B2-7-code folded into that entry as superseded.
+- **F-B2-13 (S3, FIXED as docs).** "The rebuild engages for these" was
+  false for migration.exs:705 — `add :id, :serial, primary_key: true`
+  contains no `modify`, never enters the rebuild, and dies on SQLite's
+  own ALTER refusal. The two `:alter_primary_key` tests fail for two
+  separate causes; the block now says which is which.
+- **F-B2-14 (S2 doc divergence, CONFIRMED + FIXED as docs; code seed
+  filed).** `:duration_type`'s "SQLite has no native duration/interval
+  type" misattributed OUR gap: Ecto's `:duration` dumps a `%Duration{}`,
+  `encode_param/1`'s `is_map` catch-all feeds it to `Jason.encode!`, and
+  the raise lands in lib/xqlite_ecto3/ (frame-attribution rule).
+  Reworded to own it. ADJACENT filed ([F-B2-14-adjacent], B4 court,
+  orchestrator-unverified): ANY struct param without a Jason.Encoder
+  surfaces as a raw Protocol.UndefinedError instead of a structured
+  adapter error — the B4 re-cover adjudicates.
+- **F-B2-15 (S3, FIXED as docs).** The `:lock_for_migrations` rationale
+  pointed at migrator.exs:197 — the `@tag` line; an ExUnit line filter
+  snaps to the nearest test AT OR BEFORE the line, so the codified
+  isolation method silently ran the PRECEDING (passing) test — a false
+  all-clear generator. Pointer fixed to :198; F-B2-8's two citations
+  corrected the same way (type.exs:523, interval.exs:194); the
+  snap-behavior rule is now written into both the helper comment and
+  the tags doc's Location section as a standing discipline.
+- **F-B2-16 (S3, FIXED as docs).** The `:array_type` row read as
+  "arrays unsupported" while the adapter ships `{:array,_}`→TEXT plus
+  `Types.Array` with round-trips; what cannot work is the Postgres
+  array OPERATOR surface (`x in t.ints`, `push:`/`pull:`) and
+  untyped/fragment decoding. Row now says so. Method caveat recorded:
+  `:array_type`/`:bitstring_type`/`:duration_type` isolate-runs are
+  SELF-FULFILLING (the shared migration skips their tables under the
+  exclusion), so their ground truth comes from test-body reading or an
+  adapter-owned probe — seeded.
+- **CLEAN:** every other audited rationale tells the truth at HEAD —
+  six permanent-limit tags correctly attributed (no adapter frame),
+  `:lock_for_migrations`' substance, `:alter_primary_key`'s :705 half,
+  all six location exclusions re-verified against their documented
+  mechanisms (transaction.exs:161's pool story intact; alter.exs:44
+  NOT unlocked by Run 22's default fixes). Run 23's disconnect guard
+  is a genuine no-op for the vendored surface (zero OR-ROLLBACK
+  shapes). Count sweep: 32 exclusions, exactly the two known
+  over-broad singles (F-B2-8 counts unchanged), no new over-breadth.
+  Exclusion list + shared-suite versions drift-free since Run 16.
+  Full-suite anchor: exit 0, vendored `434 passed / 32 excluded` —
+  zero delta across four commits of engine and driver churn.
+- Dryness: finding-run (2 S2 + 3 S3, all doc-class) — **B2 stays 0 of
+  2, NOT DRY**; the next B2 pass covers the reworded surface. Re-wet
+  triggers ALSO: `Query.encode_param/1`'s clause list and the
+  exclusion-awareness list in the shared support migration.
+- Completeness critic (next B2 pass): adapter-owned probes that break
+  the three self-fulfilling exclusions; sweep the "supported (n/m)"
+  rows' counts at HEAD (`:json_extract_path` 4/5,
+  `:insert_cell_wise_defaults` 7/8, `:assigns_id_type` 3/4 — nobody
+  re-checked them); line-pointer discipline as a standing check;
+  whether `refuse_unknown_column!`/the `pk_removed` door could hide a
+  future upstream test on the next ecto/ecto_sql bump.

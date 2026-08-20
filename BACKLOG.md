@@ -242,22 +242,33 @@ after the S0–S2 burn-down.
   three in the UUID docs and then pin `:binary_id`'s behavior as a
   law — or, while unpublished, unify on normalize-on-in everywhere.
   (Run 19, B4-adjacent)
-- [F-B2-7-code] (maintainer menu) `modify` with a `references(...)`
-  type dies in `DataType.column_type/2` (no clause for
-  `%Ecto.Migration.Reference{}`) even though the rebuild engine
-  otherwise handles the change. Teaching column_type the Reference
-  struct (resolve to the referenced column's type + rebuild the FK
-  clause) may collapse three exclusions at once
-  (`:alter_foreign_key`, migration.exs:664, half of
-  `:alter_primary_key`) — the largest single exclusion reduction
-  available. Needs a maintainer call on scope. (Run 16, B2)
+- [F-B2-7-code] (maintainer menu) SUPERSEDED by [F-B7-25-feature]
+  (Run 22): the failure moved — `refuse_reference_changes!` now
+  refuses `modify references(...)` up front with guidance, so the
+  `DataType.column_type/2` fallthrough this entry described is
+  unreachable on the rebuild path. The prize is unchanged: an
+  FK-merge in the rebuild engine collapses `:alter_foreign_key`,
+  migration.exs:664, and half of `:alter_primary_key` — the largest
+  single exclusion reduction available. (Run 16 → folded Run 24, B2)
 - [F-B2-8] (S3) `:array_type` and `:microsecond_precision` are each
-  over-broad by exactly one hidden PASSING test (type.exs:522 "nested
-  embeds" — touches only the map column; interval.exs:192
+  over-broad by exactly one hidden PASSING test (type.exs:523 "nested
+  embeds" — touches only the map column; interval.exs:194
   "datetime_add with microsecond" — asserts the rounding SQLite
   actually does). Narrowing costs 8 and 4 location tuples
   respectively, and the shared migration is exclusion-aware for the
-  type tags — recorded, not churned. (Run 16, B2)
+  type tags — recorded, not churned. (Run 16, B2; counts re-verified
+  unchanged and pointers corrected to the `test` lines in Run 24 —
+  line filters snap to the nearest test at or before the line.)
+- [F-B2-14-adjacent] (B4 court, orchestrator-unverified seed from
+  Run 24) `Query`'s `encode_param/1` `is_map` catch-all sends ANY
+  struct without a `Jason.Encoder` implementation to `Jason.encode!`,
+  so a custom Ecto type whose `dump/1` returns a struct surfaces as a
+  raw `Protocol.UndefinedError` from Jason instead of a structured
+  adapter error — against the errors-carry-maximum-structure rule.
+  Reachable from ordinary Ecto (`%Duration{}` proves it live). The
+  B4 re-cover adjudicates: either a structured
+  `{:unencodable_parameter, struct}` error or an explicit clause
+  list. (Run 24, B2 → B4)
 - [B7 enhancement candidate, unranked] A structural before/after
   verification at the end of the rebuild — compare table_xinfo,
   foreign_key_list, index_list, and table_list.wr/strict against the

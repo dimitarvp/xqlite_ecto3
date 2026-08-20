@@ -149,6 +149,32 @@ frame-attribution rule (stack in lib/xqlite_ecto3/ ⇒ "our gap", never
 "SQLite's limit") as a standing check; the hidden-vs-failing count sweep each
 pass; whether column_type learning `%Ecto.Migration.Reference{}` collapses the
 ALTER exclusions.
+COVERING RE-RUN (Run 24, 2026-08-20 — lap 3, the second cover; the fired
+re-wetters audited): the refusal-set churn (Run 22) invalidated three
+rationales exactly as Run 16 predicted. FIXED as docs: **F-B2-12 (S2)** the
+ALTER trio + four doc rows blamed the now-UNREACHABLE `column_type` gap
+(the up-front reference refusal fires first) — reworded to name
+`refuse_reference_changes!` + F-B7-25-feature, F-B2-7-code folded as
+superseded; **F-B2-14 (S2)** `:duration_type` blamed SQLite while the
+raiser is OUR `encode_param/1` is_map→Jason catch-all on `%Duration{}` —
+reworded; adjacent struct-param classification gap filed to the B4 court
+([F-B2-14-adjacent]); **F-B2-13 (S3)** the :705 half never enters the
+rebuild (plain-ALTER SQLite refusal) — block now separates the two causes;
+**F-B2-15 (S3)** the migrator pointer named the `@tag` line and the line
+filter SNAPS to the preceding (passing) test — false all-clear generator;
+pointer fixed, F-B2-8 citations corrected, snap rule codified in helper +
+tags doc; **F-B2-16 (S3)** the `:array_type` row understated shipped
+support — now names the real gap (Postgres operator surface + untyped
+decoding); the three self-fulfilling isolate-runs (shared migration skips
+their tables) recorded as a method caveat. CLEAN: all other rationales
+truthful at HEAD; six locations re-verified; Run 23's guard a no-op for
+the vendored surface; count sweep = exactly the two known singles; anchor
+`434 passed / 32 excluded`, zero delta. DRYNESS: finding-run (doc-class)
+— **B2 stays 0 of 2, NOT DRY**. Re-wets ALSO on: `Query.encode_param/1`
+clauses / the shared support migration's exclusion-awareness list.
+Next-pass seeds: adapter-owned probes breaking the self-fulfilling three;
+the "supported (n/m)" row counts re-check; line-pointer discipline
+standing; upstream-bump watch on the new refusals.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
