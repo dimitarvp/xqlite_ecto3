@@ -115,7 +115,9 @@ defmodule XqliteEcto3.DecimalPrecision do
   # integer demotion then surfaced the true rounded value (a 17-digit
   # integer stored as its float64 neighbor was accepted and came back off
   # by two).
-  defp stored_decimal(f) do
+  @doc false
+  @spec stored_decimal(float()) :: Decimal.t()
+  def stored_decimal(f) do
     t = trunc(f)
 
     if t + 0.0 == f and t >= @int64_min and t <= @int64_max do

@@ -4324,3 +4324,19 @@ database), 5/5 local; the mode taxonomy stays recorded HERE and in
 the docs, not in assertions. Lesson banked into the axis: post-cancel
 DX shapes are timing-mode-dependent — pin invariants, describe modes.
 
+THIRD red (fresh CI seed 653856, two jobs): CI-as-fuzzer found a REAL
+counterexample in the new bind-exactness property —
+`Decimal.new("18271353451913432.0")` — and adjudication flipped the
+suspect: the BIND is correct (the float is exactly that integer;
+live-SQLite proof: NUMERIC demotion stores INTEGER
+18271353451913432, the original digits); the property's COMPARATOR
+was the bug — `Decimal.from_float/1` is shortest-round-trip
+printing, which renders a 17-digit integral float as 16 digits. The
+comparator now reads bound floats through the guard's own storage
+model (`stored_decimal/1`, made @doc false public — exactly the
+"loader output == stored_decimal model" pin the B4 critic wanted),
+and the counterexample value is pinned end-to-end against live
+SQLite in `decimal_precision_test.exs`. Seed 653856 replays green;
+both files 76/76. Class lesson banked: float comparisons in tests go
+through the storage model, never through shortest-print conversions.
+

@@ -94,7 +94,15 @@ defmodule XqliteEcto3.QueryEncodingTest do
   end
 
   defp decimal_of(bound) when is_integer(bound), do: Decimal.new(bound)
-  defp decimal_of(bound) when is_float(bound), do: Decimal.from_float(bound)
+
+  # A bound float must equal the value SQLite STORES for it, and the storage
+  # model is the guard's own: NUMERIC affinity demotes an integral float in
+  # int64 range to an INTEGER with its exact digits. Decimal.from_float/1 is
+  # the wrong lens here — it renders the shortest string that round-trips,
+  # which can drop digits a demoted INTEGER keeps (a 17-digit integral float
+  # prints as 16).
+  defp decimal_of(bound) when is_float(bound),
+    do: XqliteEcto3.DecimalPrecision.stored_decimal(bound)
 
   # sign * coefficient * 10^exponent, with the coefficient's digit count swept
   # across 1..25 so the stream straddles float64's ~15-17 significant-digit

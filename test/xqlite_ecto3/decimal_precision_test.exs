@@ -67,6 +67,21 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
   # are accepted. The same digits rendered with a decimal point are judged
   # by the float64 model instead.
   describe "bind_form/1 picks the exact numeric form" do
+    test "a 17-digit integral decimal with a fraction dot binds as a float that stores exactly" do
+      d = Decimal.new("18271353451913432.0")
+
+      assert {:float, f} = DecimalPrecision.bind_form(d)
+
+      {:ok, conn} = Xqlite.open_in_memory()
+      {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE bf (v NUMERIC)", [])
+      {:ok, _} = XqliteNIF.query(conn, "INSERT INTO bf VALUES (?1)", [f])
+
+      assert {:ok, %{rows: [["integer", 18_271_353_451_913_432]]}} =
+               XqliteNIF.query(conn, "SELECT typeof(v), v FROM bf", [])
+
+      assert Decimal.equal?(d, DecimalPrecision.stored_decimal(f))
+    end
+
     for {str, expected} <- [
           {"123456789012345678", {:integer, 123_456_789_012_345_678}},
           {"9223372036854775807", {:integer, 9_223_372_036_854_775_807}},
