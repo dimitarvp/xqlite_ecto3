@@ -300,6 +300,67 @@ defmodule XqliteEcto3.TransactionAtomicityTest do
 
   defp cancel_on_third(row, n, _table), do: {[row], n + 1}
 
+  describe "top-level savepoint mode" do
+    test "a rollback-class violation cannot leak a durable post-failure write" do
+      table = "ta_sp_#{System.unique_integer([:positive])}"
+
+      PoolRepo.query!(
+        "CREATE TABLE #{table} (id INTEGER PRIMARY KEY, v INTEGER UNIQUE ON CONFLICT ROLLBACK)"
+      )
+
+      result =
+        PoolRepo.transaction(
+          fn ->
+            PoolRepo.query!("INSERT INTO #{table} VALUES (1, 10)")
+
+            {:error, %XqliteEcto3.Error{details: %XqliteEcto3.Error.Constraint{}}} =
+              PoolRepo.query("INSERT INTO #{table} VALUES (2, 10)")
+
+            case PoolRepo.query("INSERT INTO #{table} VALUES (3, 30)") do
+              {:ok, _would_be_a_leak} -> :post_failure_write_ran
+              {:error, _refused} -> :post_failure_write_refused
+            end
+          end,
+          mode: :savepoint
+        )
+
+      assert result in [
+               {:error, :rollback},
+               {:ok, :post_failure_write_refused}
+             ]
+
+      assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM #{table}")
+      PoolRepo.query!("DROP TABLE #{table}")
+    end
+
+    test "the happy path commits durably" do
+      table = "ta_sph_#{System.unique_integer([:positive])}"
+      PoolRepo.query!("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
+
+      {:ok, :done} =
+        PoolRepo.transaction(
+          fn ->
+            PoolRepo.query!("INSERT INTO #{table} VALUES (1)")
+            :done
+          end,
+          mode: :savepoint
+        )
+
+      assert %{rows: [[1]]} = PoolRepo.query!("SELECT count(*) FROM #{table}")
+      PoolRepo.query!("DROP TABLE #{table}")
+    end
+
+    test "after the transaction ends, a failed autocommit statement does not disconnect" do
+      {:ok, :done} =
+        PoolRepo.transaction(fn -> :done end, mode: :savepoint)
+
+      assert {:error, %XqliteEcto3.Error{}} =
+               PoolRepo.query("INSERT INTO no_such_ta_table VALUES (1)")
+
+      assert %{rows: [[1]]} = PoolRepo.query!("SELECT 1")
+    end
+  end
+
   defp slow_insert(table) do
     "INSERT INTO #{table} SELECT x + 1000000, x FROM (WITH RECURSIVE c(x) AS " <>
       "(SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) SELECT x FROM c)"

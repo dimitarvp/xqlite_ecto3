@@ -291,7 +291,14 @@ defmodule XqliteEcto3.Driver do
           :savepoint ->
             case NIF.savepoint(state.conn, savepoint_name(state, state.savepoint)) do
               :ok ->
-                {:ok, nil, %{state | savepoint: state.savepoint + 1}}
+                # A successful SAVEPOINT always leaves a transaction open —
+                # nested it was open already, and a TOP-LEVEL savepoint
+                # (Repo.transaction mode: :savepoint) starts an implicit one.
+                # Without this the cached flag stays :idle and the rollback
+                # guard cannot see a SQLite-initiated full rollback, so
+                # post-failure statements would commit durably in autocommit.
+                {:ok, nil,
+                 %{state | savepoint: state.savepoint + 1, transaction_status: :transaction}}
 
               {:error, reason} ->
                 {:disconnect, XqliteEcto3.Error.wrap(reason), state}
@@ -342,7 +349,7 @@ defmodule XqliteEcto3.Driver do
           :savepoint ->
             case NIF.release_savepoint(state.conn, savepoint_name(state, state.savepoint - 1)) do
               :ok ->
-                {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+                {:ok, nil, released_savepoint_state(state)}
 
               {:error, reason} ->
                 {:disconnect, wrap_commit_error(reason, state), state}
@@ -384,7 +391,7 @@ defmodule XqliteEcto3.Driver do
 
             with :ok <- NIF.rollback_to_savepoint(state.conn, name),
                  :ok <- NIF.release_savepoint(state.conn, name) do
-              {:ok, nil, %{state | savepoint: state.savepoint - 1}}
+              {:ok, nil, released_savepoint_state(state)}
             else
               {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
             end
@@ -493,6 +500,21 @@ defmodule XqliteEcto3.Driver do
     case leading_keyword(sql) do
       keyword when keyword in @transaction_control -> refresh_transaction_status(state)
       _other -> state
+    end
+  end
+
+  # Releasing (or rolling back to and releasing) the OUTERMOST managed
+  # savepoint may end an implicit transaction a top-level savepoint began —
+  # or leave a caller's enclosing transaction open. One status read at that
+  # boundary keeps the cached flag truthful without the guard ever
+  # over-disconnecting a later failed autocommit statement; nested releases
+  # stay read-free (the enclosing transaction is still open by construction).
+  defp released_savepoint_state(state) do
+    state = %{state | savepoint: state.savepoint - 1}
+
+    case state.savepoint do
+      0 -> refresh_transaction_status(state)
+      _nested -> state
     end
   end
 
