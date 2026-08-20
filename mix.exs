@@ -93,6 +93,9 @@ defmodule XqliteEcto3.MixProject do
     ]
   end
 
+  # The bound stays patch-level: xqlite is pre-1.0, so a minor bump is its
+  # break slot (0.9 -> 0.10 already forced an adapter code change). Each
+  # adapter release pins exactly one xqlite minor series.
   # Upstream-default is the Hex release; devs (and CI for integration testing
   # unreleased xqlite changes) can point at a working copy via
   #   export XQLITE_PATH=../xqlite
@@ -100,7 +103,7 @@ defmodule XqliteEcto3.MixProject do
   # XQLITE_BUILD=true for forced local compilation.
   defp xqlite_dep do
     case System.get_env("XQLITE_PATH") do
-      nil -> {:xqlite, "~> 0.11"}
+      nil -> {:xqlite, "~> 0.11.0"}
       path -> {:xqlite, path: path, override: true}
     end
   end

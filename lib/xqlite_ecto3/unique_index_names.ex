@@ -54,7 +54,10 @@ defmodule XqliteEcto3.UniqueIndexNames do
   past 24 of them (`{:unavailable, {:too_many_unique_indexes, n}}`);
   and a wall-clock budget equal to the connection's `busy_timeout`,
   checked before every read
-  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). A single
+  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). A zero
+  `busy_timeout` disables the wall-clock budget rather than allotting
+  no time: reads that cannot block need no time cap, and the 24-index
+  cap alone bounds the work. A single
   read can still block for up to `busy_timeout` when another process
   holds a write lock on a rollback-journal database — the same worst
   case any statement pays under that contention; WAL databases do not
@@ -93,6 +96,8 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @doc false
   @spec within_budget?(integer(), non_neg_integer(), integer()) :: boolean()
+  def within_budget?(_started_at_ms, 0, _now_ms), do: true
+
   def within_budget?(started_at_ms, budget_ms, now_ms) do
     now_ms - started_at_ms <= budget_ms
   end
@@ -138,7 +143,10 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   # The budget equals the connection's busy timeout: one blocked read
   # already costs that much, so the budget stops further reads from
-  # multiplying the price across every candidate.
+  # multiplying the price across every candidate. A zero timeout means
+  # reads cannot block, so there is no price to multiply — zero disables
+  # the wall-clock check entirely (it must not mean "no time at all");
+  # the candidate cap alone bounds the work.
   defp busy_budget(conn) do
     case NIF.query(conn, "PRAGMA busy_timeout", []) do
       {:ok, %{rows: [[ms] | _]}} when is_integer(ms) and ms >= 0 -> {:ok, ms}

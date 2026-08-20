@@ -42,6 +42,10 @@ def deps do
 end
 ```
 
+Compatibility: each xqlite_ecto3 release pins exactly one xqlite minor
+series, because xqlite is pre-1.0 and its minor is the break slot. The
+current pairing is xqlite `~> 0.11.0` (pulled in automatically).
+
 Then configure your repo:
 
 ```elixir

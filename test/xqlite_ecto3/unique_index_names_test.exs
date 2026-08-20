@@ -512,7 +512,11 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
 
   test "elapsed time over the budget is out" do
     refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_051)
-    refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 0, 1_001)
+  end
+
+  test "a zero budget disables the wall-clock check instead of allotting no time" do
+    assert XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 0, 1_001)
+    assert XqliteEcto3.UniqueIndexNames.within_budget?(0, 0, 60_000)
   end
 
   # ---------------------------------------------------------------------------
@@ -541,6 +545,42 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
 
     assert %Constraint{unique_index_names: []} = resolved.details
     assert Conn.to_constraints(resolved, []) == [unique: "gone_v_index"]
+  end
+
+  test "busy_timeout 0 never degrades the lookup, across many candidates" do
+    conn = open_conn("zero_budget")
+
+    decoy_cols = Enum.map_join(0..11, ", ", fn i -> "d#{i} TEXT" end)
+
+    {:ok, _} =
+      XqliteNIF.query(
+        conn,
+        "CREATE TABLE zb_items (id INTEGER PRIMARY KEY, v TEXT, #{decoy_cols})",
+        []
+      )
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX zb_items_real ON zb_items (v)", [])
+
+    for i <- 0..11 do
+      {:ok, _} =
+        XqliteNIF.query(conn, "CREATE UNIQUE INDEX zb_items_d#{i}_uq ON zb_items (d#{i})", [])
+    end
+
+    {:ok, _} = XqliteNIF.set_pragma(conn, "busy_timeout", 0)
+
+    for _ <- 1..30 do
+      resolved = XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn)
+
+      assert %Constraint{unique_index_lookup: :ok, unique_index_names: ["zb_items_real"]} =
+               resolved.details
+    end
+  end
+
+  defp zero_budget_error do
+    Error.wrap(
+      {:constraint_violation, :constraint_unique,
+       %{message: "UNIQUE constraint failed: zb_items.v", table: "zb_items", columns: ["v"]}}
+    )
   end
 
   defp vanished_table_error do
