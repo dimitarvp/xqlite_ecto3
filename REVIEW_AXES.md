@@ -599,6 +599,25 @@ adversarial lap on the modify-merge (FK/UNIQUE/composite-pk member modified;
 `primary_key: true` × AUTOINCREMENT; `from:` shapes); the structural
 before/after verification candidate; sqlite_stat1 / virtual-table shadows /
 open stream cursor / `flush()` / concurrent readers during drop-rename.
+LAW LAYER (Run 17, 2026-08-20 — the "structural verification candidate"
+above, DELIVERED): every rebuild now runs a structural post-check before
+COMMIT (`RebuildVerification` — one shared reader + change-set model, typed
+`RebuildVerificationError` on any unexplained difference, the self-wrap
+rolls back), and `table_rebuild_law_test.exs` drives the SAME model as a
+600-run generator property + a 300-run ten-flavour refusal property. First
+run found and gate-fixed **F-B7-17 (S1)** — AUTOINCREMENT silently dropped
+on never-written tables (sqlite_sequence has no row before the first
+insert; the flag now comes from the stored CREATE text via the shared
+`autoincrement_declared?/1`; sqlite_sequence supplies only the value) —
+and **F-B7-18 (S2)** — rebuild-path DEFAULT literals did not escape
+embedded single quotes (now `quote_string`; the generator's deliberate
+quote-exclusion removed). F-B7-16 RULED + implemented: keyed→keyless via
+removal refuses (`refuse_removed_primary_key!/3`), narrowing to survivors
+stays, keyless-created tables unaffected. B7 stays 0 of 2 (engine churn);
+future covering runs lean on the law instead of re-deriving preservation
+by hand. Re-wets ALSO on: `rebuild_verification.ex` /
+`fetch_autoincrement_flag!` / `refuse_removed_primary_key!` /
+`verify_structure!`.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);

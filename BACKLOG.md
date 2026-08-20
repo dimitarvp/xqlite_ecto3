@@ -133,15 +133,6 @@ after the S0–S2 burn-down.
   index being built does not exist yet) all collapse into the same
   silent derived-name fallback. Reporting gap only; refine the status
   shape when a consumer materializes. (Run 14, B5)
-- [F-B7-16] (S3, maintainer taste) Removing a composite primary-key
-  member silently narrows the key to the survivors; removing EVERY
-  member leaves a table with no primary key at all, silently.
-  Evidence for the call: narrowing only TIGHTENS uniqueness (never
-  admits data the old key rejected), and a survivor with duplicates
-  fails the copy loudly with full rollback — so the narrowing case is
-  defensible as-is. The all-members-removed case deserves a refusal
-  (recommendation: refuse when the original table had a PK and the
-  surviving member set is empty). (Run 15, B7)
 - [F-B2-7-code] (maintainer menu) `modify` with a `references(...)`
   type dies in `DataType.column_type/2` (no clause for
   `%Ecto.Migration.Reference{}`) even though the rebuild engine
@@ -204,6 +195,13 @@ after the S0–S2 burn-down.
 
 ## Closed
 
+- 2026-08-20 [F-B7-16] (S3) RULED + IMPLEMENTED same day: removing
+  every primary-key member now refuses loudly before any destructive
+  step (`refuse_removed_primary_key!/3`, pinned identically in the
+  rebuild-verification model, RED→green tests); narrowing to a
+  non-empty survivor set stays allowed; tables created keyless are
+  unaffected. README rebuild section documents it. Detail: ledger
+  Run 17.
 - 2026-08-20 [F-B5-2] (S3) IMPLEMENTED per the 2026-07-21 synthesis
   ruling: `XqliteEcto3.UniqueIndexNames` resolves the real unique
   index name(s) via `index_list`+`index_info` on the violation path

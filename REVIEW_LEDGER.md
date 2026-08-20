@@ -2455,3 +2455,77 @@ event-surface probe 9/9, OTel path unchanged.
   hidden-vs-failing count sweep every pass (it caught three over-broad
   exclusions this time); unprobed — whether column_type learning
   `%Ecto.Migration.Reference{}` collapses the three ALTER exclusions.
+
+---
+
+## Run 17 — 2026-08-20 — property/law layer, item 1: rebuild structural-equivalence
+
+- Base: `74d58f3`. Opus implementer (maintainer-authorized law program, all
+  five items greenlit); orchestrator gate: both minimal repros re-run
+  independently, the RED legs confirmed, the two engine fixes below
+  implemented AT GATE by the orchestrator with their own RED→green tests,
+  the law property re-driven across seeds, own `mix verify` (exit-file
+  pattern).
+- **The law layer, two levels:** (1) a runtime post-check inside
+  `rebuild_table/4` — a structural snapshot (columns, FKs, unique
+  constraints, indexes, triggers, wr/strict, AUTOINCREMENT, sequence) taken
+  before the dance is transformed by a MODEL of the change set and compared
+  against the post-dance snapshot before COMMIT; any unexplained difference
+  raises `RebuildVerificationError` (typed fields: table / construct /
+  column / expected / actual) and the self-wrap rolls back — a
+  bug-in-the-engine detector, on for every rebuild; (2) a stream_data law
+  property (`table_rebuild_law_test.exs`): generated schemas (5 types,
+  defaults incl. quotes/unicode, single+composite pk, AUTOINCREMENT,
+  self-ref FKs, unique constraints incl. DESC, exotic identifiers) ×
+  generated change sequences, 600 runs, asserting post-state ==
+  model(pre-state, changes); plus a 300-run refusal property (ten flavours)
+  asserting refusals fire loudly and change nothing. Reader and model live
+  in `XqliteEcto3.RebuildVerification` (database-agnostic, unit-tested with
+  30 doctored-snapshot tests) — the engine and the property share ONE
+  reader and ONE model, so they cannot drift.
+- **Maintainer ruling implemented (closes F-B7-16):** removing every
+  primary-key member refuses loudly before any destructive step
+  (`refuse_removed_primary_key!/3`); narrowing to a non-empty survivor set
+  stays allowed; keyless-created tables unaffected. Model pins the same
+  rule from the same helper. README documents it.
+- **THE PROPERTY FOUND TWO REAL ENGINE BUGS ON ITS FIRST RUN — both
+  orchestrator-reproduced and FIXED AT GATE (RED→green):**
+  - **F-B7-17 (S1, FIXED).** AUTOINCREMENT silently dropped when rebuilding
+    a table that has NEVER been written: the engine keyed the re-emission
+    on `sqlite_sequence`, whose row appears only on the first insert — an
+    empty AUTOINCREMENT table rebuilt to a plain `PRIMARY KEY`, making
+    freed ids reusable. Ordinary-migration reachable (create + alter in one
+    migration — the vendored suite itself trips it). Fix: the flag now
+    comes from the stored CREATE text via the SHARED predicate
+    `RebuildVerification.autoincrement_declared?/1` (no structural pragma
+    exposes AUTOINCREMENT; sqlite_sequence keeps supplying only the
+    VALUE). Deterministic test: empty-table rebuild keeps the keyword and
+    delete-then-insert does not reuse the id.
+  - **F-B7-18 (S2, FIXED).** Rebuild-path `DEFAULT` literals did not double
+    embedded single quotes (`default_spec/1`) — `modify ... default: "it's"`
+    failed with a syntax error where the plain-ALTER path succeeds. Fix:
+    routed through `quote_string/1`; the generator's deliberate
+    quote-exclusion removed so the property now covers the class.
+  - Gate self-check: the runtime post-check then flagged BOTH fixes'
+    model edges on the orchestrator's own re-run — the model's default
+    rendering had mirrored the broken engine (now escapes), and a zero-row
+    `INSERT...SELECT` into an AUTOINCREMENT table materializes
+    `sqlite_sequence` with seq=0, behaviorally identical to no-row (the
+    comparison now normalizes nil ≡ 0, with the reason in place). The law
+    catching its own author twice in one gate is the layer working.
+- Also recorded from the implementer's generator work (loud SQLite
+  failures, not engine bugs): a change block with no `:modify` routes pk
+  removals through plain ALTER where SQLite itself refuses; re-typing
+  either end of a self-referencing FK fails the post-copy check; narrowing
+  a composite key onto a re-typed non-integer member fails on the rowid
+  alias. The model was wrong once (repeated modifies of one column merge
+  against the STORED declaration — last wins) — the property caught it,
+  the ruled contract confirmed it, the model pinned it.
+- Durable coverage: +30 verification unit tests, +2 properties, +5
+  deterministic rebuild tests (2 refusal + empty-AUTOINCREMENT +
+  quoted-default + narrowing control). `mix verify` GREEN (exit-file).
+- Dryness: engine churn (flag split, default fix, refusal, post-check
+  wiring) — **B7 stays 0 of 2**; re-wet triggers now ALSO include
+  `rebuild_verification.ex` / `fetch_autoincrement_flag!` /
+  `refuse_removed_primary_key!` / `verify_structure!`. The law property
+  itself becomes standing coverage for every future B7 pass.
