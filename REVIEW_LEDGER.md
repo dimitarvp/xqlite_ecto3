@@ -4340,6 +4340,90 @@ SQLite in `decimal_precision_test.exs`. Seed 653856 replays green;
 both files 76/76. Class lesson banked: float comparisons in tests go
 through the storage model, never through shortest-print conversions.
 
+FOURTH red (three jobs) — see below; Run 32 follows after this
+addendum block.
+
+## Run 32 — 2026-08-20 — lap 5, batch 1: B8 solo (the flagship's third door)
+
+Preceded by the LAP-5 STEP-0 ruling (orchestrator, git-verified):
+**B1 RE-WET** (the audited callback return-shape inventory changed —
+Runs 25/29 gave execute/declare/fetch a `{:disconnect, _, _}` return
+they never produced; contract-valid, facts moved) and **B6 RE-WET**
+(`expr(%Decimal{})` guard-routes, `column_type` float family →
+NUMERIC, default rendering refuses — Runs 28/31); **B10 STAYS DRY**
+(no trigger fired: no bench/ dep change, no ecto_sql floor bump, no
+new scenario; the hot-path perf churn only stales recorded FIGURES —
+the parked native-bench items' concern). Scoreboard: DRY = B10
+alone; eleven axes wet.
+
+Single Opus reviewer at `91415ff`, xqlite `2700446`; `driver.ex`
+byte-unchanged since `04e8363` (git-verified — the cover hunted
+unreached seeds). Gate: F-B8-7's RED + mechanism + remedy-safety +
+blast-radius probes re-driven pre-fix; fix implemented BY THE
+ORCHESTRATOR; probes re-flipped post-fix; stash-RED 13/14 → 14/14.
+
+- **F-B8-7 (S2, CONFIRMED, FIXED, RED→green).** `handle_begin/2`'s
+  savepoint branch never set `transaction_status`, so a TOP-LEVEL
+  `Repo.transaction(fun, mode: :savepoint)` (SQLite: a lone SAVEPOINT
+  starts an implicit transaction) left the rollback guard BLIND — the
+  F-B8-4 durable-leak shape through the guard's THIRD uncovered door
+  (after F-B3-7 raw BEGIN, F-B3-8 streams), and NOT timeout-specific:
+  an ON-CONFLICT-ROLLBACK violation leaked identically with no
+  cancellation involved (post-failure write durable inside a
+  transaction reported failed; also reachable through `Ecto.Multi`).
+  Mechanism proof: the RAW-SQL spelling of the identical construct is
+  protected by Run 29's keyword sync — the cached flag, not SQLite,
+  decides the verdict. Reachability discount from S1: `mode:` is a
+  documented Ecto option but nothing idiomatic passes `:savepoint` at
+  top level. FIX (the read-free variant): a successful savepoint
+  begin sets `transaction_status: :transaction` (always true
+  after SAVEPOINT — nested it was open already); releasing (or
+  rolling back) the OUTERMOST managed savepoint refreshes the flag
+  from SQLite via one status read (`released_savepoint_state/1`) —
+  the may-end-an-implicit-transaction boundary; nested releases stay
+  read-free. The remedy-safety pin held: after RELEASE a failed
+  autocommit statement does NOT disconnect. Committed tests
+  (deterministic, no timing): rollback-class violation cannot leak +
+  happy path commits + post-release no over-disconnect
+  (`transaction_atomicity_test.exs` +3). Probe dispositions:
+  the leak-asserting probes (blast-radius, multi-door) INVERT
+  post-fix — FAIL BY DESIGN.
+- **CLEAN (controls named; the strongest saturation window yet):**
+  `{:shared, owner}` sandbox × cancelled write with a queued sibling
+  (sibling exits with the holder; owner + fresh-sibling post-cancel
+  writes refused with `OwnershipError`; the FILE byte-identical);
+  ATTACHed + TEMP targets (rollback-on-interrupt spans EVERY schema;
+  cancelled-READ control keeps its transaction); `Ecto.Multi`
+  natural + swallowed shapes; the guard's DirtyIo status read under
+  a SELF-POLICING saturation window (read 1 µs → 2.13 s median —
+  2.1-million-fold — verdict unmoved, cost bounded by exactly one
+  read; a 50 ms deadline returned in 8.97 s = an independent live
+  re-measurement of the F-B8-5/6 class); core cancel 151 ms vs a
+  9,999 ms `:infinity` control; F-B8-2's upstream blocker holds at
+  0.11.0 (`stream_fetch_cancellable` absent).
+- **Captured for B9 (owed docs line, not filed — F-B8-7 already
+  breaks the chain, stated to show no under-filing incentive):** the
+  `[:xqlite_ecto3, :disconnect]` `reason` taxonomy on four paths —
+  all structured; our cancel and DBConnection's recycle share
+  `reason: :error` and are distinguished only by correlating with
+  the `handle_execute` stop event's `error_reason: {:disconnect, _}`
+  (DBConnection permits no third reason value).
+- **HANDOFF (B1/B2 court, FILED in backlog):**
+  `Repo.insert(changeset, mode: :savepoint)` — documented by Ecto,
+  implemented by Postgrex inside `handle_execute` — is silently
+  INERT on this adapter (`handle_execute` reads only `:timeout`).
+  Mostly harmless on SQLite (a failed statement does not poison a
+  transaction), but an unclaimed contract divergence.
+- Dryness: an S2 — **B8 stays 0 of 2, NOT DRY**; the fix re-wets the
+  savepoint branches (`handle_begin/commit/rollback` savepoint arms +
+  `released_savepoint_state/1`). Completeness critic (next B8 pass):
+  declare/fetch under a top-level savepoint (same state, unprobed);
+  the managed counter vs a caller's raw SAVEPOINT names; the guard's
+  fail-open `_open_or_unknown` fallback (unpinned); F-B8-1's
+  lock-contended write not re-driven at 0.11.0; rollback/commit
+  hooks under a cancelled write; `mode: :savepoint` via repo CONFIG
+  (applies to every transaction — unprobed).
+
 FOURTH red (three jobs): the queue_timeout-shape test's own HOLDER
 lost the 1 ms queue race against the pool's ASYNC CONNECT on slow
 runners — the aggressive queue params built to drop the victim

@@ -64,7 +64,24 @@ after the S0–S2 burn-down.
   defaults, non-boolean atoms, non-fragment tuples, and printable
   charlists all refuse structurally now. (Run 30 filed → Run 31
   landed, with F-B4-7/F-B4-8.)
-- [F-B9-13] (S3, from Run 29) `fk_diagnostics_test.exs`'s telemetry
+- [F-B8-8-handoff] (S3, B1/B2 court, from Run 32)
+  `Repo.insert(changeset, mode: :savepoint)` — documented by Ecto,
+  implemented by Postgrex inside `handle_execute` (a savepoint around
+  the single statement) — is silently INERT on this adapter:
+  `handle_execute` reads only `:timeout` from opts. Mostly harmless
+  on SQLite (a failed statement does not poison the enclosing
+  transaction the way Postgres does), but an unclaimed contract
+  divergence: implement the per-statement savepoint wrap, or document
+  the inertness in the divergence docs and the exclusion rationales
+  if an upstream test ever exercises it. (Run 32, B8 → B1/B2)
+- [F-B8-9-docs] (S3, docs, from Run 32) The
+  `[:xqlite_ecto3, :disconnect]` event cannot distinguish our cancel
+  from DBConnection's own checkout-deadline recycle — both carry
+  `reason: %DBConnection.ConnectionError{reason: :error}`
+  (DBConnection permits no third reason value). The structured
+  correlation path exists: match the `handle_execute` stop event's
+  `error_reason: {:disconnect, _}` by `conn`. One line owed in the
+  telemetry guide next to the disconnect row. (Run 32, B8 → B9 docs) `fk_diagnostics_test.exs`'s telemetry
   assertion fails under the `XQLITE_ECTO3_TELEMETRY=off` build
   (pre-existing; invisible in CI because the `telemetry_disabled`
   lane runs only the smoke file). Remedy: flag-guard that test the

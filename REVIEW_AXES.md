@@ -53,6 +53,13 @@ queries before the destructive statement list. `config/test.exs` telemetry flag
 defaults ON when the env var is unset — behaviour-neutral (gates emission only).
 Zero new findings. DRYNESS: **DRY (2 of 2)** — second consecutive clean covering
 run. Re-wet triggers UNCHANGED.
+RE-WET (2026-08-20, lap-5 step-0 ruling): the audited return-shape
+inventory changed — Runs 25/29 gave `handle_execute` (cancelled
+branch), `handle_declare`, and `handle_fetch` a `{:disconnect, _, _}`
+return they never previously produced (contract-valid per
+DBConnection, but the verified conformance facts moved). **B1 back to
+0 of 2**; next cover re-audits the callback return inventory +
+the `sync_after_transaction_control` addition inside handle_execute.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.
@@ -713,6 +720,13 @@ expression target) + 85 committed anchors green. `json_extract_path_test.exs`
 All probes re-run by the orchestrator (exit 0). Zero new findings. DRYNESS:
 **DRY (2 of 2)** — second consecutive clean covering run. Re-wet triggers
 UNCHANGED.
+RE-WET (2026-08-20, lap-5 step-0 ruling): the translation surface
+moved in Runs 28/31 — `expr(%Decimal{}, …)` now guard-routes (raises
+on rejects where it inlined), `column_type`'s float family
+(`:real`/`:double`/`:double_precision`) emits NUMERIC, and default
+rendering refuses structs/charlists via `UnsupportedDefaultError`.
+**B6 back to 0 of 2**; next cover re-anchors the affected emission
+paths (expr decimal clause, DDL column types, default rendering).
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which
@@ -1105,6 +1119,38 @@ ATTACH/TEMP targets; `Ecto.Multi` with a cancelled step; the
 `disconnect` telemetry `reason` on the cancelled branch (with B9);
 adversarial queuing of the guard's DirtyIo status read; F-B8-2's
 stream cancellation (blocked on xqlite `stream_fetch_cancellable`).
+COVERING RE-RUN (Run 32, 2026-08-20 — lap 5, solo; `driver.ex`
+byte-unchanged since `04e8363`, git-verified — the cover hunted the
+unreached seeds): **F-B8-7 (S2, FIXED, RED→green)** — the guard's
+THIRD uncovered door: `handle_begin(:savepoint)` never set the
+cached flag, so a TOP-LEVEL `Repo.transaction(fun, mode: :savepoint)`
+(a lone SAVEPOINT starts an implicit transaction) leaked durable
+post-failure writes — through cancels AND plain
+ON-CONFLICT-ROLLBACK violations (no timing needed), also via
+`Ecto.Multi`; the raw-SQL spelling of the same construct was already
+protected by the keyword sync (the flag decides, not SQLite). Fixed
+read-free: savepoint begin sets `:transaction`; releasing the
+OUTERMOST managed savepoint refreshes from SQLite
+(`released_savepoint_state/1`); no over-disconnect after RELEASE
+(pinned). Tests +3 deterministic. CLEAN with controls:
+`{:shared, owner}` sandbox × cancel (file byte-identical, post-cancel
+writes refused); ATTACH+TEMP rollback spans every schema (cancelled-
+read control); `Ecto.Multi` both shapes; the guard's status read
+under a SELF-POLICING saturation window (1 µs → 2.13 s median,
+verdict unmoved, cost = exactly one read; 50 ms deadline → 8.97 s =
+live F-B8-5/6-class re-measurement); core 151 ms vs 9,999 ms
+control; F-B8-2 blocker holds. Disconnect-`reason` taxonomy captured
+for B9 (all structured; cancel vs recycle share `:error`,
+distinguished via the execute-stop correlation — docs line owed).
+HANDOFF filed: `mode: :savepoint` on single operations
+(insert/update) is silently INERT here (Postgrex implements it in
+handle_execute) — B1/B2 court. DRYNESS: an S2 — **B8 stays 0 of 2,
+NOT DRY**; re-wets ALSO on the savepoint arms +
+`released_savepoint_state/1`. Next-pass seeds: declare/fetch under a
+top-level savepoint; the managed counter vs caller raw SAVEPOINT
+names; the guard's fail-open `_open_or_unknown` fallback (unpinned);
+F-B8-1 at 0.11.0; commit/rollback hooks × cancelled write;
+`mode: :savepoint` via repo config.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test
