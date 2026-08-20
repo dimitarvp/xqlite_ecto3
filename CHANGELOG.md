@@ -161,6 +161,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every pragma-bound repo-config value is validated at connect.**
+  SQLite's pragma parser never errors on an unrecognized value — it
+  silently picks a default, so `journal_mode: :walk` meant DELETE
+  mode, `synchronous: :ful` meant NORMAL, and `foreign_keys:
+  :nonsense` silently disabled FK enforcement (orphan rows accepted,
+  nothing to diagnose). `journal_mode`, `synchronous`, `temp_store`,
+  `foreign_keys`, `cache_size`, `auto_vacuum`, `wal_autocheckpoint`,
+  `mmap_size`, and `rich_fk_diagnostics` (a struct-match consumer, so
+  `"true"` used to silently disable the feature) now reject invalid
+  values with structured connect errors, matching the existing three
+  validators. `custom_pragmas` stays deliberately unvalidated (the
+  escape hatch) — documented as such.
+
+- **A UTF-8 BOM or a leading semicolon no longer hides transaction
+  control from the driver's state sync.** SQLite's tokenizer skips
+  both; the sync skipped only whitespace and comments, so
+  `<BOM>BEGIN` (what a Windows-authored .sql file contains) opened a
+  transaction the rollback guard could not see — post-failure writes
+  became durable — and `;COMMIT` left a stale flag that destroyed a
+  healthy pooled connection on the next ordinary error.
+
+- **OpenTelemetry `error.type` names the failing error class again.**
+  Since connect errors joined the `%XqliteEcto3.Error{}` wrap, every
+  adapter error mapped to the one value `"XqliteEcto3.Error"`. The
+  mapper now emits the struct's typed `:type` atom
+  (`"constraint_violation"`, `"database_busy_or_locked"`, …), as the
+  docs always claimed.
+
+- **Statement-cache telemetry events carry `:conn`.** The cache is
+  per connection, so the pool-wide `hit`/`miss`/`evicted` stream was
+  un-demultiplexable — a hit-rate metric was silently depressed by
+  `pool_size` misses per distinct statement. All three events now
+  carry the connection reference like every sibling event, and both
+  docs surfaces say the cache is per connection.
+
 - **`busy_timeout` repo config is validated at connect.** SQLite
   stores the timeout as a C int and silently clamps negatives and
   values past 2_147_483_647 to 0 — so `busy_timeout: :infinity` (or

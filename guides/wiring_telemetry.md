@@ -50,13 +50,16 @@ true
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
 | `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count`, `:diagnostics_status` |
-| `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:sql` |
-| `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:sql` |
-| `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:conn`, `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:conn`, `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
 
 The three statement-cache events are not spans: each carries
 `monotonic_time` (ns) and `cached_count`, the number of cached
-statements BEFORE the event's own action.
+statements BEFORE the event's own action. The cache is per
+connection — group by `:conn`, or a pool-wide hit rate is depressed
+by `pool_size` misses per distinct statement and `cached_count`
+interleaves independent counters.
 
 Every span event (`*, :start | :stop | :exception`) carries
 `monotonic_time` on `:start` and `monotonic_time` + `duration` on
@@ -77,6 +80,17 @@ A graceful pool or application shutdown does NOT emit
 its terminate callback runs (DBConnection does not trap exits there).
 Do not treat connect and disconnect counts as a balanced pair — every
 clean deploy leaves the connect count ahead.
+
+To correlate a disconnect with the statement that caused it, join on
+`:conn`: the `[:xqlite_ecto3, :disconnect]` event and the
+`[:xqlite_ecto3, :handle_execute]` `:stop` event whose `error_reason`
+is `{:disconnect, _}` carry the same connection reference. When the
+disconnect came from an operation error, the event's `:reason` is the
+wrapped `%XqliteEcto3.Error{}` and its `:type` says what failed; when
+it came from a cancel it is
+`%DBConnection.ConnectionError{reason: :error}` — indistinguishable
+from DBConnection's own checkout-deadline recycle, so use the matching
+`:stop` event's `error_reason` to tell those two apart.
 
 ### The `:exception` phase carries other metadata
 
@@ -99,7 +113,7 @@ error that took the whole transaction with it, a failed COMMIT — it is
 `{:disconnect, error}` instead: the same error, plus the fact that the
 connection is going away. Match both shapes.
 `XqliteEcto3.Telemetry.OpenTelemetry` looks inside the tuple, so
-`error.type` names the error either way.
+`error.type` carries the wrapped `%XqliteEcto3.Error{}`'s typed `:type` atom (`"constraint_violation"`, `"database_busy_or_locked"`, ...) either way — never the bare struct name.
 
 ## Composing layers
 
