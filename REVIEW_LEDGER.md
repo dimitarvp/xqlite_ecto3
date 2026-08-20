@@ -2638,3 +2638,31 @@ event-surface probe 9/9, OTel path unchanged.
   and where-chain forms.
 - **Findings: NONE** across ~105k total cases. `mix verify` GREEN
   (exit-file); file budget ~8-10s in-suite.
+
+---
+
+## Remedies — 2026-08-20 — F-B4-2: the decimal guard missed NUMERIC integer demotion
+
+- **F-B4-2 (S1, CONFIRMED + FIXED, RED→green).** Found by the boundary
+  property within hours of the run-count floor rising to 2000: CI's seed
+  generated `20700317912310410.0`, which the representability guard
+  ACCEPTED — its oracle compared the value against the float64's
+  SHORTEST-representation printing, and for this value the shortest
+  printing of the ROUNDED float echoes the original digits. SQLite's
+  NUMERIC affinity then demotes the integral REAL to INTEGER, which reads
+  back with the true rounded digits — stored `20700317912310408`, off by
+  two, silently. The exact class the guard was ruled into existence to
+  prevent. Fix: the guard's oracle now mirrors actual storage — an
+  integral float within int64 range compares against its exact integer
+  (the demotion path); everything else compares through the same
+  shortest-representation path the :decimal loader uses. Money-class
+  values stay accepted. Orchestrator-driven end to end: mechanism traced
+  through decimal's to_float/from_float sources and the loader clauses,
+  deterministic regression test added, RED reproduced by stashing only
+  the guard (2 failures at CI's seed 363614), GREEN 31/31 after.
+- Sequence note: the first red at the raised floor was a TEST-side
+  generator collision in the escape file's FK property (a generated
+  column literally named `id` duplicating the child pk — filtered,
+  `14e6692`); this one is the real thing. Two reds, one harness case,
+  one S1 — the floor is earning its keep. B4 re-wets (guard churn);
+  its re-cover reviews the new oracle adversarially.
