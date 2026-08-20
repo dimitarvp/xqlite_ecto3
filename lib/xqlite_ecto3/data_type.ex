@@ -143,7 +143,7 @@ defmodule XqliteEcto3.DataType do
       reraise XqliteEcto3.UnsupportedDefaultError.exception(
                 value: value,
                 reason: :unencodable,
-                column: Keyword.get(context, :column),
+                column: context |> Keyword.get(:column) |> normalize_column(),
                 type: Keyword.get(context, :type),
                 cause: e
               ),

@@ -211,13 +211,23 @@ defmodule XqliteEcto3.RebuildVerificationTest do
     end
 
     test "a trigger that was not re-created" do
-      before = snapshot(triggers: ["widgets_touch"])
+      before = snapshot(triggers: [{"main", "widgets_touch"}])
       actual = %{before | triggers: []}
 
       assert {:error, %RebuildVerificationError{} = error} = verify(before, [], actual)
       assert error.construct == :triggers
-      assert error.expected == ["widgets_touch"]
+      assert error.expected == [{"main", "widgets_touch"}]
       assert error.actual == []
+    end
+
+    test "a TEMP trigger re-created into the main schema" do
+      before = snapshot(triggers: [{"temp", "widgets_touch"}])
+      actual = %{before | triggers: [{"main", "widgets_touch"}]}
+
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, [], actual)
+      assert error.construct == :triggers
+      assert error.expected == [{"temp", "widgets_touch"}]
+      assert error.actual == [{"main", "widgets_touch"}]
     end
 
     test "a DESC the key recorded and the rebuild flattened" do

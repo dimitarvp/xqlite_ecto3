@@ -272,6 +272,7 @@ defmodule XqliteEcto3.MigrationTest do
 
       assert err.reason == :unencodable
       assert err.value == value
+      assert err.column == "c"
       assert %Protocol.UndefinedError{} = err.cause
     end
 

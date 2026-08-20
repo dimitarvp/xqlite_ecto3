@@ -184,6 +184,43 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert %{rows: [[2]]} = TestRepo.query!("SELECT id FROM rb_ailit WHERE body = 'third'")
     end
 
+    # An apostrophe inside a comment must not open a string literal: it
+    # would pair with the next real literal's opening quote and erase the
+    # CHECK declaration between them from the scan.
+    test "an apostrophe in a comment does not hide a CHECK declaration" do
+      create(
+        "CREATE TABLE rb_cmt(\n" <>
+          "  id INTEGER PRIMARY KEY, -- don't allow negatives\n" <>
+          "  qty INTEGER CHECK (qty >= 0),\n" <>
+          "  note TEXT DEFAULT 'x'\n)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_cmt(id, qty) VALUES (1, 5)")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_cmt, [{:modify, :note, :text, [null: true]}])
+      end
+
+      assert_raise XqliteEcto3.Error, fn ->
+        TestRepo.query!("INSERT INTO rb_cmt(id, qty) VALUES (2, -7)")
+      end
+    end
+
+    test "keywords separated only by a comment still count as declared" do
+      create(
+        "CREATE TABLE rb_cmt_oc(id INTEGER PRIMARY KEY, " <>
+          "a TEXT UNIQUE ON /* keep last */ CONFLICT REPLACE)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_cmt_oc(id, a) VALUES (1, 'x')")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_cmt_oc, [{:modify, :a, :text, [null: true]}])
+      end
+
+      assert %{rows: [[1, "x"]]} = TestRepo.query!("SELECT id, a FROM rb_cmt_oc")
+    end
+
     test "refuses when the table has generated columns, leaving them intact" do
       create("""
       CREATE TABLE rb_gen(
@@ -664,6 +701,38 @@ defmodule XqliteEcto3.TableRebuildTest do
       TestRepo.query!("INSERT INTO rb_trig(id, name) VALUES (1, 'a')")
       assert %{rows: [[1]]} = TestRepo.query!("SELECT n FROM rb_trig WHERE id = 1")
     end
+
+    # TEMP objects live in sqlite_temp_schema; the sandbox runs the whole
+    # test on one owned connection, so the trigger and the dance share it.
+    test "a TEMP trigger on the target survives the rebuild and still fires" do
+      create("CREATE TABLE rb_ttrig(id INTEGER PRIMARY KEY, name TEXT)")
+      create("CREATE TABLE rb_ttrig_log(entry TEXT)")
+
+      create(
+        "CREATE TEMP TRIGGER rb_ttrig_ai AFTER INSERT ON rb_ttrig " <>
+          "BEGIN INSERT INTO rb_ttrig_log(entry) VALUES (NEW.name); END"
+      )
+
+      assert {:ok, []} = run_alter(:rb_ttrig, [{:modify, :name, :text, [null: true]}])
+
+      assert %{rows: [["rb_ttrig_ai"]]} =
+               TestRepo.query!("SELECT name FROM sqlite_temp_schema WHERE type = 'trigger'")
+
+      TestRepo.query!("INSERT INTO rb_ttrig(id, name) VALUES (1, 'a')")
+      assert %{rows: [["a"]]} = TestRepo.query!("SELECT entry FROM rb_ttrig_log")
+    end
+
+    test "a TEMP view referencing the target refuses the rebuild pre-flight" do
+      create("CREATE TABLE rb_tview(id INTEGER PRIMARY KEY, name TEXT)")
+      TestRepo.query!("INSERT INTO rb_tview(id, name) VALUES (1, 'a')")
+      create("CREATE TEMP VIEW rb_tview_v AS SELECT name FROM rb_tview")
+
+      assert_raise ArgumentError, fn ->
+        run_alter(:rb_tview, [{:modify, :name, :text, [null: true]}])
+      end
+
+      assert %{rows: [[1, "a"]]} = TestRepo.query!("SELECT id, name FROM rb_tview")
+    end
   end
 
   describe "defaults carry through a rebuild" do
@@ -850,6 +919,34 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       assert %{rows: [[4]]} =
                TestRepo.query!("INSERT INTO rb_asc(name) VALUES ('d') RETURNING id")
+    end
+
+    test "an apostrophe in a comment does not hide AUTOINCREMENT" do
+      create(
+        "CREATE TABLE rb_cmt_ai(\n" <>
+          "  -- don't renumber\n" <>
+          "  id INTEGER PRIMARY KEY AUTOINCREMENT,\n" <>
+          "  note TEXT DEFAULT 'x'\n)"
+      )
+
+      TestRepo.query!("INSERT INTO rb_cmt_ai(note) VALUES ('a'), ('b')")
+      TestRepo.query!("DELETE FROM rb_cmt_ai WHERE id = 2")
+
+      assert {:ok, []} = run_alter(:rb_cmt_ai, [{:modify, :note, :text, [null: true]}])
+
+      assert %{rows: [[3]]} =
+               TestRepo.query!("INSERT INTO rb_cmt_ai(note) VALUES ('c') RETURNING id")
+    end
+
+    test "AUTOINCREMENT separated from its keywords by a comment is kept" do
+      create("CREATE TABLE rb_cmt_pk(id INTEGER PRIMARY /* rowids */ KEY AUTOINCREMENT, t TEXT)")
+      TestRepo.query!("INSERT INTO rb_cmt_pk(t) VALUES ('a'), ('b')")
+      TestRepo.query!("DELETE FROM rb_cmt_pk WHERE id = 2")
+
+      assert {:ok, []} = run_alter(:rb_cmt_pk, [{:modify, :t, :text, [null: true]}])
+
+      assert %{rows: [[3]]} =
+               TestRepo.query!("INSERT INTO rb_cmt_pk(t) VALUES ('c') RETURNING id")
     end
   end
 

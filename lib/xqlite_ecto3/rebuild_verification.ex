@@ -132,7 +132,7 @@ defmodule XqliteEcto3.RebuildVerification do
           foreign_keys: [foreign_key()],
           unique_constraints: [[index_column()]],
           indexes: %{schema: [String.t()], index_list: [String.t()]},
-          triggers: [String.t()],
+          triggers: [{String.t(), String.t()}],
           table_options: %{without_rowid: boolean(), strict: boolean()},
           autoincrement: boolean(),
           rowid: rowid(),
@@ -168,7 +168,7 @@ defmodule XqliteEcto3.RebuildVerification do
         schema: read_schema_objects(table_name, "index", query),
         index_list: index_names
       },
-      triggers: read_schema_objects(table_name, "trigger", query),
+      triggers: read_triggers(table_name, query),
       table_options: table_options,
       autoincrement: autoincrement?,
       rowid: read_rowid(table_name, table_options, query),
@@ -339,6 +339,25 @@ defmodule XqliteEcto3.RebuildVerification do
     |> Enum.sort()
   end
 
+  # Trigger identity includes the schema: a TEMP trigger on the table lives
+  # in sqlite_temp_schema and must come back as TEMP after a rebuild, so a
+  # name-only compare would miss a trigger migrating between schemas.
+  defp read_triggers(table_name, query) do
+    rows =
+      query.(
+        "SELECT 'main', name FROM sqlite_schema WHERE type = 'trigger' " <>
+          "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL " <>
+          "UNION ALL " <>
+          "SELECT 'temp', name FROM sqlite_temp_schema WHERE type = 'trigger' " <>
+          "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL",
+        [table_name]
+      )
+
+    rows
+    |> Enum.map(fn [schema, object_name] -> {schema, object_name} end)
+    |> Enum.sort()
+  end
+
   defp read_table_options(table_name, query) do
     rows =
       query.(
@@ -391,15 +410,19 @@ defmodule XqliteEcto3.RebuildVerification do
     )
   end
 
-  # Every way SQLite's own lexer quotes a piece of text: a string literal in
-  # single quotes, and the three forms of quoted identifier. All four are
-  # scanned in one left-to-right pass, which is what keeps the quote in
-  # `"it's_v"` from opening a literal that runs to the next one.
-  @quoted_text ~r/"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|'(?:[^']|'')*'/
+  # Every token SQLite's own lexer treats as opaque text: the two comment
+  # forms, a string literal in single quotes, and the three forms of quoted
+  # identifier. All six are scanned in one left-to-right pass, so whichever
+  # opens first consumes the span: a comment inside a literal stays literal
+  # text, and an apostrophe inside a comment never opens a literal (it
+  # would otherwise pair with the next real literal's opening quote and
+  # erase everything between them — CHECK clauses included). An unclosed
+  # block comment runs to the end of the text, as SQLite's lexer has it.
+  @quoted_text ~r{--[^\n]*|/\*[\s\S]*?(?:\*/|\z)|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|'(?:[^']|'')*'}
 
   @doc """
-  A stored `CREATE TABLE` text with the contents of its string literals
-  emptied out.
+  A stored `CREATE TABLE` text with its string literals emptied out and
+  its comments reduced to a single space.
 
   SQLite keeps the text of a CREATE statement exactly as it was typed, so a
   scan for a keyword also reads the words inside `DEFAULT 'check pending'`
@@ -408,8 +431,10 @@ defmodule XqliteEcto3.RebuildVerification do
   words to trip on; a literal escapes a quote by doubling it, which makes
   the boundaries unambiguous without parsing anything.
 
-  Comments are left as they are: a keyword written inside one still counts
-  as declared, which keeps the scan on the safe side.
+  A comment becomes one space, for two reasons: its text must not leak
+  into the scan (an apostrophe inside it must not open a literal), and
+  SQLite treats a comment as whitespace, so keywords separated only by a
+  comment (`PRIMARY /* c */ KEY`) must scan as separated by whitespace.
   """
   @spec without_string_literals(String.t()) :: String.t()
   def without_string_literals(create_sql) when is_binary(create_sql) do
@@ -417,6 +442,8 @@ defmodule XqliteEcto3.RebuildVerification do
   end
 
   defp blanked(<<?', _rest::binary>>), do: "''"
+  defp blanked(<<?-, ?-, _rest::binary>>), do: " "
+  defp blanked(<<?/, ?*, _rest::binary>>), do: " "
   defp blanked(quoted_name), do: quoted_name
 
   defp read_autoincrement?(table_name, query) do

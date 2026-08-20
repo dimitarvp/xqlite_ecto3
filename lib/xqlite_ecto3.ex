@@ -917,10 +917,16 @@ defmodule XqliteEcto3 do
   defp refuse_dependent_schema_objects!(meta, table, opts) do
     table_name = to_string(table.name)
 
+    # TEMP objects live in sqlite_temp_schema, not sqlite_schema; a TEMP
+    # view over the target would otherwise slip past this pre-flight and
+    # kill the dance mid-way in SQLite's own rename re-parse.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT type, name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND " <>
+        "SELECT 'main', type, name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND " <>
+          "(type = 'view' OR (type = 'trigger' AND lower(tbl_name) <> lower(?1))) " <>
+          "UNION ALL " <>
+          "SELECT 'temp', type, name, sql FROM sqlite_temp_schema WHERE sql IS NOT NULL AND " <>
           "(type = 'view' OR (type = 'trigger' AND lower(tbl_name) <> lower(?1)))",
         [table_name],
         opts
@@ -929,9 +935,9 @@ defmodule XqliteEcto3 do
     pattern = word_pattern(table_name)
 
     candidates =
-      for [type, name, sql] <- rows,
+      for [schema, type, name, sql] <- rows,
           Regex.match?(pattern, sql),
-          do: %{type: type, name: name, sql: sql}
+          do: %{schema: schema, type: type, name: name, sql: sql}
 
     case candidates do
       [] -> :ok
@@ -984,17 +990,23 @@ defmodule XqliteEcto3 do
   end
 
   defp rewritten_dependents(meta, candidates, opts) do
+    # Keyed by {schema, name}: a TEMP object may share its name with a
+    # main-schema one, and the rename rewrites stored SQL in both schemas.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT name, sql FROM sqlite_schema WHERE sql IS NOT NULL",
+        "SELECT 'main', name, sql FROM sqlite_schema WHERE sql IS NOT NULL " <>
+          "UNION ALL " <>
+          "SELECT 'temp', name, sql FROM sqlite_temp_schema WHERE sql IS NOT NULL",
         [],
         opts
       )
 
-    stored = Map.new(rows, fn [name, sql] -> {name, sql} end)
+    stored = Map.new(rows, fn [schema, name, sql] -> {{schema, name}, sql} end)
 
-    Enum.filter(candidates, fn candidate -> Map.get(stored, candidate.name) != candidate.sql end)
+    Enum.filter(candidates, fn candidate ->
+      Map.get(stored, {candidate.schema, candidate.name}) != candidate.sql
+    end)
   end
 
   defp dependents_message(table_name, hits) do
@@ -1636,16 +1648,45 @@ defmodule XqliteEcto3 do
     # For a trigger, sqlite_schema.tbl_name records the spelling the
     # CREATE TRIGGER statement used — not the table's stored spelling — so
     # a raw compare would skip the trigger and the rebuild would drop it.
+    # TEMP triggers on the target live in sqlite_temp_schema and die with
+    # the dropped table exactly like main-schema ones, so they are captured
+    # and re-created too. TEMP indexes need no such union — SQLite refuses
+    # a TEMP index on a non-TEMP table.
     %{rows: rows} =
       Ecto.Adapters.SQL.query!(
         meta,
-        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' " <>
+        "SELECT 'main', name, sql FROM sqlite_schema WHERE type = 'trigger' " <>
+          "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL " <>
+          "UNION ALL " <>
+          "SELECT 'temp', name, sql FROM sqlite_temp_schema WHERE type = 'trigger' " <>
           "AND lower(tbl_name) = lower(?1) AND sql IS NOT NULL",
         [to_string(name)],
         opts
       )
 
-    Enum.map(rows, fn [trg_name, sql] -> %{name: trg_name, sql: sql} end)
+    Enum.map(rows, fn [schema, trg_name, sql] ->
+      %{schema: schema, name: trg_name, sql: recreate_trigger_sql(schema, trg_name, sql)}
+    end)
+  end
+
+  # sqlite_temp_schema stores a temp trigger's SQL with the TEMP keyword
+  # stripped and the prefix canonicalized to `CREATE TRIGGER` (holds for
+  # the TEMP, TEMPORARY, and temp.-qualified spellings alike), so replaying
+  # it verbatim would re-create the trigger in the MAIN schema. Reinstate
+  # TEMP; a prefix that breaks the invariant is refused, not guessed at.
+  defp recreate_trigger_sql("main", _trg_name, sql), do: sql
+
+  defp recreate_trigger_sql("temp", trg_name, sql) do
+    case sql do
+      "CREATE TRIGGER" <> rest ->
+        "CREATE TEMP TRIGGER" <> rest
+
+      _other ->
+        raise ArgumentError,
+              "cannot rebuild: TEMP trigger #{inspect(trg_name)} has stored SQL in an " <>
+                "unexpected form, so re-creating it in the temp schema is not possible. " <>
+                "Drop it, run this migration, then recreate it."
+    end
   end
 
   # sqlite_sequence cannot answer "is AUTOINCREMENT declared" — its row
