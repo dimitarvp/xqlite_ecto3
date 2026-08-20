@@ -55,6 +55,16 @@ after the S0–S2 burn-down.
 
 ## Open (S3 — tracked, never dropped)
 
+- [F-B2-18-adjacent] (S3, B4 court, from Run 30)
+  `Connection.default_expr/1` falls off the end of a private function
+  on a default it has no clause for — a non-byte-aligned bitstring
+  default raises a bare `FunctionClauseError` from inside a MIGRATION
+  (which is how the `:bitstring_type` exclusion crashes the whole
+  vendored suite when lifted). It should end in a structured refusal
+  naming the column and value (`UnsupportedTypeError`-shaped), per the
+  errors-carry-maximum-structure rule — same pattern as the
+  `F-B2-14-adjacent` → `UnencodableParameterError` closure. (Run 30,
+  B2 → B4 court)
 - [F-B9-13] (S3, from Run 29) `fk_diagnostics_test.exs`'s telemetry
   assertion fails under the `XQLITE_ECTO3_TELEMETRY=off` build
   (pre-existing; invisible in CI because the `telemetry_disabled`
@@ -334,15 +344,17 @@ after the S0–S2 burn-down.
   FK-merge in the rebuild engine collapses `:alter_foreign_key`,
   migration.exs:664, and half of `:alter_primary_key` — the largest
   single exclusion reduction available. (Run 16 → folded Run 24, B2)
-- [F-B2-8] (S3) `:array_type` and `:microsecond_precision` are each
-  over-broad by exactly one hidden PASSING test (type.exs:523 "nested
-  embeds" — touches only the map column; interval.exs:194
-  "datetime_add with microsecond" — asserts the rounding SQLite
-  actually does). Narrowing costs 8 and 4 location tuples
-  respectively, and the shared migration is exclusion-aware for the
-  type tags — recorded, not churned. (Run 16, B2; counts re-verified
-  unchanged and pointers corrected to the `test` lines in Run 24 —
-  line filters snap to the nearest test at or before the line.)
+- [F-B2-8] (S3) `:microsecond_precision` is over-broad by exactly one
+  hidden PASSING test (interval.exs:194 "datetime_add with
+  microsecond" — asserts the rounding SQLite actually does; confirmed
+  again in Run 30). Narrowing costs 4 location tuples — recorded, not
+  churned. The `:array_type` half of this entry was WRONG by five: the
+  tag hid SIX passing tests, invisible because the shared migration
+  only creates the array tables when the tag is not excluded (the
+  isolate-run measured the missing table, not the adapter). CLOSED in
+  Run 30 by F-B2-17's narrowing — the tag is gone, three location
+  tuples remain, the suite gained six tests. (Run 16, B2; Run 24
+  pointer sweep; Run 30 correction + closure.)
 - [F-B2-14-adjacent] CLOSED by F-B4-4 (Run 25): adjudicated CONFIRMED
   S2 and fixed — `UnencodableParameterError` (value/index/reason) from
   attempt-then-structure JSON encoding; encoder-bearing structs keep

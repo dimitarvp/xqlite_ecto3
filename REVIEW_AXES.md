@@ -175,6 +175,39 @@ clauses / the shared support migration's exclusion-awareness list.
 Next-pass seeds: adapter-owned probes breaking the self-fulfilling three;
 the "supported (n/m)" row counts re-check; line-pointer discipline
 standing; upstream-bump watch on the new refusals.
+COVERING RE-RUN (Run 30, 2026-08-20 — lap 4; the seeded probes built):
+**F-B2-17 (S2, FIXED)** — `:array_type` hid SIX passing upstream tests
+(the shared migration creates the array tables only when the tag is
+absent; every isolate-run since Run 4 measured the missing table; the
+tags doc even called the shipped `x in t.ints` → JSON_EACH translation
+unsupported). Tag dropped, three location tuples added (test lines
+rg-verified), census flipped 434/32 → **440/26 green** — the suite
+gained six tests. **F-B2-18 (S2, docs-FIXED)** — `:bitstring_type`
+blamed SQLite while our `default_expr/1` raises a bare
+FunctionClauseError first (non-byte-aligned bitstring default, inside
+the shared migration — lifting the tag crashes ALL 434 tests);
+rationale now owns the sequence; structured-refusal seed filed to the
+B4 court. **F-B2-19 (S3, FIXED)** — the type.exs:362 tuple named a
+body line (test = 359), the lone violation of its own three-lines-up
+rule. **F-B2-20 (S3, FIXED)** — the duration rationale cited
+`encode_param/1` (arity 2 since Run 25, structured error now); a
+listed re-wetter fired without a sweep. Method banked: full-suite
+isolation runs need `--no-warnings-as-errors` (four upstream Tds
+warnings otherwise exit-1 a green suite). CLEAN: all n/m counts exact;
+no exclusion passes at HEAD; the four ALTER pointers survived Run 28's
+refusals; doors live-but-unreachable (loud on a bump); bijection holds
+post-fix. Run 24's "no adapter frame" sentence corrected (loose, not
+reusable as evidence). DRYNESS: finding run — **B2 stays 0 of 2, NOT
+DRY** — with the gate RULING: clean-run counting starts from the
+corrected list only, next pass re-covers the corrected surface with
+the adapter-owned probes as standing instruments. Re-wets ALSO on:
+the migration's exclusion-awareness list (`:bitstring_type`,
+`:duration_type` remain isolate-untestable), `default_expr/1`'s
+clause list, this run's narrowing (three tuples + the 440/26 anchor).
+Next-pass seeds: the corrected surface inside the suite; the three
+array tuples across an upstream bump; other migration-conditional
+tables in vendored files; the duration subtlety split; a mechanical
+line-pointer sweep loop.
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we

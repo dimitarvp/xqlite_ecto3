@@ -4042,3 +4042,109 @@ the `disconnect` event's `reason` under the NEW disconnect paths
 native-vs-nanosecond on a non-Linux runtime; `group_fk_rows/1`'s
 `foreign_key_list` destructures still lack fallthroughs (the fix-7
 class, flagged not widened — filed).
+
+---
+
+## Run 30 — 2026-08-20 — dryness lap 4, batch 4: B2 (the self-fulfilling exclusions finally probed)
+
+Single Opus reviewer at `efc6a72`, xqlite `2700446`. Exclusion
+artifacts drift-free since Run 24; the full vendored census at HEAD
+matched Run 24's anchor EXACTLY (434/32, exit 0) across 12 commits
+including a 673-line engine change. Method correction BANKED: the
+full-suite isolation run needs `--no-warnings-as-errors` (four
+upstream Tds-adapter warnings in vendored `logging.exs`/`repo.exs`
+otherwise force exit 1 on a green suite; the repo's own runner already
+special-cases it at `test_seq.ex:63`). Gate: key probes re-driven
+(hidden-pass builders exit 0; the pointer snap to :359 visible);
+fixes implemented BY THE ORCHESTRATOR directly (list + doc edits);
+the narrowed list verified by the census flipping to **440 passed /
+26 excluded, exit 0** — the exact predicted arithmetic (+6 passing,
+−9 tag +3 locations).
+
+### B2 — both S2s came from the blind spot Run 24 named and seeded
+
+- **F-B2-17 (S2, CONFIRMED, FIXED).** `:array_type` hid SIX passing
+  upstream tests, not the one on file — invisible to every isolate-run
+  since Run 4 because the shared support migration creates the array
+  tables ONLY when the tag is absent from the exclusion list, and
+  `ExUnit.configure/1` runs before command-line filters, so
+  `--only array_type` structurally cannot produce ground truth (six
+  of its eight failures were bare `no such table`). The tags-doc row
+  even named `x in t.ints` as unsupported — it is a SHIPPED, WORKING
+  translation (`1 IN (SELECT value FROM JSON_EACH(t0."ints"))`).
+  Adapter-owned probes built the tables and ran the verbatim upstream
+  bodies: type.exs 269/282/491/515/523 + logging.exs:840 all PASS;
+  only type.exs:234 (array literals + `update_all push:/pull:`),
+  sql.exs:30 (`$1::text[]`), sql.exs:38 (`array[1,2,3]`) genuinely
+  fail. FIX: tag exclusion dropped (un-blocking the migration), three
+  location tuples added (test lines rg-verified at gate — the
+  reviewer's numbers were exact), tags-doc row rewritten to
+  "supported (6/9)", F-B2-8's array half corrected (wrong by five)
+  and closed. Census: 440/26 green.
+- **F-B2-18 (S2, CONFIRMED, FIXED as docs).** `:bitstring_type`'s
+  rationale ("SQLite has no native bitstring type") named the wrong
+  first cause: `Connection.default_expr/1` has NO clause for a
+  non-byte-aligned bitstring default (`is_binary(<<42::6>>)` is
+  false) and raises a bare `FunctionClauseError` INSIDE the shared
+  migration — so un-excluding the tag crashes `test_helper.exs` and
+  all 434 tests, not one. Plain `:bitstring` and `size:` columns
+  build fine; a bitstring PARAMETER fails structured. The exclusion
+  stays (a non-byte-aligned bitstring has no SQLite storage form —
+  the test can never pass); the rationale now owns the sequence in
+  both artifacts. The hole survived Run 28's refactor of that very
+  function (the map/list clause rewrite touched the clause list
+  around it). Adjacent seed FILED to the B4 court
+  ([F-B2-18-adjacent]): `default_expr/1` must end in a structured
+  refusal, the F-B2-14-adjacent pattern.
+- **F-B2-19 (S3, CONFIRMED, FIXED).** The `type.exs:362` location
+  tuple named a BODY line (the test line is 359) — the only violation
+  among the six, sitting three lines below the comment codifying the
+  rule; the F-B2-15 sweep missed it. Corrected in the list + both doc
+  references. (It excluded the right test today via the snap — the
+  defect was bump-fragility.)
+- **F-B2-20 (S3, CONFIRMED, FIXED).** The `:duration_type` rationale
+  cited `encode_param/1` — the function has been `encode_param/2`
+  since Run 25, and the raise is now a structured
+  `UnencodableParameterError`. A LISTED re-wet trigger fired without
+  a rationale sweep; corrected.
+- **CLEAN (controls named):** all three "supported (n/m)" counts hold
+  exactly (4/5, 7/8, 3/4; exit-code control: `--only values_list` →
+  5 passed exit 0); no excluded tag or location passes at HEAD (12
+  tags + 6 locations swept; `:microsecond_precision`'s single hidden
+  pass confirmed as interval.exs:194, exactly as F-B2-8 records); the
+  four ALTER pointers survived Run 28's four new refusals
+  (`refuse_reference_changes!` still fires first — the F-B2-12 class
+  did not recur); the named re-wet triggers did not fire
+  (`:immediate` default, pool_size 1, `binary_id_storage`,
+  `column_type/2`, `lock_for_migrations/3` all unchanged); tag list ↔
+  tags doc in exact bijection (now re-verified POST-fix: 11 tags + 9
+  locations). Seed 4 ANSWERED: `refuse_unknown_column!` and the
+  removed-key door are live (RED controls fire) and unreachable from
+  the current vendored surface — on an upstream bump they fail LOUDLY;
+  no exclusion absorbs them.
+- Ledger-claim correction (Run 24): its "six permanent-limit tags
+  correctly attributed (no adapter frame)" is loose — `:prefix` and
+  the two `on_delete` column-list tags raise from adapter frames
+  (honest rationales, SQLite genuinely the blocker; the sentence just
+  must not be reused as no-adapter-frame evidence).
+- Dryness: finding run — **B2 stays 0 of 2, NOT DRY** — with a RULING
+  adopted at gate: clean-run counting starts only now that the
+  F-B2-17/18 corrections landed, and the next pass must re-cover the
+  CORRECTED surface with the adapter-owned probes as standing
+  instruments (three exclusions were untestable by the old method —
+  a clean run scored on it would have measured the blind spot).
+  Re-wet triggers ALSO: the shared support migration's
+  exclusion-awareness list (any tag it names is untestable by
+  isolate-run — currently `:bitstring_type`, `:duration_type`),
+  `Connection.default_expr/1`'s clause list, and this run's own list
+  narrowing (the three new location tuples + the 440/26 anchor).
+- Completeness critic (next B2 pass): re-cover the narrowed surface
+  inside the suite (done once at gate — keep it standing); whether
+  the three array location tuples survive an `ecto`/`ecto_sql` bump
+  (six formerly-hidden tests now run unguarded — deliberate); sweep
+  OTHER vendored files for migration-conditional tables beyond the
+  three flagged tags; `:duration_type`'s subtlety split (its rationale
+  IS verified — the encoder raises before the missing table; it stays
+  untestable only in that fixing the encoder would not make the tests
+  pass); make the line-pointer sweep mechanical (one loop comparing
+  requested vs reported lines — it found F-B2-19 in seconds).
