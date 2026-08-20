@@ -2529,3 +2529,44 @@ event-surface probe 9/9, OTel path unchanged.
   `rebuild_verification.ex` / `fetch_autoincrement_flag!` /
   `refuse_removed_primary_key!` / `verify_structure!`. The law property
   itself becomes standing coverage for every future B7 pass.
+
+---
+
+## Run 18 — 2026-08-20 — property/law layer, item 2: escape/quote round-trips
+
+- Base: `c246b0d`. Opus implementer; orchestrator gate: fresh-seed re-runs
+  (42, 31337 — seeds the implementer never used, 7/7 each), the finding
+  repro re-driven, own `mix verify` (exit-file).
+- **The layer:** `escape_roundtrip_law_test.exs` — SEVEN properties, one
+  per escaping surface, ~12,340 generated cases per seed, oracle = live
+  SQLite in every one (never a re-implementation; every read-back binds
+  the name as a PARAMETER so the adapter's quoting is the only quoting in
+  the loop): inlined string literals (select AND the where-match half that
+  catches over-escaping as silent no-match); DDL column defaults;
+  table+column identifiers end-to-end; rebuild-path string literals
+  (default + sqlite_sequence name, with a set-equality check that would
+  catch a mangled DELETE); the unique-index-name pragma path; the
+  FK-diagnostics pragma path; JSON keys through BOTH the literal and
+  runtime path forms. Shared exotic-text generator (57 troublemakers incl.
+  quotes/backslashes/comment-markers/injection shapes/unicode); NUL
+  excluded with the citation (xqlite rejects interior NUL in SQL —
+  `reject_interior_nul`, query.rs — verified live; NUL in bound
+  parameters already covered elsewhere).
+- **Finding: NONE new — one CORROBORATION.** The generator independently
+  re-derived F-B5-5 (Run 14): a table name containing `.` or `", "`
+  mis-parses in xqlite's constraint-message split, now SHARPENED — the
+  mis-parsed table means `PRAGMA index_list("")` finds nothing, so the
+  changeset matcher gets a derived name built from a nonexistent table.
+  Quoting itself held (table created, index fired, separator-free names
+  round-trip the real index name). Backlog entry updated; the property
+  excludes the two separators with the parser named, so the law stays
+  about quoting. Repro banked.
+- Adjacent facts recorded: `Ecto.Migration.Index` STRING columns are raw
+  SQL expressions by upstream ecto_sql convention (unquoted by design —
+  not an escaping hole); control-character/emoji/digit-string/empty JSON
+  keys all resolve through both path forms.
+- Escaping surfaces now under standing generator law: `escape_string`,
+  `quote_entity`/`escape_identifier`, `quote_string` (both call sites),
+  both `quote_ident` copies, `escape_json_key` + the runtime JSON
+  escaping. All seven green at HEAD. `mix verify` GREEN (exit-file), file
+  budget ~10s in-suite.

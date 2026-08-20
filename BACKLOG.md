@@ -126,6 +126,15 @@ after the S0–S2 burn-down.
   degrades instead (nonexistent-table lookup → derived name).
   Partially unfixable — SQLite's message grammar is ambiguous for such
   names. Crafted-schema reachability. (Run 14, B5)
+  Sharpened (Run 18): the escape-law generator independently re-derived
+  it (shrunk case: table `esc &, ` → parsed table `""` → `PRAGMA
+  index_list("")` finds nothing → the changeset matcher receives a
+  derived name built from a nonexistent table). Quoting held on every
+  surface; the failure is purely the message split. A remedy sketch if
+  ever wanted: when the parsed table does not exist in sqlite_schema,
+  degrade the unique-name lookup to `{:unavailable,
+  {:unparseable_violation_table, raw}}` instead of running the pragma
+  on garbage — honest reporting without touching the parse.
 - [F-B5-7] (S3) `unique_index_lookup: :ok` with `unique_index_names:
   []` cannot distinguish "no named unique index matched" from "the
   pragma saw no rows at all": a stale per-connection schema cache, a
