@@ -749,6 +749,30 @@ on rejects where it inlined), `column_type`'s float family
 rendering refuses structs/charlists via `UnsupportedDefaultError`.
 **B6 back to 0 of 2**; next cover re-anchors the affected emission
 paths (expr decimal clause, DDL column types, default rendering).
+COVERING RE-RUN (Run 34, 2026-08-20 — lap 5, batch 3): all three
+churned paths re-anchored live (SQL + results). THREE findings —
+F-B6-4 (S2, FIXED): the upcase passthrough still emitted
+REAL-affinity DDL for `:float8`/`:float4`/`:"double precision"`,
+silently truncating decimals past 2^53 through the enumeration gap
+in Run 31's closure; fixed TOTAL — the passthrough now applies
+SQLite's own affinity rule and rewrites any would-be-REAL spelling
+to NUMERIC, making the docs claim true for unenumerated spellings
+too. F-B6-5 (S3, FIXED): UnsupportedDefaultError.column atom on two
+paths / string on the third — normalized to string. F-B6-6 (S3,
+docs-fixed + B7 menu): add-with-non-constant-fragment-default is
+row-count dependent by SQLite's own rule (fresh-DB green, prod
+red); README bullet landed. Clean: expr-decimal guard (zero
+door-disagreements, storage/results agreement by real inserts, 14
+construction routes all parameterize), float family + 34-spelling
+walk (the `-0.0` sign loss predates the churn, raw-REAL control),
+36 structured default refusals + 15 supported defaults reading back
+through rebuilds, 376 committed anchors green, Run-31-S1
+neighborhood agreement (comparison, not arithmetic, is the
+vulnerable shape). The `unique_constraints/1` churn handed to
+B5/B2. DRYNESS: findings — **B6 stays 0 of 2, NOT DRY**. Re-wet
+triggers GROW: `column_type/2`'s affinity rewrite +
+`unsupported_default!/3`'s column normalization, plus the standing
+list.
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which

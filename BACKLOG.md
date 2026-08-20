@@ -94,6 +94,23 @@ after the S0–S2 burn-down.
   designed-shape decision for the whole error surface, not a local
   patch; `cannot_open_database` already got its specific clause
   (path + code in details) as the Run-33 precedent. (Run 33, B1)
+- [F-B6-6-menu] (maintainer menu, B7 court, from Run 34) `alter
+  table … add` with a non-constant `default:` fragment is row-count
+  dependent by SQLite's own ADD COLUMN rule (empty table OK,
+  populated table errors) — documented in the README at Run 34's
+  gate. The implement option: route such adds through the existing
+  rebuild engine (which recreates the table and is unaffected), or
+  refuse them loudly pre-flight so dev and prod fail the same way.
+  Feature-taste call. (Run 34, B6 → B7)
+- [R34-handoff-unique-constraints] (seed, B5/B2 court, from Run 34's
+  churn scan) `to_constraints/2` now routes unique violations
+  through `unique_constraints/1` (connection.ex:106, :164-186),
+  which picks a live index name only when it is the single
+  non-autoindex candidate. Error-mapping surface, emits no SQL —
+  outside B6's court and deliberately unprobed at Run 34. The next
+  B5 (or B2) cover owns its verification: name-pick correctness,
+  the multi-candidate fallback, autoindex handling, and the
+  changeset-matching consequence. (Run 34, B6 → B5/B2)
 - [F-B8-9-docs] (S3, docs, from Run 32) The
   `[:xqlite_ecto3, :disconnect]` event cannot distinguish our cancel
   from DBConnection's own checkout-deadline recycle — both carry

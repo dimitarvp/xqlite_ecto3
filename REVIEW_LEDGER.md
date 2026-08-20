@@ -4583,3 +4583,110 @@ exactly the predicted nine) → 108/108 green (fixes applied).
   is a designed-shape decision (error_wrap_test pins details: nil).
 
 THIRTEEN straight finding runs.
+
+## Run 34 — 2026-08-20 — lap 5, batch 3: B6 solo (translation re-anchor over the Runs-28/31 churn)
+
+Single Opus reviewer at `80257e4`; xqlite 0.11.0 (hex), SQLite 3.53.2
+probe-confirmed. Gate: all eight probes re-driven by the orchestrator
+(rc=0 each, load-bearing outputs read line-by-line); fixes implemented
+BY THE ORCHESTRATOR; stash-RED 4 red (exactly the predicted four) →
+66/66 green.
+
+- **F-B6-4 (S2, CONFIRMED, FIXED, RED→green).** Run 31's "the adapter
+  now emits no REAL-affinity columns at all" closure was incomplete:
+  `column_type/2`'s upcase passthrough still turned `:float8`,
+  `:float4`, and `:"double precision"` into REAL-affinity DDL, so a
+  `:decimal` written into such a column was silently converted to
+  float64 — the exact F-B4-5 consequence through the enumeration gap,
+  contradicting both the data_type moduledoc and the README claim.
+  Reachability is ordinary: Ecto's own Postgres adapter passes
+  unknown type atoms through, so `add :price, :float8` is the
+  sanctioned way to write a DB-specific float type, and a
+  Postgres-schema port carries them verbatim. Probed end-to-end
+  (migration → Repo.insert! → Repo.get!): `12345678901234567` came
+  back `…568` from FLOAT8/FLOAT4/DOUBLE PRECISION columns with no
+  error anywhere; clean-column RED controls exact. FIX (the TOTAL
+  variant — the reviewer's option 2, chosen over enumerating three
+  more clauses because enumeration was the original failure mode):
+  the passthrough now applies SQLite's own affinity determination —
+  a spelling containing REAL/FLOA/DOUB with none of
+  INT/CHAR/CLOB/TEXT/BLOB (which win first in SQLite's rule order)
+  is rewritten to NUMERIC; everything else passes through unchanged.
+  This makes the moduledoc and README claims TRUE for every spelling,
+  enumerated or not. Committed pins (data_type_test +4): the named
+  family, the three PG spellings, the rule itself (`:floatish`,
+  `:big_real`), and earlier-rule passthrough controls (`:smallint`,
+  `:varchar`); the live truncation proof stays in the probe manifest.
+- **F-B6-5 (S3, CONFIRMED, FIXED).** `UnsupportedDefaultError.column`
+  was an atom on the plain and rebuild-ADD paths but a STRING on the
+  rebuild-MODIFY path (the name comes from pragma_table_xinfo there),
+  so one matcher could not cover the one error. Normalized to string
+  in `unsupported_default!/3` (atom→string is safe; the reverse would
+  mean String.to_atom on schema text), typespec narrowed to
+  `String.t() | nil`, and FOUR committed atom pins flipped — the
+  reviewer's "only committed pins are migration_test:234/:288" claim
+  was incomplete: the first gate verify ran RED on two more `:tag`
+  pins (table_rebuild_test:757, rebuild_verification_test:719),
+  sitting twenty lines from already-string pins ("v", "price") in
+  the same files — the F-B6-5 drift frozen into the suite itself.
+  The gate's own verify caught it; re-verified green on the
+  corrected tree before commit.
+- **F-B6-6 (S3, CONFIRMED, docs-fixed + menu).** `alter table … add`
+  with a non-constant `default:` fragment follows SQLite's own ADD
+  COLUMN rule: OK on an empty table, "Cannot add a column with
+  non-constant default" on a populated one — so a migration passes in
+  dev/CI against a fresh database and fails in production. The
+  adapter renders it without comment and `add` never reaches the
+  rebuild engine (`requires_rebuild?/1` is :modify-only). Probed pure
+  (empty vs populated × CURRENT_TIMESTAMP / (1+1) / parenthesized
+  JSON constant — the Run-31 JSON defaults are constants and SAFE).
+  README Known-limitations bullet landed (+ STE draft mirror in its
+  voice); the implement-option (route such adds through the rebuild
+  engine) filed as a maintainer menu — B7 court.
+- **Clean census (controls named):** churned path 1 — the
+  `expr(%Decimal{})` guard: 11 samples through both doors with ZERO
+  accept/refuse disagreements; storage agreement proven by real
+  inserts (9 samples, same storage class, same value, SQLite `=`
+  agrees; the `1E+30` 31-digit-integer-literal → REAL 1.0e30 case
+  matches the param path exactly); row-level agreement on a live
+  WHERE; 14 ordinary construction routes ALL parameterize (the raise
+  is unreachable from normal queries — hand-built AST RED inlines).
+  Churned path 2 — float family: NUMERIC declared by real
+  migrations, 12-value float round-trip exact (the lone `-0.0 → 0.0`
+  sign loss reproduces on a raw REAL column, so it predates Run 31
+  and lives at the driver/BEAM boundary; `-0.0 == 0.0` so nothing
+  user-visible turns on it); 34-spelling walk + 15-type live
+  round-trip clean. Churned path 3 — defaults: 36 live refusals (9
+  classes × 4 entry points) all structured; 15 supported defaults
+  render AND read back, and survive a rebuild byte-identically
+  (post-rebuild DDL drops the JSON parens cosmetically — carried
+  text, proven equivalent by read-back); renderer 3's refusal tail is
+  unreachable by construction (stated so the next cover skips it).
+  Standing anchors: 376 committed tests over 13 files green.
+  Run-31-S1 neighborhood: HAVING/fragment/coalesce decimal
+  comparisons agree with SQLite arithmetic through both doors at
+  every threshold; the TEXT-literal RED differs where truth says it
+  must; honest null result on record — SQLite's `+` coerces TEXT
+  operands numerically, so ARITHMETIC is not the vulnerable shape,
+  comparison is.
+- **Churn-scan handoff (B5/B2 court, seeded):** the range's fifth
+  churn item — `to_constraints/2` now routes through
+  `unique_constraints/1` (live index-name pick when it is the single
+  non-autoindex candidate) — emits no SQL; it is error-mapping
+  surface and was deliberately NOT probed here. The next B5 (or B2)
+  cover owns it.
+- Dryness: an S2 — **B6 stays 0 of 2, NOT DRY**; the fix re-wets
+  `column_type/2` (the affinity rewrite) and the default-refusal
+  column field. Completeness critic (next B6 pass): the passthrough's
+  NUMERIC-affinity leftovers (`:jsonb` → JSONB lands on NUMERIC
+  affinity — a bare-number JSON document stored in such a column
+  coerces to INTEGER; unprobed); `references(type: :float8)` live;
+  the `:decimal` loader breadth items from Run 31's critic (BLOB
+  decimals, decimals in :map fields, {:array, :decimal}, insert_all
+  placeholders, on_conflict set: read-back); non-constant defaults
+  beyond CURRENT_TIMESTAMP/(1+1); atom-vs-string drift in the OTHER
+  structured errors (UnsupportedTypeError.type, constraint structs)
+  now that UnsupportedDefaultError.column is normalized;
+  escape_string/limit/quote_entity stay anchor-only until touched.
+
+FOURTEEN straight finding runs.
