@@ -24,11 +24,17 @@ defmodule XqliteEcto3.Query do
     defp encode_param(%Date{} = d, _index), do: Date.to_iso8601(d)
     defp encode_param(%Time{} = t, _index), do: Time.to_iso8601(t)
 
+    # A decimal binds as a NUMBER, never as text: SQLite compares by storage
+    # class when the other operand has no column affinity to coerce with (an
+    # aggregate, an arithmetic expression, a `coalesce`), and every number
+    # sorts below every text, so a text bind answers those comparisons by
+    # type instead of by value. The guard picks whichever numeric form is
+    # exact for the value and refuses the values that have none.
     defp encode_param(%Decimal{} = d, index) do
-      if XqliteEcto3.DecimalPrecision.representable?(d) do
-        Decimal.to_string(d, :normal)
-      else
-        raise XqliteEcto3.DecimalPrecisionError, value: d, index: index
+      case XqliteEcto3.DecimalPrecision.bind_form(d) do
+        {:integer, int} -> int
+        {:float, float} -> float
+        :error -> raise XqliteEcto3.DecimalPrecisionError, value: d, index: index
       end
     end
 

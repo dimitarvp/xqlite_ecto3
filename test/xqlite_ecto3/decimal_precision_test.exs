@@ -62,18 +62,34 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
   end
 
-  # The bind path sends the decimal as text. NUMERIC affinity stores a
-  # plain integer literal that fits in int64 as an exact INTEGER — no
-  # float64 in the path — which is why whole numbers past 2^53 are
-  # accepted. The same digits rendered with a decimal point parse as a
-  # REAL and stay under the float64 model.
-  describe "integer-literal storage ground truth" do
-    test "an int64 whole number binds as text and stores as an exact INTEGER" do
+  # A decimal whose rendered digits are a plain int64 integer binds as that
+  # integer — no float64 in the path — which is why whole numbers past 2^53
+  # are accepted. The same digits rendered with a decimal point are judged
+  # by the float64 model instead.
+  describe "bind_form/1 picks the exact numeric form" do
+    for {str, expected} <- [
+          {"123456789012345678", {:integer, 123_456_789_012_345_678}},
+          {"9223372036854775807", {:integer, 9_223_372_036_854_775_807}},
+          {"-9223372036854775808", {:integer, -9_223_372_036_854_775_808}},
+          {"0", {:integer, 0}},
+          {"19.99", {:float, 19.99}},
+          {"1.0e10", {:integer, 10_000_000_000}}
+        ] do
+      test "#{str} binds as #{inspect(expected)}" do
+        assert DecimalPrecision.bind_form(Decimal.new(unquote(str))) == unquote(expected)
+      end
+    end
+
+    test "a value beyond float64's exact precision has no bind form" do
+      assert DecimalPrecision.bind_form(Decimal.new("12345678901234567890.12345")) == :error
+    end
+
+    test "an int64 whole number stores as an exact INTEGER" do
       {:ok, conn} = Xqlite.open_in_memory()
       {:ok, _} = XqliteNIF.execute(conn, "CREATE TABLE t(d NUMERIC)", [])
 
-      text = Decimal.to_string(Decimal.new("123456789012345678"), :normal)
-      {:ok, 1} = XqliteNIF.execute(conn, "INSERT INTO t(d) VALUES (?1)", [text])
+      {:integer, int} = DecimalPrecision.bind_form(Decimal.new("123456789012345678"))
+      {:ok, 1} = XqliteNIF.execute(conn, "INSERT INTO t(d) VALUES (?1)", [int])
 
       assert {:ok, %{rows: [["integer", 123_456_789_012_345_678]]}} =
                XqliteNIF.query(conn, "SELECT typeof(d), d FROM t", [])

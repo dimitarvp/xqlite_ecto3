@@ -1,5 +1,6 @@
 defmodule XqliteEcto3.QueryEncodingTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias XqliteEcto3.Query
 
@@ -40,21 +41,29 @@ defmodule XqliteEcto3.QueryEncodingTest do
     end
   end
 
+  # A decimal binds as a number, never as text. SQLite compares by storage
+  # class whenever the other operand has no column affinity to coerce with,
+  # and every number sorts below every text, so a text bind answers those
+  # comparisons by type instead of by value.
   describe "encode Decimal" do
-    test "encodes to canonical decimal string" do
-      assert encode([Decimal.new("123.456")]) == ["123.456"]
+    test "a value with a fractional part encodes as a float" do
+      assert encode([Decimal.new("123.456")]) == [123.456]
     end
 
     test "preserves high-precision values" do
-      assert encode([Decimal.new("0.00000000001")]) == ["0.00000000001"]
+      assert encode([Decimal.new("0.00000000001")]) == [1.0e-11]
     end
 
-    test "non-scientific notation via :normal" do
-      assert encode([Decimal.new("1.0e10")]) == ["10000000000"]
+    test "whole numbers encode as integers, not floats" do
+      assert encode([Decimal.new("1.0e10")]) == [10_000_000_000]
+    end
+
+    test "a whole number past float64's exact range keeps every digit" do
+      assert encode([Decimal.new("9223372036854775807")]) == [9_223_372_036_854_775_807]
     end
 
     test "large money within 15 significant digits still encodes" do
-      assert encode([Decimal.new("9999999999999.99")]) == ["9999999999999.99"]
+      assert encode([Decimal.new("9999999999999.99")]) == [9_999_999_999_999.99]
     end
 
     test "refuses a value beyond float64 precision instead of silently rounding" do
@@ -66,6 +75,39 @@ defmodule XqliteEcto3.QueryEncodingTest do
         end
 
       assert Decimal.equal?(err.value, dec)
+    end
+
+    # Whatever the guard accepts must bind as a number of the same value: an
+    # integer or a float, never text, and never a different number.
+    property "an accepted decimal binds as a numerically equal number" do
+      check all(dec <- finite_decimal(), max_runs: 2000) do
+        if XqliteEcto3.DecimalPrecision.representable?(dec) do
+          [bound] = encode([dec])
+
+          assert is_integer(bound) or is_float(bound)
+          assert Decimal.equal?(dec, decimal_of(bound))
+        else
+          assert_raise XqliteEcto3.DecimalPrecisionError, fn -> encode([dec]) end
+        end
+      end
+    end
+  end
+
+  defp decimal_of(bound) when is_integer(bound), do: Decimal.new(bound)
+  defp decimal_of(bound) when is_float(bound), do: Decimal.from_float(bound)
+
+  # sign * coefficient * 10^exponent, with the coefficient's digit count swept
+  # across 1..25 so the stream straddles float64's ~15-17 significant-digit
+  # exactness threshold in both directions.
+  defp finite_decimal do
+    gen all(
+          sign <- StreamData.member_of([1, -1]),
+          ndigits <- StreamData.integer(1..25),
+          coefficient <-
+            StreamData.integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
+          exponent <- StreamData.integer(-20..20)
+        ) do
+      Decimal.new(sign, coefficient, exponent)
     end
   end
 

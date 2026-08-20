@@ -216,4 +216,128 @@ defmodule XqliteEcto3.MigrationTest do
       assert_raise ArgumentError, fn -> ref_ddl({:default, [:post_id]}) end
     end
   end
+
+  # A column default is written into the table's own DDL, so it has to be a
+  # value SQLite can hold as a literal. A struct used to be JSON-encoded and
+  # stored complete with its quotes (`DEFAULT ('"1.5"')`), which then failed
+  # to load; the other shapes had no clause at all and crashed on the
+  # missing match. All of them are refused with the column named.
+  describe "unsupported column defaults" do
+    test "a Decimal default is refused rather than stored as JSON text" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          default_ddl(Decimal.new("1.5"))
+        end
+
+      assert err.reason == :unsupported_shape
+      assert Decimal.equal?(err.value, Decimal.new("1.5"))
+      assert err.column == :c
+      assert err.type == :string
+    end
+
+    test "a Date default is refused rather than stored as JSON text" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn -> default_ddl(~D[2020-01-01]) end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == ~D[2020-01-01]
+    end
+
+    test "an atom default is refused" do
+      err = assert_raise XqliteEcto3.UnsupportedDefaultError, fn -> default_ddl(:active) end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == :active
+    end
+
+    test "a tuple that is not a fragment is refused" do
+      err = assert_raise XqliteEcto3.UnsupportedDefaultError, fn -> default_ddl({1, 2}) end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == {1, 2}
+    end
+
+    # `~c"abc"` and `[97, 98, 99]` are the same term, so JSON-encoding it
+    # would store an array of numbers for a caller who meant text.
+    test "a printable charlist is refused instead of storing character codes" do
+      err = assert_raise XqliteEcto3.UnsupportedDefaultError, fn -> default_ddl(~c"abc") end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == ~c"abc"
+    end
+
+    test "a plain map holding a value with no JSON form is refused as unencodable" do
+      value = %{"d" => Duration.new!(second: 5)}
+      err = assert_raise XqliteEcto3.UnsupportedDefaultError, fn -> default_ddl(value) end
+
+      assert err.reason == :unencodable
+      assert err.value == value
+      assert %Protocol.UndefinedError{} = err.cause
+    end
+
+    # The shape the shared migration suite builds for its bitstring column.
+    test "a bitstring that is not a whole number of bytes is refused" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          Connection.execute_ddl(
+            {:create, %Ecto.Migration.Table{name: :mig_bs},
+             [{:add, :bs_with_default, :bitstring, [default: <<42::6>>]}]}
+          )
+        end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == <<42::6>>
+      assert err.column == :bs_with_default
+    end
+
+    test "plain maps, lists and the other literal shapes still render" do
+      assert default_ddl(%{"a" => 1}) =~ ~s|DEFAULT ('{"a":1}')|
+      assert default_ddl([1, 2]) =~ ~s|DEFAULT ('[1,2]')|
+      assert default_ddl([]) =~ ~s|DEFAULT ('[]')|
+      assert default_ddl("hi") =~ ~s|DEFAULT 'hi'|
+      assert default_ddl(1.5) =~ "DEFAULT 1.5"
+      assert default_ddl(true) =~ "DEFAULT true"
+      assert default_ddl(nil) =~ "DEFAULT NULL"
+      assert default_ddl({:fragment, "CURRENT_TIMESTAMP"}) =~ "DEFAULT CURRENT_TIMESTAMP"
+    end
+  end
+
+  # SQLite gives a REAL-affinity column its float64 form on the way in, which
+  # would round a whole-number decimal past 2^53. Every float-flavored type
+  # the adapter accepts therefore declares NUMERIC.
+  describe "float-flavored column types" do
+    for type <- [:float, :real, :double, :double_precision] do
+      test "#{type} declares a NUMERIC column" do
+        assert XqliteEcto3.DataType.column_type(unquote(type), []) == "NUMERIC"
+      end
+    end
+
+    test "a migrated :real column keeps every digit of a whole-number decimal" do
+      Connection.execute_ddl(
+        {:create, %Ecto.Migration.Table{name: :mig_real},
+         [{:add, :id, :integer, [primary_key: true]}, {:add, :v, :real, []}]}
+      )
+      |> Enum.each(&TestRepo.query!(IO.iodata_to_binary(&1)))
+
+      assert %{rows: [["NUMERIC"]]} =
+               TestRepo.query!("SELECT type FROM pragma_table_xinfo('mig_real') WHERE name = 'v'")
+
+      dec = Decimal.new("12345678901234567")
+      TestRepo.query!("INSERT INTO mig_real(id, v) VALUES (1, ?)", encode([dec]))
+
+      assert %{rows: [["integer", 12_345_678_901_234_567]]} =
+               TestRepo.query!("SELECT typeof(v), v FROM mig_real WHERE id = 1")
+    end
+  end
+
+  defp default_ddl(value) do
+    {:create, %Ecto.Migration.Table{name: :mig_defaults}, [{:add, :c, :string, [default: value]}]}
+    |> Connection.execute_ddl()
+    |> List.first()
+    |> IO.iodata_to_binary()
+  end
+
+  defp encode(params) do
+    DBConnection.Query.encode(%XqliteEcto3.Query{statement: "?"}, params, [])
+  end
 end

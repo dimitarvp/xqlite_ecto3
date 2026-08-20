@@ -197,6 +197,59 @@ defmodule XqliteEcto3.CancellationTest do
       # Self-heals: a subsequent query on the same pool succeeds.
       assert {:ok, _q, %{rows: [[1]]}} = pool_exec(pool, "SELECT 1", timeout: 5_000)
     end
+
+    # Two different failures wear the same exception and are told apart by
+    # `reason`: a query the deadline cancelled reports `:error`, while a
+    # caller that never got a connection because every one of them was busy
+    # reports `:queue_timeout`. Nothing here measures elapsed time.
+    @tag capture_log: true
+    test "a cancelled query reports reason :error", %{pool: pool, slow_sql: sql} do
+      assert {:error, %DBConnection.ConnectionError{reason: :error}} =
+               pool_exec(pool, sql, timeout: 100)
+    end
+
+    @tag capture_log: true
+    test "a caller that cannot get a connection reports reason :queue_timeout" do
+      db =
+        Path.join(
+          System.tmp_dir!(),
+          "xqlite_ecto3_cancel_queue_#{:erlang.unique_integer([:positive])}.db"
+        )
+
+      # One connection, and a queue that gives up on a waiting caller at once,
+      # so the wait below never depends on how fast the machine is.
+      {:ok, pool} =
+        DBConnection.start_link(Driver,
+          database: db,
+          pool_size: 1,
+          queue_target: 1,
+          queue_interval: 1,
+          journal_mode: :memory
+        )
+
+      on_exit(fn -> File.rm(db) end)
+
+      _warm_up = pool_exec(pool, "SELECT 1", timeout: 5_000)
+      parent = self()
+
+      spawn(fn ->
+        DBConnection.run(
+          pool,
+          fn _conn ->
+            send(parent, :holding)
+            Process.sleep(3_000)
+          end,
+          timeout: :infinity
+        )
+      end)
+
+      assert_receive :holding, 2_000
+
+      # The caller never reaches SQLite, so this is not a cancelled query and
+      # does not report the cancel's :error reason.
+      assert {:error, %DBConnection.ConnectionError{reason: :queue_timeout}} =
+               pool_exec(pool, "SELECT 1", timeout: 100)
+    end
   end
 
   describe "direct NIF cancellation" do

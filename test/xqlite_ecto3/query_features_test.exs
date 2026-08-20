@@ -34,9 +34,20 @@ defmodule XqliteEcto3.QueryFeaturesTest do
       do: post |> cast(attrs, [:title, :body, :user_id]) |> validate_required([:title])
   end
 
+  defmodule QA do
+    use Ecto.Schema
+
+    @primary_key false
+    schema "qf_amounts" do
+      field(:g, :integer)
+      field(:amount, :decimal)
+    end
+  end
+
   setup_all do
     create_table!("qf_users", user_columns())
     create_table!("qf_posts", post_columns("qf_users"))
+    create_table!("qf_amounts", "g INTEGER, amount DECIMAL")
   end
 
   setup do
@@ -302,5 +313,135 @@ defmodule XqliteEcto3.QueryFeaturesTest do
     # double it — otherwise the comparison silently matches nothing.
     names = Repo.all(from(u in QU, where: u.name == "back\\slash", select: u.name))
     assert names == ["back\\slash"]
+  end
+
+  # ---------------------------------------------------------------------------
+  # Decimal parameters in comparisons
+  # ---------------------------------------------------------------------------
+
+  # SQLite only coerces a comparison's two sides when one of them is a column
+  # whose affinity says how; against an aggregate, an arithmetic expression or
+  # a `coalesce` it compares by storage class, where every number sorts below
+  # every text. Each comparison below therefore runs twice, once with a
+  # decimal parameter and once with the equivalent float, and the two must
+  # agree. Group 1 sums to 10.5 and group 2 to 50.5, both above 10.
+  describe "decimal parameters in comparisons" do
+    setup do
+      clear_table!("qf_amounts")
+
+      Repo.insert_all(QA, [
+        %{g: 1, amount: Decimal.new("5")},
+        %{g: 1, amount: Decimal.new("5.5")},
+        %{g: 2, amount: Decimal.new("50")},
+        %{g: 2, amount: Decimal.new("0.5")}
+      ])
+
+      :ok
+    end
+
+    test "a column comparison keeps the rows above the parameter" do
+      assert amounts_above(Decimal.new("10")) == ["50"]
+      assert amounts_above(10.0) == ["50"]
+    end
+
+    test "an aggregate comparison in HAVING sees both groups" do
+      assert groups_summing_above(Decimal.new("10")) == [1, 2]
+      assert groups_summing_above(10.0) == [1, 2]
+    end
+
+    test "the reverse direction excludes both groups" do
+      below = fn param ->
+        from(a in QA, group_by: a.g, having: sum(a.amount) < ^param, select: a.g)
+        |> Repo.all()
+        |> Enum.sort()
+      end
+
+      assert below.(Decimal.new("1")) == []
+      assert below.(1.0) == []
+    end
+
+    test "an arithmetic expression compares by value" do
+      above = fn param ->
+        from(a in QA, where: fragment("? + 0", a.amount) > ^param, select: a.amount)
+        |> Repo.all()
+        |> Enum.map(&Decimal.to_string(&1, :normal))
+      end
+
+      assert above.(Decimal.new("10")) == ["50"]
+      assert above.(10.0) == ["50"]
+    end
+
+    test "a coalesced column compares by value" do
+      above = fn param ->
+        from(a in QA, where: coalesce(a.amount, 0) > ^param, select: a.amount)
+        |> Repo.all()
+        |> Enum.map(&Decimal.to_string(&1, :normal))
+      end
+
+      assert above.(Decimal.new("10")) == ["50"]
+      assert above.(10.0) == ["50"]
+    end
+
+    # A decimal that lands in expression position is written into the SQL as
+    # a numeric literal instead of being bound, so it has to clear the same
+    # precision guard — otherwise it is a second way into the silent
+    # rounding the guard exists to refuse. There is no parameter position to
+    # report for an inlined value.
+    test "an inlined decimal beyond float64's exact precision is refused" do
+      beyond = Decimal.new("12345678901234567890.12345")
+
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          Ecto.Adapters.SQL.to_sql(:all, Repo, inline_decimal_query(beyond))
+        end
+
+      assert Decimal.equal?(err.value, beyond)
+      assert err.index == nil
+    end
+
+    test "an inlined decimal within range is written as a numeric literal" do
+      {sql, []} = Ecto.Adapters.SQL.to_sql(:all, Repo, inline_decimal_query(Decimal.new("19.99")))
+
+      assert sql =~ "19.99"
+    end
+
+    test "a whole number past float64's exact range compares digit for digit" do
+      big = Decimal.new("9223372036854775806")
+      Repo.insert_all(QA, [%{g: 3, amount: big}])
+
+      loaded =
+        from(a in QA, where: a.g == 3 and a.amount == ^big, select: a.amount) |> Repo.all()
+
+      assert [stored] = loaded
+      assert Decimal.equal?(stored, big)
+    end
+  end
+
+  # Ecto's own builders always pin a decimal into the parameter list, so the
+  # struct only reaches expression position in a query assembled by hand.
+  defp inline_decimal_query(decimal) do
+    %Ecto.Query{
+      from: %Ecto.Query.FromExpr{source: {"qf_amounts", QA}},
+      wheres: [
+        %Ecto.Query.BooleanExpr{
+          expr: {:>, [], [{{:., [], [{:&, [], [0]}, :amount]}, [], []}, decimal]},
+          op: :and,
+          params: []
+        }
+      ]
+    }
+  end
+
+  defp amounts_above(param) do
+    from(a in QA, where: a.amount > ^param, select: a.amount)
+    |> Repo.all()
+    |> Enum.map(&Decimal.to_string(&1, :normal))
+    |> Enum.sort()
+  end
+
+  defp groups_summing_above(param) do
+    from(a in QA, group_by: a.g, having: sum(a.amount) > ^param, select: a.g)
+    |> Repo.all()
+    |> Enum.sort()
   end
 end

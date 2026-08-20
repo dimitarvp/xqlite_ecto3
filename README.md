@@ -184,6 +184,19 @@ MyApp.Repo.all(slow_query, timeout: 5_000)
 
 Through a pool, that same `:timeout` also trips DBConnection's own checkout deadline (the same value), which disconnects and reconnects that connection — standard DBConnection behavior for every adapter, not specific to this one. So connection-local state does not survive a pooled query timeout: temp tables, session `PRAGMA`s, and the prepared-statement cache on that connection are gone, and there is a reconnect cost. What the graceful cancel adds on top is that the blocked query *returns at the deadline* instead of running to completion first — the connection recycles promptly rather than after the runaway query finishes.
 
+`:timeout` bounds how long the **query** runs, not how long your **call** waits. Every SQLite call runs on one of the BEAM's dirty schedulers — the fixed set of OS threads reserved for long native calls — and the cancelled query's reply has to get back to you through them. When those threads are all busy, the wait can run orders of magnitude past the deadline. Raising `pool_size` does not help: the queue is on the schedulers, not on the pool.
+
+Pool exhaustion is a separate case, and it is the one a bigger pool does fix: every connection is busy, so the call never reaches SQLite at all. DBConnection's `:queue_target` and `:queue_interval` govern that wait. Both cases raise the same exception and are told apart by its `reason` field, no message parsing:
+
+| what happened | error |
+| --- | --- |
+| the query was cancelled at its deadline | `%DBConnection.ConnectionError{reason: :error}` |
+| no connection came free in time | `%DBConnection.ConnectionError{reason: :queue_timeout}` |
+
+Scheduler saturation shows up as the first shape, only later than you asked for.
+
+Inside an `Ecto.Adapters.SQL.Sandbox` test, a cancelled **write** also ends that test's checkout: SQLite rolls back the transaction the sandbox is holding, so the connection cannot be reused for the rest of the test. Later queries in that test report `DBConnection.OwnershipError` and `Sandbox.checkin/1` returns `:not_found`. Nothing the test wrote reaches the database, and the next test checks out normally — but the first error you see may be about ownership rather than the timeout that caused it.
+
 ### Structured constraint errors
 
 ```elixir
@@ -371,6 +384,8 @@ Permanent SQLite constraints (not adapter choices):
 - No materialized views. `CREATE VIEW` is always virtual. You should materialize by hand into a real table, manually e.g. `CREATE TABLE ... AS SELECT`.
 - No table partitioning. Heavy SQLite users emulate this by multiple database files (tenants, time windows) with separate repos or via `ATTACH`.
 - No built-in network access or replication — SQLite is embedded by design; the ecosystem uses Litestream (streaming backup), LiteFS (read replicas), and libSQL/Turso (server-mode SQLite), all of which sit below or beside the adapter and need nothing from it
+
+- A `:decimal` field over a column that was declared `REAL` (or `FLOAT`/`DOUBLE`) by something other than this adapter loses digits past 2^53: SQLite converts the value to a float64 on the way in, and the adapter's precision guard checks the value, not the column. The adapter's own migrations never create such a column — `:decimal` becomes `DECIMAL` and every float-flavored type becomes `NUMERIC`, both of which keep a whole number exact. This bites only on a legacy database or a hand-written `CREATE TABLE`; declare the column `NUMERIC` (or `DECIMAL`) to fix it.
 
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 

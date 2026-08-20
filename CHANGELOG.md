@@ -146,6 +146,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Decimal parameters now bind as numbers, so comparisons are
+  correct everywhere.** They previously bound as TEXT; a direct
+  column comparison was rescued by the column's affinity, but any
+  operand WITHOUT affinity — `HAVING sum(col) > ^decimal`, an
+  arithmetic fragment, `coalesce(...)` — compared text against
+  numbers and silently returned wrong rows. The precision guard
+  already proves which numeric form is exact, and that form
+  (int64 integer, else the proven-lossless float) is now what binds.
+  Values the guard rejects still raise `DecimalPrecisionError`.
+  Inlined decimal literals in hand-built query ASTs now pass through
+  the same guard instead of bypassing it.
+
+- **Unsupported migration defaults are refused with a structured
+  error.** A struct default (`default: Decimal.new("1.5")`,
+  `default: ~D[...]`) was silently JSON-encoded — the stored default
+  carried literal quotes and later reads raised. Non-boolean atoms,
+  non-fragment tuples, non-byte-aligned bitstrings, and
+  encoder-less structs crashed with bare errors from inside the
+  migration. All three default renderers (plain path, table rebuild,
+  and the rebuild's own post-check) now raise
+  `XqliteEcto3.UnsupportedDefaultError` with the column, type,
+  value, and reason. Plain maps and lists still JSON-encode
+  byte-identically on every path; printable charlists are refused
+  (write a string).
+
+- **`:real`, `:double`, and `:double_precision` columns are created
+  as `NUMERIC`.** REAL affinity converts every bind to float64, so
+  int64-exact decimals silently lost digits past 2^53 on such
+  columns; NUMERIC keeps them exact, matching what `:float` already
+  did. A `:decimal` field over a pre-existing REAL column in a
+  legacy database still has the limitation — the README's Known
+  limitations names it.
+
 - **The rollback-disconnect guard now covers raw-SQL transactions and
   streams.** SQLite rolls back the whole transaction when it rejects a
   statement under `ON CONFLICT ROLLBACK` or when a write is cancelled;

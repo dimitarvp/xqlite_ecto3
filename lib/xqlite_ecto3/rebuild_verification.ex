@@ -651,7 +651,7 @@ defmodule XqliteEcto3.RebuildVerification do
       name: to_string(name),
       type: XqliteEcto3.DataType.column_type(type, opts),
       notnull: Keyword.get(opts, :null) == false,
-      default: added_default(Keyword.fetch(opts, :default)),
+      default: added_default(Keyword.fetch(opts, :default), name, type),
       pk_inline: Keyword.get(opts, :primary_key, false),
       autoincrement: false,
       pk_removed: false,
@@ -675,7 +675,7 @@ defmodule XqliteEcto3.RebuildVerification do
       col
       | type: XqliteEcto3.DataType.column_type(type, opts),
         notnull: merged_notnull(declared, opts),
-        default: merged_default(declared, opts),
+        default: merged_default(declared, opts, col.name, type),
         pk_inline: inline_key?,
         autoincrement: declared.autoincrement and inline_key?,
         pk_removed: Keyword.fetch(opts, :primary_key) == {:ok, false}
@@ -689,9 +689,9 @@ defmodule XqliteEcto3.RebuildVerification do
     end
   end
 
-  defp merged_default(col, opts) do
+  defp merged_default(col, opts, name, type) do
     case Keyword.fetch(opts, :default) do
-      {:ok, value} -> rendered_default(value)
+      {:ok, value} -> rendered_default(value, name, type)
       :error -> col.default
     end
   end
@@ -703,29 +703,40 @@ defmodule XqliteEcto3.RebuildVerification do
     end
   end
 
-  defp added_default(:error), do: nil
-  defp added_default({:ok, value}), do: rendered_default(value)
+  defp added_default(:error, _name, _type), do: nil
+  defp added_default({:ok, value}, name, type), do: rendered_default(value, name, type)
 
   # The literal the rebuild writes into the new CREATE TABLE, which is also
   # the text SQLite reads back as the column's default. Every shape here is
   # rendered the way the two writing paths render it — SQLite stores `DEFAULT
   # true` as the word, not as 1, and a map or a list as quoted JSON text.
-  defp rendered_default(nil), do: "NULL"
+  # The values the writing paths refuse are refused here the same way, so a
+  # prediction is never made for DDL that was never written.
+  defp rendered_default(nil, _name, _type), do: "NULL"
 
-  defp rendered_default({:fragment, expression}) do
+  defp rendered_default({:fragment, expression}, _name, _type) do
     expression |> IO.iodata_to_binary() |> strip_outer_parens()
   end
 
-  defp rendered_default(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  defp rendered_default(value, _name, _type) when is_number(value) or is_boolean(value),
+    do: to_string(value)
 
-  defp rendered_default(value) when is_binary(value) do
+  defp rendered_default(value, _name, _type) when is_binary(value) do
     "'" <> String.replace(value, "'", "''") <> "'"
   end
 
-  defp rendered_default(value) when is_map(value) or is_list(value) do
-    encoded = XqliteEcto3.DataType.json_default(value)
+  defp rendered_default(value, name, type)
+       when (is_map(value) and not is_struct(value)) or is_list(value) do
+    encoded = XqliteEcto3.DataType.json_default(value, column: name, type: type)
 
     "'" <> String.replace(encoded, "'", "''") <> "'"
+  end
+
+  defp rendered_default(value, name, type) do
+    XqliteEcto3.DataType.unsupported_default!(value, :unsupported_shape,
+      column: name,
+      type: type
+    )
   end
 
   # SQLite's grammar requires parentheses around an expression DEFAULT and

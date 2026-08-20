@@ -95,14 +95,13 @@ excludes = [
 
   # A non-byte-aligned bitstring has no SQLite storage form, so these
   # tests can never pass — but the FIRST blocker is ours, not SQLite's:
-  # Connection.default_expr/1 has no clause for a bitstring default
-  # (is_binary(<<42::6>>) is false), so the shared migration's
-  # bs_with_default column raises a bare FunctionClauseError before
-  # SQLite is involved. Because that happens inside the shared
-  # migration, un-excluding this tag crashes the whole vendored suite,
-  # not one test. Plain :bitstring and size: columns build fine; a
-  # bitstring PARAMETER fails with a structured
-  # {:cannot_convert_to_sqlite_value, ...}.
+  # a bitstring is not a value SQLite can hold as a column default, so
+  # the shared migration's bs_with_default column raises a structured
+  # XqliteEcto3.UnsupportedDefaultError before SQLite is involved.
+  # Because that happens inside the shared migration, un-excluding this
+  # tag crashes the whole vendored suite, not one test. Plain :bitstring
+  # and size: columns build fine; a bitstring PARAMETER fails with a
+  # structured {:cannot_convert_to_sqlite_value, ...}.
   :bitstring_type,
 
   # Ecto's :duration type dumps to a %Duration{} struct that our param

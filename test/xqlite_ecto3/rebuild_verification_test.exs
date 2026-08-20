@@ -690,4 +690,45 @@ defmodule XqliteEcto3.RebuildVerificationTest do
                ~s|CREATE TABLE t (a TEXT DEFAULT '', "b's" TEXT)|
     end
   end
+
+  # The checker predicts the DDL the rebuild writes, so it has to refuse the
+  # same defaults the writing paths refuse. A prediction for DDL that could
+  # never be written would report a mismatch instead of the real cause.
+  describe "defaults the rebuild cannot write" do
+    test "a struct default is refused, not predicted" do
+      before = snapshot()
+
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          verify(before, [{:modify, :price, :float, [default: Decimal.new("1.5")]}], before)
+        end
+
+      assert err.reason == :unsupported_shape
+      assert err.column == "price"
+    end
+
+    test "an atom default on an added column is refused, not predicted" do
+      before = snapshot()
+
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          verify(before, [{:add, :tag, :string, [default: :active]}], before)
+        end
+
+      assert err.reason == :unsupported_shape
+      assert err.column == :tag
+    end
+
+    test "a plain map default is still predicted as JSON text" do
+      before = snapshot()
+      changes = [{:add, :meta, :map, [default: %{"a" => 1}]}]
+
+      actual = %{
+        before
+        | columns: before.columns ++ [column("meta", "TEXT", default: ~s|'{"a":1}'|)]
+      }
+
+      assert :ok = verify(before, changes, actual)
+    end
+  end
 end

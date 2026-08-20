@@ -171,4 +171,142 @@ defmodule XqliteEcto3.TransactionAtomicityTest do
   rescue
     e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:rescued, e.__struct__}
   end
+
+  # SQLite rolls the WHOLE transaction back when it interrupts a write, and
+  # that takes every savepoint with it — so a cancelled write inside a nested
+  # `Repo.transaction` cannot be contained by the inner one. The outer
+  # transaction has to fail as a whole and leave nothing behind.
+  test "no write survives a cancelled write inside a nested transaction" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_nest")
+    PoolRepo.query!("CREATE TABLE ta_nest(id INTEGER PRIMARY KEY, v INTEGER)")
+
+    outcome =
+      try do
+        PoolRepo.transaction(fn ->
+          {:ok, _} = PoolRepo.query("INSERT INTO ta_nest(id, v) VALUES (1, 111)")
+
+          inner =
+            try do
+              PoolRepo.transaction(fn ->
+                case PoolRepo.query(slow_insert("ta_nest"), [], timeout: 50) do
+                  {:ok, _} -> :completed
+                  {:error, _cancelled} -> PoolRepo.rollback(:cancelled)
+                end
+              end)
+            rescue
+              e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:raised, e.__struct__}
+            end
+
+          _later = PoolRepo.query("INSERT INTO ta_nest(id, v) VALUES (2, 222)")
+          {:carried_on, inner}
+        end)
+      rescue
+        e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:raised, e.__struct__}
+      end
+
+    refute match?({:ok, {:carried_on, _}}, outcome)
+    assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM ta_nest")
+    assert %{rows: [[1]]} = PoolRepo.query!("SELECT 1")
+  end
+
+  # The control for the rule above: a cancelled READ rolls nothing back, so
+  # its transaction must survive intact. The driver may only tear a
+  # transaction down when SQLite already did.
+  test "a cancelled read leaves its transaction intact" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_ro")
+    PoolRepo.query!("CREATE TABLE ta_ro(id INTEGER PRIMARY KEY, v INTEGER)")
+
+    outcome =
+      PoolRepo.transaction(fn ->
+        {:ok, _} = PoolRepo.query("INSERT INTO ta_ro(id, v) VALUES (1, 111)")
+        {:error, _cancelled} = PoolRepo.query(slow_select(), [], timeout: 50)
+        {:ok, _} = PoolRepo.query("INSERT INTO ta_ro(id, v) VALUES (2, 222)")
+        :carried_on
+      end)
+
+    assert outcome == {:ok, :carried_on}
+    assert %{rows: [[2]]} = PoolRepo.query!("SELECT count(*) FROM ta_ro")
+  end
+
+  test "no row survives a cancelled write while a stream is mid-flight" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_stx")
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_stx_seed")
+    PoolRepo.query!("CREATE TABLE ta_stx(id INTEGER PRIMARY KEY, v INTEGER)")
+    PoolRepo.query!("CREATE TABLE ta_stx_seed(id INTEGER PRIMARY KEY)")
+    for i <- 1..20, do: PoolRepo.query!("INSERT INTO ta_stx_seed(id) VALUES (?)", [i])
+
+    outcome =
+      try do
+        PoolRepo.transaction(fn ->
+          {:ok, _} = PoolRepo.query("INSERT INTO ta_stx(id, v) VALUES (1, 111)")
+
+          PoolRepo
+          |> Ecto.Adapters.SQL.stream("SELECT id FROM ta_stx_seed ORDER BY id", [], max_rows: 1)
+          |> Stream.transform(0, &cancel_on_third(&1, &2, "ta_stx"))
+          |> Enum.take(6)
+        end)
+      rescue
+        e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:raised, e.__struct__}
+      end
+
+    refute match?({:ok, _}, outcome)
+    assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM ta_stx")
+  end
+
+  test "no row survives a stream declared after a cancelled write" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_xts")
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_xts_seed")
+    PoolRepo.query!("CREATE TABLE ta_xts(id INTEGER PRIMARY KEY, v INTEGER)")
+    PoolRepo.query!("CREATE TABLE ta_xts_seed(id INTEGER PRIMARY KEY)")
+    for i <- 1..20, do: PoolRepo.query!("INSERT INTO ta_xts_seed(id) VALUES (?)", [i])
+
+    outcome =
+      try do
+        PoolRepo.transaction(fn ->
+          {:ok, _} = PoolRepo.query("INSERT INTO ta_xts(id, v) VALUES (1, 111)")
+          {:error, _cancelled} = PoolRepo.query(slow_insert("ta_xts"), [], timeout: 50)
+
+          PoolRepo
+          |> Ecto.Adapters.SQL.stream("SELECT id FROM ta_xts_seed ORDER BY id", [], max_rows: 2)
+          |> Enum.take(2)
+        end)
+      rescue
+        e in [DBConnection.ConnectionError, XqliteEcto3.Error] -> {:raised, e.__struct__}
+      end
+
+    refute match?({:ok, [_ | _]}, outcome)
+    assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM ta_xts")
+  end
+
+  test "a stream in a transaction nothing cancelled runs to completion" do
+    PoolRepo.query!("DROP TABLE IF EXISTS ta_stok_seed")
+    PoolRepo.query!("CREATE TABLE ta_stok_seed(id INTEGER PRIMARY KEY)")
+    for i <- 1..5, do: PoolRepo.query!("INSERT INTO ta_stok_seed(id) VALUES (?)", [i])
+
+    outcome =
+      PoolRepo.transaction(fn ->
+        PoolRepo
+        |> Ecto.Adapters.SQL.stream("SELECT id FROM ta_stok_seed ORDER BY id", [], max_rows: 2)
+        |> Enum.flat_map(& &1.rows)
+      end)
+
+    assert outcome == {:ok, [[1], [2], [3], [4], [5]]}
+  end
+
+  defp cancel_on_third(row, 2, table) do
+    {:error, _cancelled} = PoolRepo.query(slow_insert(table), [], timeout: 50)
+    {[row], 3}
+  end
+
+  defp cancel_on_third(row, n, _table), do: {[row], n + 1}
+
+  defp slow_insert(table) do
+    "INSERT INTO #{table} SELECT x + 1000000, x FROM (WITH RECURSIVE c(x) AS " <>
+      "(SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) SELECT x FROM c)"
+  end
+
+  defp slow_select do
+    "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 30000000) " <>
+      "SELECT count(*) FROM c"
+  end
 end

@@ -720,6 +720,43 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert defaults.("rb_dflt_built") == defaults.("rb_dflt_plain")
     end
 
+    # The rebuild writes the new table's DDL itself, so it must refuse the
+    # same defaults the plain path refuses — one migration option cannot be
+    # accepted by one writing path and rejected by the other.
+    test "the rebuild refuses a default the plain path refuses" do
+      create("CREATE TABLE rb_bad_dflt(id INTEGER PRIMARY KEY, v TEXT)")
+
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          run_alter(:rb_bad_dflt, [{:modify, :v, :string, [default: Decimal.new("1.5")]}])
+        end
+
+      assert err.reason == :unsupported_shape
+      assert Decimal.equal?(err.value, Decimal.new("1.5"))
+      assert err.column == "v"
+
+      assert %{rows: [[nil]]} =
+               TestRepo.query!(
+                 "SELECT dflt_value FROM pragma_table_xinfo('rb_bad_dflt') WHERE name = 'v'"
+               )
+    end
+
+    test "a column added by a rebuild refuses the same default" do
+      create("CREATE TABLE rb_bad_add(id INTEGER PRIMARY KEY, v TEXT)")
+
+      err =
+        assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+          run_alter(:rb_bad_add, [
+            {:modify, :v, :string, [null: false]},
+            {:add, :tag, :string, [default: :active]}
+          ])
+        end
+
+      assert err.reason == :unsupported_shape
+      assert err.value == :active
+      assert err.column == :tag
+    end
+
     test "a fragment default given to modify lands on the column" do
       create("CREATE TABLE rb_frag(id INTEGER PRIMARY KEY, seen_at TEXT)")
 

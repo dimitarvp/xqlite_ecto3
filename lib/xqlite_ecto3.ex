@@ -1928,7 +1928,7 @@ defmodule XqliteEcto3 do
 
     default =
       case Keyword.fetch(opts, :default) do
-        {:ok, _} = given -> default_spec(given)
+        {:ok, _} = given -> default_spec(given, name, type)
         :error -> default_clause(meta.default)
       end
 
@@ -1964,26 +1964,35 @@ defmodule XqliteEcto3 do
       " ",
       type_sql,
       if(Keyword.get(opts, :null) == false, do: " NOT NULL", else: ""),
-      default_spec(Keyword.fetch(opts, :default)),
+      default_spec(Keyword.fetch(opts, :default), name, type),
       if(Keyword.get(opts, :primary_key, false), do: " PRIMARY KEY", else: "")
     ]
   end
 
   # One rule for `default:`, whichever path writes the column: these clauses
-  # render exactly what XqliteEcto3.Connection.default_expr/1 renders on the
-  # plain ALTER path, so the same migration option produces the same stored
-  # default either way.
-  defp default_spec({:ok, nil}), do: " DEFAULT NULL"
-  defp default_spec({:ok, v}) when is_binary(v), do: [" DEFAULT ", quote_string(v)]
+  # render exactly what XqliteEcto3.Connection.default_expr/3 renders on the
+  # plain ALTER path, and refuse exactly what it refuses, so the same
+  # migration option produces the same stored default — or the same
+  # error — either way.
+  defp default_spec({:ok, nil}, _name, _type), do: " DEFAULT NULL"
+  defp default_spec({:ok, v}, _name, _type) when is_binary(v), do: [" DEFAULT ", quote_string(v)]
 
-  defp default_spec({:ok, v}) when is_number(v) or is_boolean(v), do: [" DEFAULT ", to_string(v)]
+  defp default_spec({:ok, v}, _name, _type) when is_number(v) or is_boolean(v),
+    do: [" DEFAULT ", to_string(v)]
 
-  defp default_spec({:ok, {:fragment, frag}}), do: [" DEFAULT ", frag]
+  defp default_spec({:ok, {:fragment, frag}}, _name, _type), do: [" DEFAULT ", frag]
 
-  defp default_spec({:ok, v}) when is_map(v) or is_list(v),
-    do: [" DEFAULT (", quote_string(XqliteEcto3.DataType.json_default(v)), ")"]
+  defp default_spec({:ok, v}, name, type) when (is_map(v) and not is_struct(v)) or is_list(v),
+    do: [
+      " DEFAULT (",
+      quote_string(XqliteEcto3.DataType.json_default(v, column: name, type: type)),
+      ")"
+    ]
 
-  defp default_spec(:error), do: ""
+  defp default_spec(:error, _name, _type), do: ""
+
+  defp default_spec({:ok, v}, name, type),
+    do: XqliteEcto3.DataType.unsupported_default!(v, :unsupported_shape, column: name, type: type)
 
   defp create_rebuild_table_sql(table, cols, table_constraints) do
     definitions =

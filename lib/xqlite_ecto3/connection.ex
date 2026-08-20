@@ -1731,8 +1731,17 @@ defmodule XqliteEcto3.Connection do
       message: "Array literals are not supported by SQLite"
   end
 
+  # A decimal that lands in expression position is written straight into the
+  # SQL as a numeric literal, so it must clear the same precision guard the
+  # parameter path uses — otherwise this is a second door into the storage
+  # rounding the guard exists to refuse. There is no parameter position to
+  # report for an inlined value.
   defp expr(%Decimal{} = decimal, _sources, _query) do
-    Decimal.to_string(decimal, :normal)
+    if XqliteEcto3.DecimalPrecision.representable?(decimal) do
+      Decimal.to_string(decimal, :normal)
+    else
+      raise XqliteEcto3.DecimalPrecisionError, value: decimal, index: nil
+    end
   end
 
   defp expr(%Ecto.Query.Tagged{value: binary, type: :binary}, _sources, _query)
@@ -1915,7 +1924,7 @@ defmodule XqliteEcto3.Connection do
       quote_name(name),
       ?\s,
       column_type(ref.type, opts),
-      column_options(table, ref.type, opts),
+      column_options(table, name, ref.type, opts),
       reference_expr(ref, table, name)
     ]
   end
@@ -1925,7 +1934,7 @@ defmodule XqliteEcto3.Connection do
       quote_name(name),
       ?\s,
       column_type(type, opts),
-      column_options(table, type, opts)
+      column_options(table, name, type, opts)
     ]
   end
 
@@ -1935,7 +1944,7 @@ defmodule XqliteEcto3.Connection do
       quote_name(name),
       ?\s,
       column_type(ref.type, opts),
-      column_options(table, ref.type, opts),
+      column_options(table, name, ref.type, opts),
       reference_expr(ref, table, name)
     ]
   end
@@ -1956,7 +1965,7 @@ defmodule XqliteEcto3.Connection do
       quote_name(name),
       ?\s,
       column_type(type, opts),
-      column_options(table, type, opts)
+      column_options(table, name, type, opts)
     ]
   end
 
@@ -1966,7 +1975,7 @@ defmodule XqliteEcto3.Connection do
       quote_name(name),
       ?\s,
       column_type(type, opts),
-      column_options(table, type, opts)
+      column_options(table, name, type, opts)
     ]
   end
 
@@ -1989,7 +1998,7 @@ defmodule XqliteEcto3.Connection do
     raise ArgumentError, "Not supported by SQLite"
   end
 
-  defp column_options(table, type, opts) do
+  defp column_options(table, name, type, opts) do
     default = Keyword.fetch(opts, :default)
     null = Keyword.get(opts, :null)
     pk = table.primary_key != :composite and Keyword.get(opts, :primary_key, false)
@@ -1997,7 +2006,7 @@ defmodule XqliteEcto3.Connection do
     check = Keyword.get(opts, :check)
 
     [
-      default_expr(default),
+      default_expr(default, name, type),
       null_expr(null),
       collate_expr(collate),
       check_expr(check),
@@ -2019,29 +2028,39 @@ defmodule XqliteEcto3.Connection do
   defp null_expr(true), do: " NULL"
   defp null_expr(_), do: []
 
-  defp default_expr({:ok, nil}) do
+  defp default_expr({:ok, nil}, _name, _type) do
     " DEFAULT NULL"
   end
 
-  defp default_expr({:ok, literal}) when is_binary(literal) do
+  defp default_expr({:ok, literal}, _name, _type) when is_binary(literal) do
     [" DEFAULT '", escape_string(literal), ?']
   end
 
-  defp default_expr({:ok, literal}) when is_number(literal) or is_boolean(literal) do
+  defp default_expr({:ok, literal}, _name, _type)
+       when is_number(literal) or is_boolean(literal) do
     [" DEFAULT ", to_string(literal)]
   end
 
-  defp default_expr({:ok, {:fragment, expression}}) do
+  defp default_expr({:ok, {:fragment, expression}}, _name, _type) do
     [" DEFAULT ", expression]
   end
 
-  defp default_expr({:ok, value}) when is_map(value) or is_list(value) do
-    expression = json_default(value)
+  defp default_expr({:ok, value}, name, type)
+       when (is_map(value) and not is_struct(value)) or is_list(value) do
+    expression = json_default(value, column: name, type: type)
 
     [" DEFAULT ('", escape_string(expression), "')"]
   end
 
-  defp default_expr(:error), do: []
+  defp default_expr(:error, _name, _type), do: []
+
+  # A struct, an atom, a tuple that is not a fragment, a bitstring that is
+  # not a whole number of bytes: none of them has a literal form SQLite can
+  # store, so the migration is refused here rather than writing a default
+  # that reads back as something else.
+  defp default_expr({:ok, value}, name, type) do
+    unsupported_default!(value, :unsupported_shape, column: name, type: type)
+  end
 
   defp index_expr(literal) when is_binary(literal), do: literal
   defp index_expr(literal), do: quote_name(literal)
