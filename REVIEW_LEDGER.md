@@ -147,6 +147,7 @@ Consult before any xqlite public-surface change:
 | `begin/commit/rollback/savepoint/release_savepoint/rollback_to_savepoint` | `:ok \| {:error, reason}` | driver txn callbacks | LOUD — `:ok` match fails ⇒ disconnect/crash |
 | `set_pragma` / `open` / `open_readonly` | `{:ok, _} \| {:error, _}` | driver connect | LOUD — `with` chain aborts |
 | all error reasons | `error_reason/0` union → `Error.wrap/1` | everywhere | see X1 (silent classification loss on unhandled shapes) |
+| `PRAGMA busy_timeout` via `query` | the integer VALUE, reused as the unique-name lookup's wall-clock budget (0 = uncapped since Run 26) | `unique_index_names.ex` `busy_budget/1` | **SILENT** — any xqlite busy-slot change that alters the reported value shifts lookup budgeting (added Run 26, F-X2-2) |
 
 ### Verdict + dryness
 
@@ -3341,3 +3342,172 @@ event-surface probe 9/9, OTel path unchanged.
   law-projection sibling, unpinned); `{:array, :duration}` and
   collections of unencodable structs (mechanism covered, coverage not);
   adversarial pass on the int64-boundary fast-accept itself.
+
+---
+
+## Run 26 — 2026-08-20 — X1 + X2 forward-blast confirmations vs published 0.11.0
+
+Single Opus reviewer, paired confirmation cover (read-only; fixes by the
+orchestrator at gate). Adapter `cf2cc62`, xqlite `1dd5c2b`; deps = the hex
+TARBALL of xqlite 0.11.0, verified in-probe (`Application.spec(:xqlite,
+:vsn) == "0.11.0"`, `.hex` marker present, no `.git`) — the dep channel
+switched from path checkout to hex this lap, so the tarball itself is in
+scope for the first time. Both axes were DRY at 0.10.0 (X1 at Run 13, X2
+at Run 9); the 0.11.0 bump re-wet both. Gate: the orchestrator re-drove
+ALL nine probes plus every RED control BEFORE any edit (finding probes
+exit-verified; `error_wrap_test.exs` 23/23), then implemented the three
+fixes with stash-proven RED.
+
+### X1 — API/error-shape contract
+
+- **CLEAN (standing surface):** `error_reason/0` at 0.11.0 = **48
+  distinct members (9 bare atoms + 39 tuple shapes), derived from the
+  compiled beam** — exactly Run 13's 46 plus the two atoms `dd7c9f9`
+  added (`:extension_loading_disabled`, `:invalid_conflict_strategy`;
+  the whole `v0.10.0..v0.11.0` diff of `lib/xqlite.ex` is those two
+  lines plus docs). All 48 driven live through `wrap/1` +
+  `to_constraints/2`: every tag preserved, zero `type: nil`, six
+  constraint kinds + two negatives correct, eight adversarial edges
+  degrade without raising — 78/78. RED control: the probe builds its
+  cases FROM the compiled union, so `X1_RED=1` (hide one member) trips
+  the drift alarm. `{:internal_encoding_error, msg}` routes to the
+  binary-payload 2-tuple clause (`error.ex:222-224` — message == the
+  payload, `details: nil`), NOT the tag-preserving stringifier — the
+  clause-level confirmation Run 25's B4 leg was owed; five sibling
+  discriminators prove no dedicated clause is shadowed.
+  `changeset_apply/3`'s spec is unchanged at 0.11.0; the doc now
+  promises `:replace` aborts + rolls back the WHOLE apply on a
+  conflict it cannot replace (never degrades to `:omit`) — recorded;
+  both new atoms adapter-unreachable (zero `changeset_apply` /
+  `session_*` / `load_extension` sites in `lib/` + `test/`). Forward
+  blast `v0.11.0..1dd5c2b` = one commit, CLAUDE.md + two test files,
+  zero `lib//native//priv/`.
+- **F-X1-3 (S2, CONFIRMED, FIXED in xqlite as docs).** xqlite 0.11.0
+  SHIPS documentation stating the abandoned empty-columns rule for
+  `query_with_changes/3` (`xqlitenif.ex:193` "For SELECT statements
+  (non-empty columns), `changes` is 0"; `README.md:299` "detected by
+  empty result columns") while the code (`query.rs:95-102`) gates on
+  the `sqlite3_total_changes()` delta and its own comment calls the
+  columns rule "wrong twice". Measured against the real build: three
+  RETURNING-DML statements contradict the doc outright (doc predicts
+  0, code reports the real count) and DDL/read-PRAGMA fall outside its
+  SELECT/DML split entirely. This is the exact document that taught
+  the model behind Run 1's F-X2-1 (the adapter's cached-path
+  re-derivation bug) — the code was fixed on both sides long ago; the
+  public teaching text never was. FIX (xqlite): both sites rewritten
+  to the delta rule (DML real count with or without RETURNING;
+  SELECT/DDL/PRAGMA report 0; columns play no part).
+  `CHANGELOG.md:514` deliberately left — history stays. RED: the
+  probe's `DOC_RED=1` mode asserts the documented model and fails
+  5/5, exit 1 (orchestrator-verified both modes).
+- **F-X1-4 (S2, CONFIRMED, FIXED).** `{:xqlite, "~> 0.11"}`
+  (`mix.exs`) resolves `>= 0.11.0 and < 1.0.0` — probe-measured to
+  admit 0.12.0/0.13.0/0.99.0 — while xqlite's README reserves the
+  right to break in any pre-1.0 minor, and the `0.9 → 0.10` minor
+  ALREADY forced an adapter code change once (`6d571e5`, the CI break
+  this axis exists for). `mix.lock` does not travel with a published
+  package, so the bound is what downstream resolves; reachability
+  turns on at the first Hex publish (imminent by program design —
+  graded on that basis). Neither README carried a compatibility
+  statement (charter requirement). FIX: bound tightened to
+  `{:xqlite, "~> 0.11.0"}` with the pin-one-minor rationale as a
+  comment; compatibility rows added to BOTH live READMEs and folded
+  into BOTH STE drafts (swap-safe). xqlite's own install snippet
+  (`~> 0.11` for end applications) deliberately untouched — apps own
+  their lock files; the lockstep constraint is library-to-library.
+- Dryness: two S2 — **X1 stays 0 of 2, NOT DRY**. Re-wet triggers
+  ALSO: the compatibility rows (every future bound change owes them a
+  sync) and xqlite's `query_with_changes` doc surface.
+
+### X2 — cross-repo blast radius
+
+- **CLEAN (standing surface):** call-site census at `cf2cc62` — the
+  Run 5/9 method first re-validated at both prior baselines (37+7 at
+  `6d571e5`, 38+7 at `6539a14`, matching what those runs recorded) —
+  reads **38 + 10 by name, 38 + 7 code-only** (a new counter: name
+  followed by an open paren). The 3 extra `Xqlite.*` names are PROSE
+  in the `with_xqlite/3` busy-slot doc block (`lib/xqlite_ecto3.ex:
+  336-345`, from `268261a`), not calls; the executable surface is
+  UNCHANGED from Run 9. Raw occurrences 63 → 67, all four attributed:
+  +1 `NIF.transaction_status` (`driver.ex`, `268261a`, existing row —
+  relies on `{:ok, bool}`, holds) and +3 `NIF.query`
+  (`unique_index_names.ex`, `badcbcb`, existing `query` row for shape
+  — plus the NEW row below for the value coupling). The durable table
+  driven LIVE against the realized tarball for the first time (prior
+  runs verified rows by source diff): every result-map, sentinel,
+  txn/pragma/open row intact, 25/25, RED control via `ROWS_RED=1`.
+  The adapter's four busy-slot doc claims all hold at 0.11.0 (802 ms
+  wait → 0 ms under an observer → 0 ms after unregister →
+  801 ms after `Xqlite.busy_timeout/2`; 8/8). `max_elapsed_ms`
+  per-contention reset confirmed live (807 ms on BOTH the first and
+  second contention under one installed policy) — discharges Run 9's
+  deferred dep-bump re-probe. Channel switch byte-clean: tarball vs
+  `git show v0.11.0` = 30/30 `lib/` + 25/25 `native/src/` identical,
+  zero missing, every `hex_metadata.config` entry present;
+  `native/xqlitenif/.cargo/config.toml` (the `STMT_SCANSTATUS` flag
+  `explain_analyze` needs on a force-build) SHIPS — RED control:
+  `TAG=v0.10.0` reports 16 differing files, exit 1. Forward delta
+  `80210b6..1dd5c2b` per commit: `eb4e55f` = Elixir floor `~> 1.17`
+  (matches the adapter's own floor), `7374ff0` = version strings +
+  rusqlite 0.40.1→0.40.2 + README snippet, `1dd5c2b` = tests only;
+  zero product surface; no table row moved.
+- **F-X2-2 (S2, CONFIRMED, FIXED, RED→green).**
+  `unique_index_names.ex` read `PRAGMA busy_timeout` and reused the
+  VALUE as the lookup's wall-clock budget; `within_budget?/3` was a
+  plain `<=`, so a zero budget rejected the first elapsed
+  millisecond. Zero arrives two ordinary ways: `busy_timeout: 0` in
+  repo config (legitimate fail-fast; accepted unvalidated at
+  `driver.ex:37`) and any busy policy/observer installed through
+  `with_xqlite/3` (the PRAGMA then reports 0; unregister does not
+  restore it). Measured: at 23 candidate indexes the halt fired
+  **10-11/50 trials at zero budget vs 0/50 at the default 5000** —
+  `unique_index_lookup` becomes `{:unavailable,
+  {:lookup_budget_exceeded, _}}`, the names stay empty, and a
+  changeset declaring the REAL index name intermittently raises
+  `Ecto.ConstraintError` instead of converting — same input,
+  different outcome run to run. (Reviewer's negative honesty: at ONE
+  candidate it never reproduces; recorded so the next pass does not
+  chase the narrow case.) FIX: a zero budget now DISABLES the
+  wall-clock check instead of allotting no time — the budget exists
+  to stop lock-wait multiplication and a zero timeout means reads
+  cannot block, so there is no price to multiply; the 24-candidate
+  cap alone bounds the work. Moduledoc + comment now state both
+  meanings. Tests: zero-semantics unit pin + a 13-candidate 30-trial
+  integration pin (`unique_index_names_test.exs`; the pre-existing
+  over-budget test's zero line pinned the BUG and was updated).
+  Stash-RED at gate: fix stashed → 21/23 with the zero unit test
+  failing; restored → 23/23. Probe disposition: `1330`'s checks 6 and
+  8 pin the PRE-fix behavior and print FAIL BY DESIGN post-fix (same
+  class as Run 25's cancel-leak probe).
+- **Durable map: one row ADDED** (Run 1 table): `PRAGMA busy_timeout`
+  via `query` — the adapter relies on the VALUE, not just the shape;
+  silent break mode if any xqlite busy-slot change alters what it
+  reports.
+- Method note (recorded): census numbers are code-only from now on
+  (name followed by an open paren); the name census stays reported
+  for cross-run comparability.
+- Dryness: one S2 — **X2 stays 0 of 2, NOT DRY**. Re-wet triggers
+  ALSO: `busy_budget/1` / `within_budget?/3` (this run's own fix owes
+  the re-cover) and the `with_xqlite` busy-slot doc block.
+
+### Completeness critic (seeds for the next X1/X2 pass)
+
+`Xqlite.ExplainAnalyze` + `Xqlite.Telemetry[.OpenTelemetry]` result
+shapes: called by the adapter, absent from the durable table, never
+driven at 0.11.0 — and `explain_analyze` depends on the shipped
+`.cargo/config.toml` flag on any force-build (file present, function
+undriven against the tarball build). Production-side union check:
+classification is proven, but nothing verifies xqlite can still EMIT
+each of the 48 shapes (a silently retired shape looks healthy).
+F-X2-2 timing on slow/contended storage and at candidate counts
+between 1 and 23; the post-fix zero-budget surface itself (the owed
+re-cover). Busy-slot doc claims through a REAL pool (a checked-in
+connection whose slot a previous `with_xqlite` emptied, handed to the
+next checkout — the exact case the doc block warns about; this run
+probed a bare connection). `Xqlite.backup` / `Xqlite.conn` /
+`Xqlite.error` have no table rows and were not driven.
+`driver.ex:37` accepts `busy_timeout` unvalidated (negative,
+non-integer, `:infinity` unprobed). Probe scripts under the session
+scratchpad `x1x2_cover/` (wall-clock-named, listed per finding);
+ledger describes every probe + verdict, so loss to tmp cleanup is
+acceptable.

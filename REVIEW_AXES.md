@@ -1103,6 +1103,34 @@ nit never consumed by `to_constraints/2`; tightening would churn `wrap/1` for
 zero correctness gain; if ever tightened, dedicated structs batched with future
 error enrichment. Zero findings. DRYNESS: **DRY (2 of 2)** — second consecutive
 clean covering run. Re-wet triggers UNCHANGED.
+RE-WET (2026-08-20): the 0.11.0 dep bump — `error_reason/0` grew (+2 bare
+atoms), the listed re-wetter.
+COVERING RE-RUN (Run 26, 2026-08-20 — first re-cover at published 0.11.0,
+hex-tarball channel): union re-derived FROM THE COMPILED BEAM = 48 members
+(9 bare + 39 tuple; exactly Run 13's 46 + `dd7c9f9`'s two, both
+adapter-unreachable, atom-clause-classified); 78/78 live through `wrap/1` +
+`to_constraints/2`, zero `type: nil`, adversarial edges degrade without
+raising; drift alarm proven (`X1_RED=1` trips on a hidden member);
+`error_wrap_test.exs` 23/23; `{:internal_encoding_error, msg}` confirmed at
+CLAUSE level (binary-payload 2-tuple, `error.ex:222-224` — completes Run
+25's B4 proof); `changeset_apply` `:replace` doc semantics recorded
+(abort+rollback on unreplaceable conflict, never degrades to `:omit`);
+forward blast `v0.11.0..1dd5c2b` = tests only. **F-X1-3 (S2, FIXED in
+xqlite as docs):** 0.11.0 SHIPPED the abandoned empty-columns rule for
+`query_with_changes` (`xqlitenif.ex:193`, `README.md:299`) vs the code's
+`total_changes`-delta rule — the exact doc that taught F-X2-1; both sites
+rewritten (RED: `DOC_RED=1` asserts the doc's model, 5 failures).
+**F-X1-4 (S2, FIXED):** `~> 0.11` admits 0.12+/0.99 while xqlite reserves
+pre-1.0 minor breaks and `0.9→0.10` already broke this adapter
+(`6d571e5`); no compatibility row existed in either README. Bound
+tightened to `~> 0.11.0` + pin-one-minor rationale comment; compatibility
+rows added to both live READMEs and both STE drafts. DRYNESS: two S2 —
+**X1 stays 0 of 2, NOT DRY**. Re-wets ALSO on: the compatibility rows
+(every bound change owes their sync) and xqlite's `query_with_changes`
+doc surface. Next-pass seeds: production-side union check (can xqlite
+still EMIT all 48 shapes); `Xqlite.ExplainAnalyze`/`Telemetry.*` shapes
+(adapter-called, never driven at 0.11.0); `changeset_apply` doc becomes a
+live contract if a session feature ever lands.
 
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
@@ -1147,6 +1175,41 @@ sentinel, and txn/pragma/open row untouched (nif.rs DirtyIo attribute-only,
 error.rs zero, `encode_val` success byte-identical). Zero new findings. DRYNESS:
 **DRY (2 of 2)** — second consecutive clean covering run. Re-wet triggers
 UNCHANGED.
+RE-WET (2026-08-20): the 0.11.0 dep bump (channel switch to the hex tarball)
++ lap-3 call-site churn (`268261a` transaction_status, `badcbcb`
+unique_index_names).
+COVERING RE-RUN (Run 26, 2026-08-20 — first re-cover at published 0.11.0):
+census at `cf2cc62` = 38 + 10 by name, **38 + 7 code-only** (new counter:
+name followed by an open paren; method re-validated at `6d571e5` 37+7 and
+`6539a14` 38+7) — executable surface UNCHANGED from Run 9; the 3 extra
+names are prose in the `with_xqlite` busy-slot doc block. Occurrences
+63→67, all attributed to existing rows. The durable table driven LIVE
+against the realized tarball for the first time: 25/25, RED via
+`ROWS_RED=1`. Channel switch byte-clean (30/30 `lib/` + 25/25
+`native/src/` vs `git v0.11.0`, manifest reconciled;
+`.cargo/config.toml` with `STMT_SCANSTATUS` ships — RED: `TAG=v0.10.0`
+finds 16 diffs). Busy-slot doc claims 8/8 at 0.11.0; `max_elapsed_ms`
+per-contention reset confirmed (807/807 ms) — discharges Run 9's deferred
+re-probe. Forward delta `80210b6..1dd5c2b` per commit: floor bump /
+version strings + rusqlite 0.40.2 / tests only — zero product surface, no
+table row moved. **F-X2-2 (S2, FIXED, RED→green):** the lookup reused
+`PRAGMA busy_timeout`'s VALUE as its wall-clock budget; zero (fail-fast
+config, unvalidated at `driver.ex:37`, or any busy policy/observer via
+`with_xqlite`) meant "no time at all" — 10-11/50 degradations at 23
+candidates vs 0/50 at default; real-name changesets intermittently raised
+`Ecto.ConstraintError`. Fixed: zero disables the wall-clock check (the
+24-cap bounds work); zero-semantics unit + 30-trial integration pins;
+stash-RED 21/23 → 23/23. One-candidate case never reproduces (recorded).
+New durable-map ROW added for the value coupling. Census method note:
+code-only is the recorded number from now on. DRYNESS: one S2 — **X2
+stays 0 of 2, NOT DRY**. Re-wets ALSO on: `busy_budget/1` /
+`within_budget?/3` (this run's fix owes the re-cover) and the
+`with_xqlite` busy-slot doc block. Next-pass seeds: busy-slot claims
+through a REAL pool (emptied-slot connection handed to the next
+checkout); F-X2-2 timing on slow storage and candidate counts 2-22;
+`Xqlite.backup`/`conn`/`error` rows absent from the table;
+`ExplainAnalyze`/`Telemetry.*` shapes undriven; `driver.ex:37`
+busy_timeout validation (negative / `:infinity`).
 
 ## Release-readiness (adapter-specific additions)
 
