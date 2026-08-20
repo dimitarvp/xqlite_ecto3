@@ -42,8 +42,13 @@ Application.put_env(:ecto_sql, PoolRepo, Application.get_env(:xqlite_ecto3, Pool
 # -- Exclusions (must be before migrations — migration checks these) -----------
 
 excludes = [
-  # SQLite has no native array column type
-  :array_type,
+  # NOT excluded as a tag: arrays ARE supported ({:array, _} maps to
+  # TEXT; XqliteEcto3.Types.Array stores JSON with round-trips), and
+  # `x in t.ints` membership translates to JSON_EACH. Leaving the tag
+  # in lets the shared migration create the array tables, so the six
+  # passing upstream array tests run. Only three genuinely fail —
+  # array literals in queries, update_all push:/pull:, and Postgres
+  # cast/array fragment syntax — excluded by location below.
 
   # SQLite has no SQL-standard isolation levels
   :transaction_isolation,
@@ -88,12 +93,22 @@ excludes = [
   :on_delete_nilify_column_list,
   :on_delete_default_column_list,
 
-  # SQLite has no native bitstring type
+  # A non-byte-aligned bitstring has no SQLite storage form, so these
+  # tests can never pass — but the FIRST blocker is ours, not SQLite's:
+  # Connection.default_expr/1 has no clause for a bitstring default
+  # (is_binary(<<42::6>>) is false), so the shared migration's
+  # bs_with_default column raises a bare FunctionClauseError before
+  # SQLite is involved. Because that happens inside the shared
+  # migration, un-excluding this tag crashes the whole vendored suite,
+  # not one test. Plain :bitstring and size: columns build fine; a
+  # bitstring PARAMETER fails with a structured
+  # {:cannot_convert_to_sqlite_value, ...}.
   :bitstring_type,
 
   # Ecto's :duration type dumps to a %Duration{} struct that our param
-  # encoder has no clause for (query.ex encode_param/1), so it reaches
-  # the JSON fallback and raises. SQLite also has no interval storage
+  # encoder has no clause for (query.ex encode_param/2), so it reaches
+  # the JSON fallback and raises a structured
+  # UnencodableParameterError. SQLite also has no interval storage
   # class, but the blocker here is OURS: supporting :duration means an
   # encode clause plus a load path, and the upstream tests additionally
   # assert Postgres fields:/precision: truncation semantics.
@@ -140,7 +155,14 @@ excludes = [
   # :boolean)` routes through the adapter's :boolean loader; covered
   # by adapter-owned tests in json_extract_path_test.exs. All WHERE
   # comparisons and non-boolean SELECTs in this test work.
-  {:location, {"deps/ecto/integration_test/cases/type.exs", 362}},
+  {:location, {"deps/ecto/integration_test/cases/type.exs", 359}},
+
+  # The three genuinely-failing array tests (see the :array_type note
+  # at the top): array literals inside a query body; Postgres
+  # $1::text[] cast syntax; Postgres array[...] literal syntax.
+  {:location, {"deps/ecto/integration_test/cases/type.exs", 234}},
+  {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 30}},
+  {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 38}},
 
   # (permanent SQLite limit) strftime %f gives only millisecond precision.
   # interval.exs datetime_add tests that add microsecond counts round to

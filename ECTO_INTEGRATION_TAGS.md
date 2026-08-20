@@ -10,16 +10,16 @@ exclusions. Bundled SQLite version: **3.53.2**. Shared files loaded:
 | `:add_column_if_not_exists` | supported | adapter checks `PRAGMA table_info()` per alter block; filters no-ops |
 | `:alter_foreign_key` | excluded | the rebuild engine refuses `modify :col, references(...)` up front with guidance — it reconstructs foreign keys from the existing schema and cannot merge a new or repointed one in. An adapter gap (`F-B7-25-feature` in BACKLOG), not a SQLite limit |
 | `:alter_primary_key` | excluded | two separate causes: migration.exs:640 hits the reference refusal above; migration.exs:705 ADDs a PRIMARY KEY column, which SQLite's ALTER TABLE cannot do (no rebuild involved — it only engages for `modify`) |
-| `:array_type` | excluded | the adapter DOES ship arrays (`{:array, _}` maps to TEXT; `XqliteEcto3.Types.Array` stores JSON with round-trips) — what cannot work is the Postgres array operator surface these tests exercise (`x in t.ints`, `update_all` `push:`/`pull:`) and untyped/fragment decoding |
+| `:array_type` | supported (6/9, three permanent location exclusions) | arrays ARE shipped (`{:array, _}` maps to TEXT; `XqliteEcto3.Types.Array` stores JSON with round-trips) and `x in t.ints` membership translates to `JSON_EACH` — the tag is NOT excluded, so the shared migration creates the array tables and six upstream tests run and pass. What cannot work, location-excluded: array literals inside a query body (`type.exs:234`), Postgres `$1::text[]` cast syntax (`sql.exs:30`), and Postgres `array[...]` literal syntax (`sql.exs:38`); `update_all` `push:`/`pull:` also do not translate (exercised only inside `type.exs:234`) |
 | `:assigns_id_type` | supported (3/4) | user-assigned PKs work; the tag's one failing test is `migration.exs:664`, location-excluded — the up-front reference refusal (`F-B7-25-feature`), nothing to do with PK handling |
-| `:bitstring_type` | excluded | SQLite has no native bitstring type |
+| `:bitstring_type` | excluded | a non-byte-aligned bitstring has no SQLite storage form, so these tests can never pass — but the FIRST blocker is ours: `Connection.default_expr/1` has no bitstring clause (`is_binary(<<42::6>>)` is false) and raises a bare `FunctionClauseError` inside the shared migration, so un-excluding the tag crashes the whole vendored suite, not one test; plain and `size:` bitstring columns build fine, and a bitstring parameter fails with a structured `{:cannot_convert_to_sqlite_value, ...}` |
 | `:concat` | supported | SQLite 3.44+ has `concat()` and `concat_ws()` |
 | `:delete_with_join` | supported | conservative rewrite to `DELETE FROM t WHERE pk IN (SELECT …)`; raises `Ecto.QueryError` on shapes we can't safely transform |
 | `:duration_type` | excluded | Ecto's `:duration` dumps a `%Duration{}` struct our param encoder has no clause for (it reaches the JSON fallback and raises) — our gap, not SQLite's; the upstream tests additionally assert Postgres `fields:`/`precision:` truncation |
 | `:foreign_key_constraint` | supported | not excluded and all 6 pass (`--only foreign_key_constraint` ⇒ 6 passed); rich FK diagnostics (opt-in `rich_fk_diagnostics: true`) synthesize the `<table>_<col>_fkey` name that `foreign_key_constraint/3` matches on |
 | `:insert_cell_wise_defaults` | supported (7/8) | only `repo.exs:864` actually inserts uneven rows (location-excluded): Ecto pads the missing cell with NULL, so the column DEFAULT never applies. The other seven tagged tests pass and run |
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
-| `:json_extract_path` | supported (4/5, one permanent location exclusion) | untyped boolean SELECTs return 1/0 by design — no load hook exists for untyped selects, so no coercion layer is coming; `type.exs:362` is location-excluded and the sanctioned fix is explicit `type(..., :boolean)` (see json_extract_path_test.exs) |
+| `:json_extract_path` | supported (4/5, one permanent location exclusion) | untyped boolean SELECTs return 1/0 by design — no load hook exists for untyped selects, so no coercion layer is coming; `type.exs:359` is location-excluded and the sanctioned fix is explicit `type(..., :boolean)` (see json_extract_path_test.exs) |
 | `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands, so both tagged `type.exs` tests pass un-excluded. (`:binary` columns are declared BLOB — no affinity — and the storage class follows the value: text for valid UTF-8, blob otherwise; LIKE matches both) |
 | `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
@@ -51,9 +51,12 @@ full rationales live next to each tuple in `test/test_helper.exs`.
 | `ecto_sql .../sql/transaction.exs:161` | fails from two adapter-suite settings (test pool_size 1 + the driver's BEGIN IMMEDIATE default), not a SQLite limit — passes at pool ≥ 2 with `:deferred` mode |
 | `ecto_sql .../sql/alter.exs:44` | a schemaless SELECT after `modify :numeric` returns the storage value (INTEGER 1), never `%Decimal{}` — types live at the Ecto schema layer by design |
 | `ecto_sql .../sql/logging.exs:74` | UUIDs are stored as TEXT by default, so query-telemetry params carry the 36-char string, not Postgres's 16-byte binary |
-| `ecto .../cases/type.exs:362` | untyped boolean SELECT returns 1/0 (no load hook on untyped selects); use `type(..., :boolean)` |
+| `ecto .../cases/type.exs:359` | untyped boolean SELECT returns 1/0 (no load hook on untyped selects); use `type(..., :boolean)` |
 | `ecto_sql .../sql/migration.exs:664` | `modify` with a `references(...)` type — the up-front reference refusal (`F-B7-25-feature`), not a SQLite limit |
 | `ecto .../cases/repo.exs:864` | uneven `insert_all` rows: the NULL Ecto pads in suppresses the column DEFAULT |
+| `ecto .../cases/type.exs:234` | array literals inside a query body and `update_all` `push:`/`pull:` do not translate |
+| `ecto_sql .../sql/sql.exs:30` | Postgres `$1::text[]` cast syntax |
+| `ecto_sql .../sql/sql.exs:38` | Postgres `array[1,2,3]` literal syntax |
 
 Line pointers in this table and in `test_helper.exs` name the `test`
 line, never the `@tag` line: an ExUnit line filter snaps to the nearest
