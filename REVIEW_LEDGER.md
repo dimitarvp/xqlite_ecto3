@@ -4992,3 +4992,185 @@ the post-check itself mid-gate (see F-B7-43); stash-RED 7 red
   door (severity was argued from CHECK/AUTOINCREMENT alone).
 
 SIXTEEN straight finding runs.
+
+## Run 37 — 2026-08-21 — lap 5, batch 6: B3 + B9 paired cover (the config sweep + the sync's remaining doors)
+
+Single Opus reviewer at `df10b37`; xqlite 0.11.0 (hex), SQLite 3.53.2
+probe-confirmed. Emission-churn verdict: telemetry.ex /
+open_telemetry.ex / the guide byte-identical since Run 29's own fix
+commit; fk_diagnostics.ex moduledoc-only; the one emission-CONTENT
+change (connect stop error_reason now a wrapped exception, from Run
+33) re-anchored live. Env fact on record: the adapter telemetry flag
+is false in :dev, so telemetry probes must run MIX_ENV=test or they
+silently measure a no-op build. Gate: thirteen probes re-driven by
+the orchestrator (p01/p02/p03/p05/p06/p07/p08/p09/p10/p11/p14/p17/
+p18 — rc 0 each, decisive lines read; p04's 14-spelling sweep, p15's
+4-minute OFF matrix, p12/p13/p16/p19 accepted from the reviewer's
+logs, p16 superseded by p17 per its own correction note); fixes
+implemented BY THE ORCHESTRATOR; stash-RED 7 red (exactly the
+predicted seven) → 88/88 green.
+
+- **F-B3-11 (S2, CONFIRMED, FIXED, RED→green).** Eight repo-config
+  values went to `NIF.set_pragma` unvalidated, and SQLite's pragma
+  parser never errors on an unrecognized value — it picks a default:
+  `journal_mode: :walk` meant DELETE mode, `synchronous: :ful` meant
+  NORMAL, `temp_store: :mem` meant DEFAULT, and `foreign_keys:
+  :nonsense` meant enforcement OFF — a real repo started cleanly and
+  ACCEPTED an orphan FK row (probed end-to-end; the `true` control
+  rejects). 84-case sweep table in the report; verdict per value.
+  FIX: nine validators at connect beside the existing three —
+  atom-enum for journal_mode/synchronous/temp_store/auto_vacuum
+  (supersets of the URL parser's own allowlists, which already
+  produce typed values, so both config paths pass), is_boolean for
+  foreign_keys, is_integer for cache_size (negative = KiB is
+  meaningful), non-negative integers for wal_autocheckpoint/
+  mmap_size, and is_boolean for rich_fk_diagnostics — **F-B3-12 (S3,
+  CONFIRMED, FIXED)**: the feature guard is a struct match on the
+  atom true, so `rich_fk_diagnostics: "true"` silently disabled the
+  whole feature. All nine reject through the same tag-tuple wrap
+  family. DELIBERATE SCOPE CUT, documented: `custom_pragmas`
+  keys/values stay unvalidated (the escape hatch; SQLite ignores
+  unknown pragma names entirely) — README + STE now say so.
+  Committed pins (connect_pragmas +2): a 14-shape rejection matrix,
+  and the config-only enum values (`:persist`, `auto_vacuum: :none`)
+  still connecting. DISCHARGES [R35-handoff-config-validation].
+- **F-B3-13 (S2, CONFIRMED, FIXED, RED→green).** Run 33's comment-
+  skip closed the comment door; a UTF-8 BOM (what Windows editors
+  write at the top of a .sql file — reachability probed by literally
+  reading such a file and running it) and a leading semicolon are
+  also skipped by SQLite's tokenizer but were not skipped by
+  `leading_keyword/1` — both F-B3-7 failure modes reopened for those
+  spellings: `<BOM>BEGIN` leaked a durable post-failure write (probe:
+  three-way discriminator, five spellings, both controls), `;COMMIT`
+  left a stale flag that destroyed a healthy pooled connection on
+  the next ordinary error. The rebuild engine's own raw
+  BEGIN/COMMIT/ROLLBACK make this sync load-bearing for adapter code
+  too. FIX: `?;` joined the whitespace-skip set and a BOM clause
+  skips `EF BB BF` — the reviewer's 14-spelling sweep (nested
+  comments, NBSP, vertical tab, unterminated forms, CRLF) puts BOM +
+  semicolon as the complete remaining set on this runtime. Committed
+  pins (transaction_state +3): BOM-BEGIN flag sync, semicolon-COMMIT
+  flag sync, BOM-BEGIN → rollback-class violation disconnects.
+- **F-B3-14 (S2, CONFIRMED, docs-fixed + menu).** `with_xqlite/3`
+  always starts its own checkout — the moduledoc's "under the
+  Sandbox the caller's sandboxed connection is reused, so nesting is
+  fine" was FALSE for everything but a bare call: inside
+  Repo.transaction/checkout it queue-timeout-raises at pool_size 1
+  (on the plain pool inside Repo.transaction the enclosing
+  transaction ROLLS BACK), and at pool > 1 the callback silently
+  runs on a DIFFERENT pooled connection (probed via a
+  connection-scoped marker), so every connection-scoped install
+  lands on the wrong connection — `txn_state/2` and
+  `connection_stats/1` route through it and hit the same wall.
+  Moduledoc rewritten (never nest; the exact failure shapes; bare-
+  call-only sandbox reuse); the implement option (reuse the caller's
+  checkout — needs a discovery mechanism DBConnection does not
+  expose) filed [F-B3-14-menu].
+- **F-B9-15 (S2, CONFIRMED, FIXED, RED→green).** OTel `error.type`
+  fell through to the generic struct clause for `%XqliteEcto3.Error{}`,
+  so since Run 33 every adapter error mapped to the ONE value
+  "XqliteEcto3.Error" — grouping by error class impossible, both
+  docs surfaces claiming the opposite (F-B9-10's collapse had moved,
+  not died). FIX: a clause emits the struct's typed :type atom
+  (nil-type falls back to the struct name); moduledoc + guide
+  corrected. Committed pins (otel +3, one flipped): wrapped error →
+  "constraint_violation", disconnect-wrapped kept, nil-type + foreign
+  struct fallbacks.
+- **F-B9-16 (S3, CONFIRMED, FIXED).** The three statement_cache
+  events carried `[:sql]` alone while every sibling carries :conn —
+  and the cache is PER CONNECTION, so a pool-wide hit-rate is
+  depressed by pool_size misses per distinct statement and
+  cached_count interleaves independent counters
+  (pool-size-controlled measurement). FIX: :conn added to all three
+  emissions; per-connection sentence in both docs surfaces; the
+  conn-discriminator pinned. Also makes the F-B8-9 :conn-join
+  correlation story uniform.
+- **F-B3-15 (S3, CONFIRMED, docs-fixed).** `PRAGMA
+  wal_autocheckpoint` through SQL always reports 0 (xqlite's master
+  WAL callback owns SQLite's single slot and emulates the
+  autocheckpoint) while `NIF.get_pragma` reports the effective
+  value — probed same-connection 321 vs 0. README + STE now carry
+  the honest-read line.
+- **F-B3-16 (S3, CONFIRMED, docs-fixed).** A session-extension
+  recorder obtained through the bridge keeps recording OTHER
+  callers' pool traffic after check-in (probe: 64 changeset bytes
+  written by ordinary Repo.query! calls post-callback; scoped
+  control clean) — it now leads the moduledoc's persistent-state
+  list. The F-B3-10 amplification sentence sharpened with the
+  measured curve: ONE poisoned connection of eight absorbed 41/48
+  contended writes, and poisoning more barely moves it (43, 46;
+  0-poisoned control 48/48 ok) — flat, near-total, from one.
+- **F-B9-17 (S3, CONFIRMED, filed → F-B9-13 WIDENED).** The
+  telemetry-OFF build breaks FOUR files (17 tests: telemetry_test
+  0/14, fk_diagnostics 12/13 at the line-334 :start assert_receive,
+  statement_cache 13/14, telemetry law 2/3), not the one F-B9-13
+  filed; entry rewritten with the settled remedy trade-off
+  (flag-guards keep the mixed files' non-telemetry coverage;
+  whole-file guard for telemetry_test). Reviewer verified OFF → ON
+  restoration; not fixed blind, per the standing rule.
+- **F-B9-18 (S3, CONFIRMED, filed → menu extended).** The connect
+  stop event's error_reason (a details-less wrapped exception since
+  Run 33) carries the rejected config value only as message prose —
+  folded into [F-B1-menu-connect-error-details] as its telemetry
+  consequence; the Run-37 validators grew that family by nine tags.
+- **F-B8-9-docs CLOSED.** The owed correlation line landed in the
+  guide with probe-backed content: join disconnect ↔ handle_execute
+  :stop on :conn (same reference, probed); reason shapes for
+  operation-error vs cancel on record; the cancel-vs-deadline-recycle
+  ambiguity resolved via the :stop event's error_reason.
+- **Filed sweep (rest):** F-B9-14 HOLDS (moduledoc-only churn
+  confirmed; crash shapes per malformed row on record; LATENT — the
+  pragma returns exactly 8 columns on 3.53.2; build_violation/2
+  protected by child_tables/1's validation). F-B1-5 HOLDS with the
+  Run-37 caveat (a failing stream_close could NOT be constructed —
+  exposure unproven without NIF fault injection; entry annotated).
+  F-B3-4-xqlite HOLDS (observer/policy drop busy_timeout 4567→0,
+  unregister does not restore, documented remedy works). F-B3-1
+  HOLDS (`:memory:` + pool: 7/24 inserts on the table's connection).
+  F-B9-4 HOLDS (lookup still span-less). The Run-14
+  orchestrator-unverified B3 seed SUPERSEDED (absorbed by Run 23's
+  F-B3-5; re-confirmed on every door-A arm).
+- **Clean census (controls named):** the Run-33 comment-prefix
+  re-anchor CLEAN — five spellings through BOTH F-B3-7 doors
+  (disconnect-at-damage + no-false-destroy), leak-detector and
+  no-txn controls; F-B3-8 declare/fetch routing CLEAN at HEAD
+  (streamed ROLLBACK-class DML inside Ecto.Multi disconnects at
+  damage; deliberate-commit control); multi-statement SQL is NOT a
+  route into the sync (structured :multiple_statements rejection
+  both paths); `{:shared, owner}` sandbox under ROLLBACK-class
+  violation CLEAN — settled by an INDEPENDENT second SQLite
+  connection (0 committed rows mid/after; deliberate-commit
+  control); backup/serialize handles across check-in CLEAN (no
+  outliving handle; smuggled-ref behavior as documented);
+  set_busy_policy form as documented; both span pairs re-anchored
+  (start-metadata merge rule intact); :checkout under the SANDBOX
+  ownership pool CLEAN — 0 events over 20 ownership cycles + 20
+  queries + 50 plain-pool queries, fresh-pool control fires 2
+  (F-B9-7's corrected docs hold in the risky configuration);
+  statement_cache :miss fallback premise CORRECTED (fallback SQL
+  fails anyway — no succeeds-via-fallback case; trailing single
+  semicolon does NOT defeat the cache — an earlier pool-size
+  artifact, corrected by the controlled measurement). Deferrals,
+  explicit: NIF fault injection for a pool-reachable :exception (not
+  attempted — carried forward); native-vs-ns on non-Linux (not
+  probeable here). Observed-not-proven: the bare RuntimeError shape
+  escaping Repo.transaction(multi) on a mid-Multi disconnect (one
+  observation).
+- Dryness: four S2 across the pair — **B3 stays 0 of 2, B9 stays
+  0 of 2, NOT DRY**; the fixes re-wet the nine validators + the
+  connect chain, `leading_keyword/1`'s skip set, the OTel
+  `error_type` clauses, and the statement_cache emission metadata.
+  Completeness critic (next passes): config-value COMBINATIONS
+  (journal_mode × wal_autocheckpoint; mode: :readonly × the
+  coerced set — writable/2 nils two values, different silent
+  profile); the `hooks` config value (never swept — four clauses,
+  unregistered names, malformed entries); the BOM/semicolon fix's
+  own covering pass hunting beyond ASCII (read SQLite's tokenizer
+  skip set in C rather than inferring from behavior); with_xqlite
+  under Sandbox at pool > 1 from an ALLOWED (non-owner) process —
+  the configuration test suites actually run; F-B1-5 needs NIF
+  fault injection or a re-grade to discard-unreachable; the
+  :exception construction still owed; a second lock-hold duration
+  for the amplification curve; the Multi RuntimeError shape.
+
+SEVENTEEN straight finding runs.

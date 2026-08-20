@@ -381,6 +381,49 @@ surface itself; backup/serialize/session handles across check-in;
 `set_busy_policy` form; `Repo.stream` inside `Ecto.Multi`;
 `{:shared, owner}` sandbox mode under a ROLLBACK-class violation;
 the amplification curve vs pool size/fraction.
+COVERING RE-RUN (Run 37, 2026-08-21 — lap 5, batch 6, paired with
+B9): **F-B3-11 (S2, FIXED)** — eight pragma-bound config values were
+unvalidated and SQLite's parser silently defaults on nonsense:
+`foreign_keys: :nonsense` disabled FK enforcement (orphan accepted,
+probed end-to-end through a real repo), `journal_mode: :walk` meant
+DELETE, `synchronous: :ful` meant NORMAL; fix = nine connect
+validators (supersets of the URL parser's typed allowlists), incl.
+**F-B3-12 (S3, FIXED)** — `rich_fk_diagnostics: "true"` silently
+disabled the feature (struct-match guard). custom_pragmas stays
+deliberately unvalidated, documented. DISCHARGES
+[R35-handoff-config-validation]; 84-case verdict table in the
+ledger/report. **F-B3-13 (S2, FIXED)** — UTF-8 BOM and leading
+semicolon (both skipped by SQLite's tokenizer) still hid transaction
+control from the keyword sync: BOM-BEGIN leaked durable post-failure
+writes (a real Windows-authored .sql file reproduces it), ;COMMIT
+destroyed a healthy connection via the stale flag; fix = `;` + BOM
+join the skip set (the 14-spelling sweep bounds these as the
+complete remaining set on this runtime). **F-B3-14 (S2, docs-fixed +
+menu)** — `with_xqlite/3` ALWAYS starts its own checkout: the
+sandbox-nesting promise was false (bare calls only); nested = queue-
+timeout raise at pool 1 (plain-pool in-transaction: enclosing txn
+ROLLS BACK) or a silently DIFFERENT connection at pool > 1;
+moduledoc rewritten, reuse option filed [F-B3-14-menu]. **F-B3-15
+(S3, docs-fixed)** — raw `PRAGMA wal_autocheckpoint` always reads 0
+(xqlite's WAL-slot emulation); honest-read line landed. **F-B3-16
+(S3, docs-fixed)** — a bridge-obtained session recorder keeps
+recording other callers' pool traffic after check-in; now leads the
+persistence list; F-B3-10's sentence sharpened with the measured
+curve (1 of 8 poisoned absorbs 41/48; flat in the poisoned
+fraction). CLEAN: the Run-33 comment-prefix residual CLOSED through
+both F-B3-7 doors (5 spellings, leak-detector control); F-B3-8
+declare/fetch routing at HEAD; multi-statement SQL not a route into
+the sync; `{:shared, owner}` sandbox settled by an independent
+reader; backup/serialize across check-in; set_busy_policy as
+documented. Filed sweep: F-B3-4-xqlite / F-B3-1 hold; the Run-14
+unverified seed superseded by F-B3-5. Stash-RED 7 predicted exactly
+→ 88/88. DRYNESS: three S2 — **B3 stays 0 of 2, NOT DRY**. Re-wets
+ALSO on: the nine `validate_*` connect validators, `leading_keyword/1`'s
+skip set. Next-pass seeds: config-value COMBINATIONS (+ the readonly
+`writable/2` profile); the `hooks` config value (never swept);
+tokenizer skip set read from SQLite's C source; with_xqlite under
+Sandbox at pool > 1 from an allowed process; a second lock-hold
+duration for the amplification curve; the Multi RuntimeError shape.
 
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
@@ -1439,6 +1482,47 @@ production"); the `disconnect` event's `reason` under the Runs-23/25
 disconnect paths; `statement_cache` `:miss` on the multi-statement
 fallback; native-vs-ns on a non-Linux runtime; `group_fk_rows/1`
 fallthroughs (filed).
+COVERING RE-RUN (Run 37, 2026-08-21 — lap 5, batch 6, paired with
+B3; emission sites byte-identical since Run 29's fix commit,
+git-verified; fk_diagnostics moduledoc-only): **F-B9-15 (S2, FIXED)**
+— OTel `error.type` collapsed to the ONE value "XqliteEcto3.Error"
+for every adapter error since Run 33's connect wrap (F-B9-10's
+collapse moved, not died; both docs surfaces claimed otherwise); fix
+= a clause emitting the struct's typed :type atom, nil-type → struct
+name, docs corrected, pins flipped/added. **F-B9-16 (S3, FIXED)** —
+the statement_cache events carried [:sql] alone while the cache is
+PER CONNECTION (pool-size-controlled measurement: hit-rate depressed
+by pool_size misses per statement, cached_count interleaved); :conn
+added to all three + per-connection sentence in both surfaces —
+also makes the F-B8-9 :conn join uniform. **F-B8-9-docs CLOSED** —
+the correlation line landed with probe-backed content (join
+disconnect ↔ handle_execute :stop on :conn; reason shapes for
+operation-error vs cancel on record). **F-B9-17 (S3, filed →
+F-B9-13 WIDENED)** — the OFF build breaks FOUR files / 17 tests,
+not one; entry rewritten with the settled trade-off (flag-guards
+over lane-widening; whole-file guard for telemetry_test). **F-B9-18
+(S3, filed → [F-B1-menu-connect-error-details] extended)** — the
+connect stop event's error_reason carries the rejected config value
+only as message prose; the Run-37 validators grew that family by
+nine tags. Env fact pinned in the ledger: adapter telemetry is
+compile-flagged OFF in :dev — telemetry probes must run
+MIX_ENV=test. CLEAN: both span pairs re-anchored (merge rule
+intact); :checkout under the SANDBOX ownership pool fires ZERO
+per-ownership events (fresh-pool control fires 2 — F-B9-7's docs
+hold in the risky configuration); the :miss-fallback seed's premise
+corrected (fallback SQL fails anyway; a trailing semicolon does not
+defeat the cache). Filed sweep: F-B9-14 holds (LATENT — the pragma
+returns exactly 8 columns; crash shapes on record), F-B1-5 holds
+with the failing-close-unconstructible caveat, F-B9-4 holds.
+Deferrals explicit: pool-reachable :exception construction (carried
+forward), native-vs-ns off-Linux (not probeable here). DRYNESS: an
+S2 — **B9 stays 0 of 2, NOT DRY**. Re-wets ALSO on: the OTel
+`error_type` clauses, the statement_cache emission metadata, the
+guide's disconnect-correlation + cache paragraphs. Next-pass seeds:
+the :exception construction; F-B1-5's fault injection or re-grade;
+the OFF-build guard pass when it lands (verify BOTH builds); the
+Multi RuntimeError shape; native-vs-ns when a non-Linux runtime is
+available.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean

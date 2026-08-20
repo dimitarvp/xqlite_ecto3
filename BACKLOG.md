@@ -85,6 +85,13 @@ after the S0–S2 burn-down.
   event's metadata so failures are at least observable. Touches the
   locked telemetry surface — deliberate B9-court pass, not a
   gate-side edit. (Run 33, B1 → B9)
+  Caveat (Run 37): a failing close could NOT be constructed —
+  double-close returns :ok, and closing the connection under an open
+  stream then the stream also returns :ok; the discarded value was
+  :ok in every reachable construction, so real exposure is unproven
+  without NIF-level fault injection. The stop event's shape on
+  record: result_class :ok, error_reason nil, no field for a close
+  result. (Run 37, B9)
 - [F-B1-menu-connect-error-details] (maintainer menu, from Run 33's
   gate) Connect config-error payloads (unregistered hook subscriber
   NAME, malformed pragma entry, invalid mode atom) now live only in
@@ -94,6 +101,12 @@ after the S0–S2 burn-down.
   designed-shape decision for the whole error surface, not a local
   patch; `cannot_open_database` already got its specific clause
   (path + code in details) as the Run-33 precedent. (Run 33, B1)
+  Telemetry consequence (Run 37 = F-B9-18): the connect stop event's
+  error_reason is now the wrapped exception with details: nil, so a
+  consumer wanting the REJECTED VALUE (which config key, what was
+  passed) can only parse message prose — against doctrine. The
+  Run-37 validators grew this family by nine more tags; whatever
+  payload shape lands here should carry {key, value}. (Run 37, B9)
 - [F-B6-6-menu] (maintainer menu, B7 court, from Run 34) `alter
   table … add` with a non-constant `default:` fragment is row-count
   dependent by SQLite's own ADD COLUMN rule (empty table OK,
@@ -114,31 +127,31 @@ after the S0–S2 burn-down.
   fragment default and both honest workarounds (constant default +
   `execute` UPDATE, or deliberately bundle with a modify — probed
   working). (Run 36, B7)
-- [R35-handoff-config-validation] (seed, B3/B8 court, from Run 35's
-  gate) `driver.ex` reads a dozen repo-config values (`cache_size`,
-  `mmap_size`, `wal_autocheckpoint`, `journal_mode`, `synchronous`,
-  `temp_store`, …) and only three are validated
-  (`default_transaction_mode`, `statement_cache_size`, and now
-  `busy_timeout`). The silent-coercion class F-B5-20 fixed —
-  accepted config that quietly means something else at the pragma
-  level — likely sits under the rest. Sweep them: probe what each
-  accepts vs what the pragma reads back, validate or document per
-  value. (Run 35, B5 → B3/B8)
-- [F-B8-9-docs] (S3, docs, from Run 32) The
-  `[:xqlite_ecto3, :disconnect]` event cannot distinguish our cancel
-  from DBConnection's own checkout-deadline recycle — both carry
-  `reason: %DBConnection.ConnectionError{reason: :error}`
-  (DBConnection permits no third reason value). The structured
-  correlation path exists: match the `handle_execute` stop event's
-  `error_reason: {:disconnect, _}` by `conn`. One line owed in the
-  telemetry guide next to the disconnect row. (Run 32, B8 → B9 docs) `fk_diagnostics_test.exs`'s telemetry
-  assertion fails under the `XQLITE_ECTO3_TELEMETRY=off` build
-  (pre-existing; invisible in CI because the `telemetry_disabled`
-  lane runs only the smoke file). Remedy: flag-guard that test the
-  way the smoke file does (module-level compile-time check), or
-  widen the OFF lane to the full suite minus telemetry-asserting
-  files. Not fixed blind — the OFF build sits outside the local
-  verify gate. (Run 29, B9)
+- [F-B3-14-menu] (maintainer menu, from Run 37) `with_xqlite/3`
+  always starts its own checkout, so nested calls (inside
+  `Repo.transaction`/`Repo.checkout`/another bridge call) queue
+  behind the pool: at pool_size 1 a queue-timeout raise (or a rolled-
+  back enclosing transaction), at larger sizes the callback silently
+  runs on a DIFFERENT pooled connection — every connection-scoped
+  install lands on the wrong one. The moduledoc's false sandbox-
+  nesting promise was corrected at Run 37's gate (docs are the ruled
+  remedy). Implement option: detect the calling process's existing
+  checkout and run on it — needs a caller-conn discovery mechanism
+  DBConnection does not expose today. Feature call. (Run 37, B3)
+- [F-B9-13] (S3, from Run 29; WIDENED by Run 37 = F-B9-17) The
+  `XQLITE_ECTO3_TELEMETRY=off` build breaks FOUR test files, not
+  one: `telemetry_test.exs` 0/14, `fk_diagnostics_test.exs` 12/13
+  (the filed assertion — line 334's `:start` assert_receive, empty
+  mailbox), `driver_statement_cache_test.exs` 13/14,
+  `telemetry_and_placeholder_law_test.exs` 2/3 — 17 failing
+  tests/properties total; invisible in CI because the
+  `telemetry_disabled` lane runs only the smoke file. The widened
+  facts settle the remedy trade-off: widening the lane would exclude
+  four files and forfeit the mixed files' non-telemetry coverage;
+  compile-time flag-guards cost ~17 guarded tests and keep it —
+  whole-file guard natural for `telemetry_test.exs` alone. Not fixed
+  blind — verify under BOTH builds when it lands. (Run 29 + Run 37,
+  B9)
 - [F-B9-14] (S3, from Run 29) `group_fk_rows/1`'s
   `foreign_key_list` row destructures in `fk_diagnostics.ex` still
   lack fallthrough clauses — the same implicit-raise class the
