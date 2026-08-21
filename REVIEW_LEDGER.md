@@ -5391,3 +5391,78 @@ characterization pins are green by nature, recorded) → 34/34.
   external foreign writer for the loader legs.
 
 NINETEEN straight finding runs.
+
+## Run 40 — 2026-08-21 — lap 5, batch 9 (the closer): X1 + X2 paired cover
+
+Single Opus reviewer began at `13ebcd3`, HEAD moved mid-run to
+`a58b356` (changelog-only; verified, no code re-review owed); xqlite
+0.11.0 hex tarball hash-verified. Drift verdict: tarball ≡ v0.11.0
+tag on all six native sources; repo worktree differs from the tag
+only in the clippy rewrite (schema.rs, no behavior) and the two
+UNSHIPPED doc fixes (below). Correction on record: the hex package
+DOES ship the full Rust source tree. Gate: four probes re-driven
+(p7/p11/p2/p3 — census 48/48 CLEAN, arity CLEAN, doc-parity CLEAN
+against the code's rule, p11 DIRTY = the two S3s); fixes BY THE
+ORCHESTRATOR; stash-RED predicted 1 (the statement pin) — verified
+in the gate log.
+
+- **F-X2-3 (S2, CONFIRMED; staged for release — publish is the
+  maintainer's).** Run 26's two xqlite doc fixes (the
+  query_with_changes rule correction + the README compatibility
+  statement) were committed to main AFTER the v0.11.0 tag and never
+  released: hex/hexdocs still teach the abandoned empty-columns rule
+  that produced the adapter's own cached-path bug once already
+  (probe: the shipped doc's model predicts 0 for all three RETURNING
+  shapes; the shipped code reports the real count). Remedy staged:
+  xqlite CHANGELOG gained an Unreleased section recording exactly
+  what a 0.11.1 patch delivers (docs + the clippy rewrite, no
+  behavior); the release itself (version bump, tag, publish) is
+  queued for the maintainer — a patch stays inside the adapter's
+  `~> 0.11.0` bound, so no adapter change is owed. Re-wets on the
+  next xqlite release.
+- **F-X1-5 (S3, CONFIRMED, FIXED, RED→green).** `Error.statement`
+  was declared in the struct and the public typespec and never
+  written by any path — a dead promise. Fixed: the failing SQL is
+  stamped at both `wrap_execute_error/4` clauses and both
+  `handle_declare` error branches (`put_statement/2`);
+  `handle_fetch` stays nil truthfully (the cursor does not carry the
+  SQL). Pin: a failing `Repo.query` carries its statement.
+- **F-X1-6 (S3, CONFIRMED, FIXED).** `@type details` omitted the
+  three plain-map payloads real wrap clauses build (busy family /
+  utf8 / cannot_open_database — six of 48 shapes outside their own
+  declared type, and the set had grown by one since the original
+  ACCEPT disposition with nothing pinning the count). Fixed by
+  widening the union with the three map shapes; no runtime change.
+- **Census + filed sweep:** the 48-member union is IDENTICAL to Run
+  26 with one fully-attributed class move (cannot_open_database →
+  dedicated clause, the Run-33 churn); zero fallthrough, zero nil
+  types. The 18 connect tags verified end-to-end (wrap, Exception.t,
+  telemetry stop, OTel type) — [F-B1-menu-connect-error-details]
+  HOLDS and now covers 18 sites. [F-B8-2] holds (no cancellable
+  stream fetch exported at 0.11.0). X1-2 / F-X1-1 / F-X2-1 stay
+  closed (F-X2-1 re-verified through the adapter's CACHED path — a
+  first). F-X1-4 holds on the adapter side across eight consistent
+  pairing sites; noted: the STE drafts live outside version control,
+  and bench/mix.exs's lockfile comment is stale (path deps). The new
+  loader `:error` path recorded CLEAN by Ecto's contract with two
+  honest limitations on record (prose-only diagnostic; the adapter
+  span reads success because Ecto loads after it closes). Doc parity
+  on cancellation and the WAL read-back story CLEAN across the pair.
+  NIF call surface: 41 distinct name+arity calls, all exported at
+  0.11.0 exactly (AST-walk census; the prose/doc-block miscounts of
+  earlier name-grep censuses explained on record). Passed along:
+  bare RuntimeErrors at xqlite_ecto3.ex:572/:846 belong to the
+  rebuild court ([F-B7-41-menu] already carries the :846 class).
+- Dryness: an S2 + two S3 — **X1 and X2 both stay 0 of 2, NOT
+  DRY**; TWENTY straight finding runs; **LAP 5 COMPLETE** (all nine
+  planned batches; B10 stays DRY-as-recorded from lap 2, its
+  re-cover rides the bench work). Re-wets ALSO on: any new wrap/1
+  clause (the details union + the statement field), the next xqlite
+  release (F-X2-3). Completeness critic (next X pass): the
+  full-48 emission question (session/blob/backup shapes never
+  provoked); the busy-slot claims through a pooled checkout;
+  hexdocs rendering read directly; the two census facts worth
+  pinning (:invalid_pragma_name fires only on malformed names;
+  :invalid_stream_handle constructible only via stream_close).
+
+TWENTY straight finding runs. LAP 5 COMPLETE.

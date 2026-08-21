@@ -127,6 +127,15 @@ after the S0–S2 burn-down.
   fragment default and both honest workarounds (constant default +
   `execute` UPDATE, or deliberately bundle with a modify — probed
   working). (Run 36, B7)
+- [xqlite-0.11.1-release] (MAINTAINER ACTION, from Run 40) The two
+  xqlite doc fixes recorded as landed at Run 26 (the
+  query_with_changes rule correction; the README compatibility
+  statement) sit on xqlite main, unreleased — hex/hexdocs 0.11.0
+  still teach the abandoned empty-columns rule that already caused
+  one adapter bug. The CHANGELOG Unreleased section is staged; owed:
+  version bump + tag + publish per the xqlite release checklist
+  (publish auth is the maintainer's). A patch stays inside the
+  adapter's `~> 0.11.0` bound. (Run 40, X2)
 - [F-B4-10-menu] (maintainer menu, from Run 39; the docs/message
   half landed at the gate) A `:decimal` field over a TEXT-affinity
   column silently stores SQLite's float-to-text rendering of the

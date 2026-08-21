@@ -1755,6 +1755,21 @@ still EMIT all 48 shapes); `Xqlite.ExplainAnalyze`/`Telemetry.*` shapes
 (adapter-called, never driven at 0.11.0); `changeset_apply` doc becomes a
 live contract if a session feature ever lands.
 
+COVERING RE-RUN (Run 40, 2026-08-21 — lap 5 closer, paired with X2):
+the 48-member error union IDENTICAL to Run 26, zero fallthrough/nil
+types, one attributed class move (cannot_open_database gained
+details). **F-X1-5 (S3, FIXED)** — `Error.statement` was declared
+and never written; now stamped at both wrap_execute_error clauses +
+both declare error branches (fetch stays nil truthfully); pinned.
+**F-X1-6 (S3, FIXED)** — `@type details` omitted the three plain-map
+payloads (six shapes outside their own type, set growing unpinned);
+union widened. The 18 connect tags verified end-to-end; the new
+loader `:error` path CLEAN by Ecto's contract (limitations on
+record). DRYNESS: findings — **X1 stays 0 of 2**. Re-wets ALSO on:
+any new wrap/1 clause. Next-pass seeds: the full-48 emission
+question; pin the census facts (:invalid_pragma_name malformed-only;
+:invalid_stream_handle via stream_close only).
+
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
 before it lands, every time. Coverage: Run 1 enumerated the full
@@ -1841,3 +1856,24 @@ additions: the 21 accidental-public SQL helpers → `defp` BEFORE
 first publish; CLAUDE.md bootstrap; exclusion-ledger reconciled +
 two-tag probe resolved; Elixir-floor claim vs CI lanes; Hex badge
 trio + publish mechanics per the pre-launch checklist.
+COVERING RE-RUN (Run 40, 2026-08-21 — lap 5 closer, paired with X1):
+drift verdict — hex tarball ≡ v0.11.0 tag on all six native sources;
+repo worktree differs only in the clippy rewrite (no behavior) and
+**F-X2-3 (S2, staged)**: Run 26's two xqlite doc fixes (the
+query_with_changes rule + the compatibility statement) never shipped
+— hex/hexdocs still teach the abandoned empty-columns rule (probe:
+the shipped doc's model predicts 0 for all three RETURNING shapes;
+the shipped code reports the real count). Remedy staged: xqlite
+CHANGELOG Unreleased section records the 0.11.1 patch contents;
+version bump/tag/publish = the maintainer's; a patch stays inside
+`~> 0.11.0`, no adapter change owed. NIF call surface 41 distinct
+name+arity, all exported exactly (AST-walk census — the earlier
+name-grep miscounts explained). F-X1-4 holds across eight pairing
+sites (noted: STE drafts un-versioned; bench lockfile comment
+stale); F-B8-2's blocker intact; F-X2-1 stays closed, re-verified
+through the adapter's CACHED path. Doc parity on cancellation + the
+WAL read-back story CLEAN across the pair. DRYNESS: an S2 — **X2
+stays 0 of 2, NOT DRY**; TWENTY straight finding runs; **LAP 5
+COMPLETE**. Re-wets ALSO on: the next xqlite release. Next-pass
+seeds: hexdocs rendering read directly; the busy-slot claims
+through a pooled checkout.
