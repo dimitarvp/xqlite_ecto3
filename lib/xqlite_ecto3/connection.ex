@@ -1209,13 +1209,17 @@ defmodule XqliteEcto3.Connection do
   defp update_op(:push, _quoted_key, _value, _sources, query) do
     raise Ecto.QueryError,
       query: query,
-      message: "Arrays are not supported for SQLite"
+      message:
+        "the push: array operator is not supported by the SQLite adapter" <>
+          " (arrays themselves are — stored as JSON text)"
   end
 
   defp update_op(:pull, _quoted_key, _value, _sources, query) do
     raise Ecto.QueryError,
       query: query,
-      message: "Arrays are not supported for SQLite"
+      message:
+        "the pull: array operator is not supported by the SQLite adapter" <>
+          " (arrays themselves are — stored as JSON text)"
   end
 
   defp update_op(command, _quoted_key, _value, _sources, query) do
