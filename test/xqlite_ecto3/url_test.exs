@@ -24,6 +24,11 @@ defmodule XqliteEcto3.URLTest do
       assert {:ok, [database: ":memory:"]} = URL.parse("sqlite3::memory:")
     end
 
+    test "percent-encoded path segments decode, matching Ecto's own URL parsing" do
+      assert {:ok, [database: "/var/lib/my app/data.db"]} =
+               URL.parse("sqlite:///var/lib/my%20app/data.db")
+    end
+
     test "single query parameter" do
       assert {:ok, opts} = URL.parse("sqlite:///tmp/my.db?busy_timeout=10000")
       assert opts == [database: "/tmp/my.db", busy_timeout: 10_000]
@@ -100,6 +105,11 @@ defmodule XqliteEcto3.URLTest do
     test "timeout: rejects negative integer" do
       assert {:error, %URLError{reason: {:invalid_option, "busy_timeout", :negative_value}}} =
                URL.parse("sqlite:///x?busy_timeout=-1")
+    end
+
+    test "rejects values past int32 max — connect would refuse them" do
+      assert {:error, %URLError{reason: {:invalid_option, "busy_timeout", :out_of_range}}} =
+               URL.parse("sqlite:///x?busy_timeout=2147483648")
     end
   end
 

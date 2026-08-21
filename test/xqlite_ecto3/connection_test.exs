@@ -189,13 +189,19 @@ defmodule XqliteEcto3.ConnectionTest do
     assert SQL.to_constraints(error, []) == [unique: "users_tenant_id_email_index"]
   end
 
-  test "to_constraints maps foreign key constraint" do
+  test "to_constraints drops a nameless foreign key violation" do
     error = %XqliteEcto3.Error{
       type: :constraint_violation,
       details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
     }
 
-    assert SQL.to_constraints(error, []) == [foreign_key: nil]
+    assert SQL.to_constraints(error, []) == []
+  end
+
+  test "build_explain_query refuses an unknown type by name" do
+    assert_raise ArgumentError, fn ->
+      SQL.build_explain_query("SELECT 1", :analyze)
+    end
   end
 
   test "to_constraints maps check constraint" do

@@ -132,13 +132,17 @@ defmodule XqliteEcto3.Connection do
     |> Enum.uniq()
   end
 
+  # SQLite's generic FK error names no constraint (rich diagnostics, the
+  # clause above, supply real names). Empty makes ecto_sql re-raise the
+  # structured error; a nil name would crash Ecto's suffix/prefix/regex
+  # constraint matching — the reference adapters also emit [] here.
   def to_constraints(
         %XqliteEcto3.Error{
           details: %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key}
         },
         _opts
       ) do
-    [foreign_key: nil]
+    []
   end
 
   def to_constraints(
@@ -688,6 +692,12 @@ defmodule XqliteEcto3.Connection do
 
   def build_explain_query(query, :instructions) do
     IO.iodata_to_binary(["EXPLAIN ", query])
+  end
+
+  def build_explain_query(_query, other) do
+    raise ArgumentError,
+          "unsupported EXPLAIN type #{inspect(other)} — supported: :query_plan (default), " <>
+            ":instructions. For runtime row counts and timings see XqliteEcto3.explain_analyze/3."
   end
 
   # Mimics the ASCII format of the sqlite CLI

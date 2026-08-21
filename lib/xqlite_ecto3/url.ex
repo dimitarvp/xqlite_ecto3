@@ -60,9 +60,9 @@ defmodule XqliteEcto3.URL do
     "temp_store" => {:temp_store, :atom_enum, [:default, :file, :memory]},
     "auto_vacuum" => {:auto_vacuum, :atom_enum, [:none, :full, :incremental]},
     "foreign_keys" => {:foreign_keys, :boolean, nil},
-    # not :timeout — busy_timeout is SQLite-side and integer-only; the driver
-    # refuses :infinity at connect, so the parser must not produce it
-    "busy_timeout" => {:busy_timeout, :non_neg_integer, nil},
+    # not :timeout — busy_timeout is a SQLite-side C int; the driver refuses
+    # :infinity and values past int32 max, so the parser must not produce them
+    "busy_timeout" => {:busy_timeout, :int32_ms, nil},
     "cache_size" => {:cache_size, :integer, nil},
     "wal_autocheckpoint" => {:wal_autocheckpoint, :non_neg_integer, nil},
     "mmap_size" => {:mmap_size, :non_neg_integer, nil},
@@ -156,7 +156,10 @@ defmodule XqliteEcto3.URL do
   # An empty path means no database was given.
   defp extract_database(%URI{path: nil}), do: {:error, :missing_database}
   defp extract_database(%URI{path: ""}), do: {:error, :missing_database}
-  defp extract_database(%URI{path: path}), do: {:ok, path}
+  # URI.new/1 already validated every percent escape, so decode cannot raise.
+  # Ecto's own URL parsing decodes too — without this, "my%20app.db" opens
+  # (and silently creates) a file literally named my%20app.db.
+  defp extract_database(%URI{path: path}), do: {:ok, URI.decode(path)}
 
   defp parse_query(nil), do: {:ok, []}
   defp parse_query(""), do: {:ok, []}
@@ -206,6 +209,12 @@ defmodule XqliteEcto3.URL do
 
   defp coerce("infinity", :timeout, _), do: {:ok, :infinity}
   defp coerce(value, :timeout, _), do: parse_non_neg_integer(value)
+
+  defp coerce(value, :int32_ms, _) do
+    with {:ok, n} <- parse_non_neg_integer(value) do
+      if n <= 2_147_483_647, do: {:ok, n}, else: {:error, :out_of_range}
+    end
+  end
 
   defp coerce(value, :integer, _), do: parse_integer(value)
 

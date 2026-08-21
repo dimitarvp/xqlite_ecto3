@@ -2169,9 +2169,10 @@ defmodule XqliteEcto3 do
   defp bool_decode(1), do: {:ok, true}
   defp bool_decode(nil), do: {:ok, nil}
 
-  defp bool_decode(x) do
-    {:error, %{reason: :invalid_boolean_value, value: x, expected: [0, 1, nil]}}
-  end
+  # Ecto's loader contract is {:ok, value} | :error — an error TUPLE has no
+  # clause in Ecto.Type.process_loaders/3 and crashes the load. :error makes
+  # Ecto raise its typed load failure naming field, type, and value.
+  defp bool_decode(_x), do: :error
 
   defp bool_encode(false), do: {:ok, 0}
   defp bool_encode(true), do: {:ok, 1}

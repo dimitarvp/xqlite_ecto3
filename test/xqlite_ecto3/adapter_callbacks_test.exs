@@ -48,11 +48,13 @@ defmodule XqliteEcto3.AdapterCallbacksTest do
       assert decoder.(nil) == {:ok, nil}
     end
 
-    test ":boolean loader rejects non-0/1 values with structured error" do
+    test ":boolean loader refuses non-0/1 values with the loader contract's :error" do
       [decoder | _] = XqliteEcto3.loaders(:boolean, :boolean)
 
-      assert {:error, %{reason: :invalid_boolean_value, value: 2, expected: [0, 1, nil]}} =
-               decoder.(2)
+      # Ecto's loader contract is {:ok, v} | :error — an error TUPLE has no
+      # clause in Ecto.Type.process_loaders/3 and crashes the load.
+      assert decoder.(2) == :error
+      assert decoder.("true") == :error
     end
 
     test ":naive_datetime loader parses ISO 8601 strings" do

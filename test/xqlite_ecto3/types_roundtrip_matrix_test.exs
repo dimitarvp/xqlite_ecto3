@@ -124,6 +124,13 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
         assert roundtrip(:bool_field, unquote(value)) == unquote(value)
       end
     end
+
+    test "a stored value outside 0/1/NULL fails the load with Ecto's typed error" do
+      Repo.query!("INSERT INTO roundtrip_matrix (bool_field) VALUES (2)")
+      Repo.query!("INSERT INTO roundtrip_matrix (bool_field) VALUES ('true')")
+
+      assert_raise ArgumentError, fn -> Repo.all(Rec) end
+    end
   end
 
   describe "map (JSON) round-trip" do
