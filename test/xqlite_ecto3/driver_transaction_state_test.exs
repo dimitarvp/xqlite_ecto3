@@ -215,19 +215,27 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert state.transaction_status == :idle
     end
 
-    test "a top-level savepoint scope opened after a raw ROLLBACK stays truthful end to end",
+    test "recovery after a raw ROLLBACK amid a managed savepoint stays truthful end to end",
          %{state: state} do
       {:ok, _result, state} = Driver.handle_begin([], state)
       {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
       raw = %XqliteEcto3.Query{statement: "ROLLBACK"}
       {:ok, _query, _result, state} = Driver.handle_execute(raw, [], [], state)
 
+      {:ok, _result, state} = Driver.handle_begin([], state)
       {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
       {:ok, _result, state} = Driver.handle_commit([mode: :savepoint], state)
+      {:ok, _result, state} = Driver.handle_commit([], state)
       assert state.transaction_status == :idle
+      assert state.savepoint == 0
 
       bad = %XqliteEcto3.Query{statement: "INSERT INTO missing_table(x) VALUES (1)"}
       assert {:error, %XqliteEcto3.Error{}, _state} = Driver.handle_execute(bad, [], [], state)
+    end
+
+    test "savepoint begin with no enclosing transaction is refused", %{state: state} do
+      assert {:disconnect, %DBConnection.ConnectionError{}, _state} =
+               Driver.handle_begin([mode: :savepoint], state)
     end
   end
 

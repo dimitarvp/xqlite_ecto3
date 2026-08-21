@@ -371,24 +371,30 @@ defmodule XqliteEcto3.Driver do
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_begin], start_md do
       result =
-        case mode do
-          :savepoint ->
+        case {mode, state.transaction_status} do
+          {:savepoint, :transaction} ->
             case NIF.savepoint(state.conn, savepoint_name(state, state.savepoint)) do
               :ok ->
-                # A successful SAVEPOINT always leaves a transaction open —
-                # nested it was open already, and a TOP-LEVEL savepoint
-                # (Repo.transaction mode: :savepoint) starts an implicit one.
-                # Without this the cached flag stays :idle and the rollback
-                # guard cannot see a SQLite-initiated full rollback, so
-                # post-failure statements would commit durably in autocommit.
-                {:ok, nil,
-                 %{state | savepoint: state.savepoint + 1, transaction_status: :transaction}}
+                {:ok, nil, %{state | savepoint: state.savepoint + 1}}
 
               {:error, reason} ->
                 {:disconnect, XqliteEcto3.Error.wrap(reason), state}
             end
 
-          _mode ->
+          {:savepoint, _no_enclosing_transaction} ->
+            # A lone SAVEPOINT opens the transaction DEFERRED, silently
+            # discarding default_transaction_mode; under write contention the
+            # deferred snapshot loses its write with an instant busy error
+            # SQLite never routes through the busy handler. Refuse instead.
+            {:disconnect,
+             %DBConnection.ConnectionError{
+               message:
+                 "mode: :savepoint requires an enclosing transaction — a lone SAVEPOINT " <>
+                   "runs the transaction :deferred, discarding default_transaction_mode. " <>
+                   "Drop the mode: option for a top-level transaction."
+             }, state}
+
+          {_mode, _status} ->
             case begin_mode(mode, state) do
               {:ok, resolved} ->
                 case NIF.begin(state.conn, resolved) do
@@ -590,12 +596,10 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  # Releasing (or rolling back to and releasing) the OUTERMOST managed
-  # savepoint may end an implicit transaction a top-level savepoint began —
-  # or leave a caller's enclosing transaction open. One status read at that
-  # boundary keeps the cached flag truthful without the guard ever
-  # over-disconnecting a later failed autocommit statement; nested releases
-  # stay read-free (the enclosing transaction is still open by construction).
+  # With top-level savepoints refused at handle_begin, the enclosing
+  # transaction is still open when the outermost managed savepoint releases;
+  # the status read is a cheap belt against drift a raw caller bypassing the
+  # driver can cause. Nested releases stay read-free.
   defp released_savepoint_state(state) do
     state = %{state | savepoint: state.savepoint - 1}
 

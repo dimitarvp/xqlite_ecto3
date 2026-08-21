@@ -301,62 +301,18 @@ defmodule XqliteEcto3.TransactionAtomicityTest do
   defp cancel_on_third(row, n, _table), do: {[row], n + 1}
 
   describe "top-level savepoint mode" do
-    test "a rollback-class violation cannot leak a durable post-failure write" do
-      table = "ta_sp_#{System.unique_integer([:positive])}"
+    # A lone SAVEPOINT would run the transaction :deferred, silently
+    # discarding default_transaction_mode — and a deferred write that loses
+    # the lock race fails instantly (SQLite skips the busy handler on a
+    # stale-snapshot upgrade), losing the update. Refused since Run 42;
+    # nested savepoints (an enclosing transaction open) work as before and
+    # are covered by the driver-level lifecycle tests and the sandbox suite.
+    test "is refused: a lone SAVEPOINT would run the transaction :deferred" do
+      assert_raise DBConnection.ConnectionError, fn ->
+        PoolRepo.transaction(fn -> :never_runs end, mode: :savepoint)
+      end
 
-      PoolRepo.query!(
-        "CREATE TABLE #{table} (id INTEGER PRIMARY KEY, v INTEGER UNIQUE ON CONFLICT ROLLBACK)"
-      )
-
-      result =
-        PoolRepo.transaction(
-          fn ->
-            PoolRepo.query!("INSERT INTO #{table} VALUES (1, 10)")
-
-            {:error, %XqliteEcto3.Error{details: %XqliteEcto3.Error.Constraint{}}} =
-              PoolRepo.query("INSERT INTO #{table} VALUES (2, 10)")
-
-            case PoolRepo.query("INSERT INTO #{table} VALUES (3, 30)") do
-              {:ok, _would_be_a_leak} -> :post_failure_write_ran
-              {:error, _refused} -> :post_failure_write_refused
-            end
-          end,
-          mode: :savepoint
-        )
-
-      assert result in [
-               {:error, :rollback},
-               {:ok, :post_failure_write_refused}
-             ]
-
-      assert %{rows: [[0]]} = PoolRepo.query!("SELECT count(*) FROM #{table}")
-      PoolRepo.query!("DROP TABLE #{table}")
-    end
-
-    test "the happy path commits durably" do
-      table = "ta_sph_#{System.unique_integer([:positive])}"
-      PoolRepo.query!("CREATE TABLE #{table} (id INTEGER PRIMARY KEY)")
-
-      {:ok, :done} =
-        PoolRepo.transaction(
-          fn ->
-            PoolRepo.query!("INSERT INTO #{table} VALUES (1)")
-            :done
-          end,
-          mode: :savepoint
-        )
-
-      assert %{rows: [[1]]} = PoolRepo.query!("SELECT count(*) FROM #{table}")
-      PoolRepo.query!("DROP TABLE #{table}")
-    end
-
-    test "after the transaction ends, a failed autocommit statement does not disconnect" do
-      {:ok, :done} =
-        PoolRepo.transaction(fn -> :done end, mode: :savepoint)
-
-      assert {:error, %XqliteEcto3.Error{}} =
-               PoolRepo.query("INSERT INTO no_such_ta_table VALUES (1)")
-
+      # the refusal costs that one connection; the pool serves the next call
       assert %{rows: [[1]]} = PoolRepo.query!("SELECT 1")
     end
   end
