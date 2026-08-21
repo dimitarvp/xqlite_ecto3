@@ -155,7 +155,14 @@ defmodule XqliteEcto3.Error do
           }
   end
 
-  @type details :: Constraint.t() | SqliteFailure.t() | Input.t() | nil
+  @type details ::
+          Constraint.t()
+          | SqliteFailure.t()
+          | Input.t()
+          | %{extended_code: integer()}
+          | %{column: integer()}
+          | %{path: String.t(), code: integer()}
+          | nil
 
   @type t :: %__MODULE__{
           message: String.t(),

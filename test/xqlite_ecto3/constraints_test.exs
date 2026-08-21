@@ -218,4 +218,13 @@ defmodule XqliteEcto3.ConstraintsTest do
     assert msg == "can't be blank"
     assert opts[:validation] == :required
   end
+
+  describe "error statement field" do
+    test "a failing statement is carried on the error" do
+      sql = "INSERT INTO cs_no_such_table_anywhere VALUES (1)"
+
+      assert {:error, %XqliteEcto3.Error{type: :no_such_table, statement: ^sql}} =
+               Repo.query(sql)
+    end
+  end
 end

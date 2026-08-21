@@ -833,13 +833,17 @@ defmodule XqliteEcto3.Driver do
     reason
     |> XqliteEcto3.FkDiagnostics.wrap_with_replay(state.conn, sql, params)
     |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
+    |> put_statement(sql)
   end
 
-  defp wrap_execute_error(reason, _sql, _params, state) do
+  defp wrap_execute_error(reason, sql, _params, state) do
     reason
     |> XqliteEcto3.Error.wrap()
     |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
+    |> put_statement(sql)
   end
+
+  defp put_statement(%XqliteEcto3.Error{} = err, sql), do: %{err | statement: sql}
 
   @impl DBConnection
   def handle_close(_query, _opts, state) do
@@ -871,12 +875,14 @@ defmodule XqliteEcto3.Driver do
 
                 reason
                 |> XqliteEcto3.Error.wrap()
+                |> put_statement(sql)
                 |> disconnect_if_rolled_back(state)
             end
 
           {:error, reason} ->
             reason
             |> XqliteEcto3.Error.wrap()
+            |> put_statement(sql)
             |> disconnect_if_rolled_back(state)
         end
 
