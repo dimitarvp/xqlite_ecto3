@@ -143,7 +143,7 @@ excludes = [
   # only the storage shape differs, so the params equality can't hold.
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 
-  # type.exs:362 "json_extract_path with primitive values": two SELECT
+  # type.exs:359 "json_extract_path with primitive values": two SELECT
   # assertions expect Elixir booleans (`select: o.metadata["enabled"]`
   # == true). SQLite has no boolean storage class and no JSON wire
   # typing — json_extract faithfully returns INTEGER 1/0, and Ecto
@@ -157,8 +157,13 @@ excludes = [
   {:location, {"deps/ecto/integration_test/cases/type.exs", 359}},
 
   # The three genuinely-failing array tests (see the :array_type note
-  # at the top): array literals inside a query body; Postgres
-  # $1::text[] cast syntax; Postgres array[...] literal syntax.
+  # at the top): array literals inside a query body (type.exs:234);
+  # the raw-Repo.query array fragment (sql.exs:30) — SQLite ACCEPTS
+  # the $1::text[] text ($1::text parses as a TCL-style parameter
+  # name, [] as a bracket-quoted alias), but a raw query result has
+  # no load hook, so the JSON-stored list comes back as text — the
+  # same untyped-result gap as type.exs:359; and Postgres array[...]
+  # literal syntax (sql.exs:38, a genuine grammar rejection).
   {:location, {"deps/ecto/integration_test/cases/type.exs", 234}},
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 30}},
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 38}},
@@ -170,6 +175,9 @@ excludes = [
   # fractions because SQLite cannot compute them. Non-arithmetic
   # microsecond round-trips pass — TEXT storage keeps full precision
   # (see types_test.exs). Not an adapter gap; won't be fixed here.
+  # Disclosure: over-broad by exactly one — interval.exs:194 passes
+  # when re-enabled; the tag is kept over four location tuples as a
+  # recorded deliberate trade (BACKLOG F-B2-8).
   :microsecond_precision,
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
