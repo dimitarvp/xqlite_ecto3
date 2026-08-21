@@ -161,6 +161,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The savepoint counter survives raw transaction-control SQL.** A
+  raw `COMMIT`/`ROLLBACK` run as ordinary SQL amid a managed
+  savepoint updated the driver's cached transaction flag but left
+  its savepoint counter stale, so the next outermost release skipped
+  its status read and the rollback guard spuriously disconnected a
+  later failed autocommit statement. The counter now zeroes whenever
+  a transaction-control statement lands the connection in
+  autocommit.
+
+- **A transaction mode in repo config's `mode:` key is refused by
+  name.** `mode:` in repo config is the connection mode
+  (`:readwrite`/`:readonly`), but DBConnection spells the
+  transaction mode with the same key, and `mode: :immediate` there
+  used to fail every connect with the caller seeing only
+  `:queue_timeout` — the one error a bigger pool cannot fix. It is
+  now a dedicated structured connect error,
+  `{:transaction_mode_as_connection_mode, _}`; the config key for
+  transactions is `default_transaction_mode:`.
+
+- **`busy_timeout=infinity` is rejected by the URL parser instead of
+  failing at connect.** The parser documented and produced
+  `:infinity`, which connect-time validation then refused, so the
+  documented URL could never open a connection. `busy_timeout` is
+  integer-only end to end; `timeout` and `connect_timeout` keep
+  `infinity`.
+
+- **A transaction-status read failure on the error path disconnects.**
+  The rollback guard used to fail open when it could not read
+  SQLite's transaction state (a closed or poisoned handle), keeping
+  a dead connection in the pool; it now disconnects, the same
+  disposition `checkout/1` and `ping/1` give that error.
+
 - **A non-numeric stored value under a `:decimal` field fails the
   load with Ecto's typed error instead of a bare `Decimal.Error`.**
   NUMERIC affinity preserves BLOBs and non-numeric text (a legacy
