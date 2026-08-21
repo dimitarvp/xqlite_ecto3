@@ -82,6 +82,85 @@ NOT DRY**. Re-wet triggers GROW: any change to `leading_keyword/1`
 (comment clauses included), the connect error path
 (`Error.wrap/1` arm + its cannot_open_database clause), plus the
 standing list.
+COVERING RE-RUN (Run 42, 2026-08-21 — lap 6, solo; churn since
+80257e4 = connection.ex/data_type SQL-gen, TWO connect-path
+validation waves, the Run-40 statement stamping, and Run 41's five
+driver deltas — each re-anchored): **F-B1-6 (S1, FIXED,
+RED→green)** — `bool_decode/1`'s catch-all returned an ERROR TUPLE;
+Ecto's loader contract is {:ok, v} | :error and
+Ecto.Type.process_loaders/3 has no {:error, _} clause, so ANY
+non-0/1/NULL stored value under a :boolean field crashed Repo.all
+with a FunctionClauseError (decimal-loader control shows the owed
+typed ArgumentError; the lone outlier among nine decode helpers).
+Fixed to :error; matrix pin committed. **F-B1-7 (S1, FIXED,
+RED→green; absorbs+closes [F-B5-1], graded up)** — with the SHIPPED
+default rich_fk_diagnostics: false, `to_constraints/2` emitted
+[foreign_key: nil]: a declared foreign_key_constraint NEVER matched
+(Ecto.ConstraintError advising the very call the user made) and
+match: :suffix/:prefix/regex crashed in String/Regex. Six changeset
+spellings probed; reference adapters emit [] when nameless (postgres/
+myxql/tds source). Why 41 runs missed it: both suite repos run
+rich_fk_diagnostics: true; connection_test pinned the nil shape
+without its consequence. Fixed to []; the [F-B5-1] synthesize option
+ruled out (the generic FK error names no field). New
+fk_constraint_default_config_test (own plain repo) + unit pin flip.
+**F-B1-8 (S2, FIXED, RED→green)** — URL `:database` never
+percent-decoded while Ecto's own parse_url decodes everything:
+`my%20app.db` opened (and CREATED empty) a literally-named file —
+probed with a seeded real file, `{:error, :no_such_table}` +
+both files on disk. URI.new has already validated escapes so decode
+cannot raise. Second leg: parser accepted busy_timeout past int32
+max that connect refuses — busy_timeout is :int32_ms now
+(:out_of_range structured). **F-B1-9 (S3, FILED — merged into
+[F-B1-menu-connect-error-details])** — a STRING-valued config hits
+wrap/1's {tag, binary} NIF-message clause, so the connect log reads
+`failed to connect: ** (XqliteEcto3.Error) wal` naming neither key
+nor problem (32 shapes probed; type field stays correct). Message
+fix rides the menu's designed-shape decision. **F-B1-10 (S3, FIXED)**
+— explain type: :analyze/nil raised FunctionClauseError naming a
+private fn; now a named ArgumentError listing :query_plan/
+:instructions and pointing at explain_analyze/3. **SEED-8
+ADJUDICATED — REFUSE, implemented** ([F-B8-12-handoff] closed):
+top-level mode: :savepoint measured byte-for-byte :deferred (lock
+at first write, not entry) and under a verified-concurrent
+two-writer race the deferred write fails INSTANTLY (busy handler
+never consulted on stale-snapshot upgrade) — lost update where
+:immediate serializes both. Sandbox unaffected (source sandbox.ex:659
++ runtime lock traces). handle_begin refuses the savepoint mode with
+no enclosing transaction (ConnectionError naming the rule; the
+savepoint arm is nested-only now, its redundant flag-set dropped);
+translate rejected. Run-32's three top-level PoolRepo pins reworked
+to the refusal pin (nested coverage stays: driver lifecycle tests +
+sandbox suite); Run-41's recovery pin reworked nested. CHANGELOG
+Changed + README + STE. CLEAN with controls: the guard's three call
+sites all contract-permit both arms (source cites + closed-conn and
+OCR probes); sync-on-error-branch CLEAN across ten inducible error
+cases (flag always agrees with handle_status; the un-inducible
+COMMIT-fails-AND-ends class is guard-covered first);
+handle_begin(:transaction) stale-counter divergence unreachable
+(all zeroing paths enumerated + negative-counter needs an
+impossible random-prefix RELEASE); :disconnect_and_retry never
+produced and would bad_return! via handle_common_result (source);
+14-callback shape census legal on happy+error paths; wrap/1 total
+over all 32 connect configs incl. the five
+transaction_mode_as_connection_mode atoms; open_database/2
+single-caller post-validation; URL↔validator round-trip green on
+all nine pragma keys at enum+bounds (URL's narrower journal_mode
+enum noted as documented); RawConn cannot reach the EncodeError
+re-prepare path; leading_keyword doors still shut (11 spellings);
+sandbox checkin releases the lock (plain-pool control). DRYNESS:
+two S1 + one S2 + two S3 — **B1 stays 0 of 2, NOT DRY**; re-wets
+ALSO on: loaders/dumpers lists, to_constraints clauses, the URL
+extract/coerce path, build_explain_query, the handle_begin savepoint
+arms. Next-pass seeds: the [check: <expression>] docs item
+([F-B1-11-docs]); unique_index_name/not_null_column `-> nil`
+catch-alls (expression indexes, WITHOUT ROWID composite PKs, empty
+xqlite parses); query_many's raise vs the declared tuple contract;
+dumper catch-alls reached without the Ecto type in front
+(fragments/insert_all placeholders); handle_fetch mid-stream
+disconnect × stream_deallocate after-fun/pool_ref; handle_status
+{:error, state} read-failure semantics vs DBConnection's
+transaction-aborted reading.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.

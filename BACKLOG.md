@@ -107,6 +107,17 @@ after the S0–S2 burn-down.
   passed) can only parse message prose — against doctrine. The
   Run-37 validators grew this family by nine more tags; whatever
   payload shape lands here should carry {key, value}. (Run 37, B9)
+  Message consequence (Run 42 = F-B1-9, S3, MERGED here): a
+  STRING-valued config (`journal_mode: "wal"`, env-var-driven
+  spellings) hits `wrap/1`'s `{tag, binary}` clause — meant for NIF
+  reasons where the binary IS the SQLite message — so the connect
+  log reads `failed to connect: ** (XqliteEcto3.Error) wal`, naming
+  neither key nor problem; the `type` field stays correct. Atom
+  values read fine (inspect of the whole tuple). Probed across all
+  32 config shapes (b1_cover_r42/p05). Whatever shape lands here
+  must ALSO fix the message for string values — e.g. validators
+  emitting {tag, key, value} 3-tuples, or guarding the binary-
+  message clause to NIF tags. (Run 42, B1)
 - [F-B6-6-menu] (maintainer menu, B7 court, from Run 34) `alter
   table … add` with a non-constant `default:` fragment is row-count
   dependent by SQLite's own ADD COLUMN rule (empty table OK,
@@ -311,6 +322,13 @@ after the S0–S2 burn-down.
   match mode — `:exact` → `Ecto.ConstraintError` naming nil;
   `:suffix`/`:prefix` → `FunctionClauseError` in
   `String.ends_with?/starts_with?`.
+  CLOSED at Run 42 (absorbed by F-B1-6/F-B1-7's court, graded S1
+  there): the nameless FK clause returns `[]` now — ecto_sql
+  re-raises the structured error — and the synthesize option was
+  ruled out (the generic FK error does not name the violated field,
+  so `<source>_<field>_fkey` is not derivable). Pinned by
+  `fk_constraint_default_config_test.exs` + the connection_test unit
+  flip.
 - [F-B5-4] (S3) The unique-index name lookup runs `PRAGMA index_list`
   unqualified, so when the same table name exists in several schemas
   (ATTACH, TEMP) the reported index can belong to the wrong table —
@@ -578,6 +596,37 @@ after the S0–S2 burn-down.
   dispositions: document the carve-out next to the mode: docs, or
   refuse `mode: :savepoint` with no enclosing transaction.
   (Run 41, B8 → B1/B2)
+  ADJUDICATED at Run 42 — REFUSED (implemented, gated). Measured:
+  top-level savepoint is byte-for-byte :deferred (lock taken only at
+  first write), and under a verified-concurrent two-writer race the
+  deferred snapshot's write fails INSTANTLY (SQLite skips the busy
+  handler on a stale-snapshot upgrade) — one update lost where
+  :immediate serializes both (b1_cover_r42 p02/p03, orchestrator
+  re-driven). Sandbox unaffected (source: sandbox.ex:659 outer
+  mode: :transaction; runtime: lock held across sandboxed savepoint
+  begins, released at checkin). handle_begin now refuses the
+  savepoint mode with no enclosing transaction
+  (DBConnection.ConnectionError naming the rule); translate was
+  rejected (a savepoint-owns-an-implicit-BEGIN state flag for a
+  construct with no legitimate top-level use). CHANGELOG Changed +
+  README + STE drafts updated. B2's share (exclusion-list impact):
+  none — the vendored suites' only savepoint-mode site is
+  alter.exs:60, a SINGLE-OP `mode:` (inert per the Run-33 F-B8-8
+  adjudication, never reaches handle_begin) and excluded for
+  unrelated reasons besides. Revert = drop the {:savepoint, _}
+  refusal clause in handle_begin/2.
+
+- [F-B1-11-docs] (S3, docs owed, from Run 42's critic) An UNNAMED
+  SQLite CHECK constraint's "name" is its expression text
+  (`"v > 0"`), so `check_constraint/3` with Ecto's derived
+  `<table>_<field>_check` name can never match —
+  `Ecto.ConstraintError` under both diagnostic configs. Known
+  in-repo (constraints_test.exs:170 works around it by passing
+  `name: "value > 0"`) but absent from README/gotchas — owed a
+  public entry per the footgun rule; the advice is to NAME check
+  constraints in migrations. Also confirm `Migration.enum_check/3`
+  and `array_check/2` emit named constraints; if not they inherit
+  this. (Run 42, B1 → docs/B6)
 
 ## Feature follow-ups (owed, not review findings)
 
