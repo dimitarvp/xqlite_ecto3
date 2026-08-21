@@ -5174,3 +5174,128 @@ predicted seven) → 88/88 green.
   for the amplification curve; the Multi RuntimeError shape.
 
 SEVENTEEN straight finding runs.
+
+## Run 38 — 2026-08-21 — lap 5, batch 7: B2 solo (the corrected list re-covered in-suite)
+
+Single Opus reviewer at `649de25`; xqlite 0.11.0 (hex), SQLite 3.53.2
+probe-confirmed; vendored ecto 3.14.1 / ecto_sql 3.14.0 unchanged
+since Run 30 (mix.lock untouched). Census at HEAD: **440 passed / 26
+excluded, exit 0 — zero delta from Run 30 across 25 commits**
+(test_helper's one commit since was comment-only). INSTRUMENT UPGRADE
+banked: `--trace` full-suite runs give a per-test exclusion census,
+and `--include "test:test <name>"` re-enables excluded tests INSIDE
+full-suite context — feeding all 26 names in one run yields ground
+truth at once (441/466, exactly 25 failures, the 26→0 excluded drop
+as built-in control). The old `--only <tag>` isolate-runs are retired
+(strictly weaker; blind to the migration-conditional class, which
+keeps its own adapter-owned probes). Gate: seven probes re-driven by
+the orchestrator (01/02/06/08×3-legs/09/10/14 — the 08/09/10 first
+attempt failed on MY invocation, missing MIX_ENV=test + the leg
+argument; correct-form re-drives rc 0 with outputs matching);
+fixes implemented BY THE ORCHESTRATOR. Stash-RED: N/A this gate —
+every fix is rationale/message prose, nothing pinnable under the
+no-text-assertion doctrine (recorded honestly, not skipped silently).
+
+- **F-B2-21 (S2, CONFIRMED, docs-fixed).** The tags doc's
+  `:bitstring_type` rationale was false at HEAD: it named
+  `default_expr/1` (the function is arity 3) raising "a bare
+  FunctionClauseError" — at HEAD the shared migration's
+  `bs_with_default` raises structured `XqliteEcto3.UnsupportedDefaultError`
+  (re-driven live; the whole migration rolls back, so un-excluding
+  still crashes all 440 tests — the exclusion itself stands). Run 31
+  fixed the test_helper paragraph and left the public doc — the
+  F-B2-20 class (a listed re-wetter fired without a sweep) one lap
+  later. Doc row now mirrors the helper wording.
+- **F-B2-22 (S2, CONFIRMED, docs-fixed).** The `sql.exs:30`
+  exclusion blamed "Postgres `$1::text[]` cast syntax" — SQLite
+  ACCEPTS that statement (re-driven: `accepted: true`, empty-string
+  column name, the bound list back as JSON text; `$1::text` parses
+  as a TCL-style parameter name, `[]` as a bracket-quoted alias).
+  The real cause is the untyped-raw-result gap: no load hook decodes
+  the JSON-stored list — the same argument as `type.exs:359`. All
+  three references reworded; the sibling `sql.exs:38` verified as a
+  genuine grammar rejection and left as-is. Critic seed accepted:
+  every grammar-blaming rationale gets a bare-`Repo.query` check
+  next pass.
+- **F-B2-23 (S3, CONFIRMED, fixed).** The comment two lines above
+  the F-B2-19-corrected tuple still said `type.exs:362`; now 359.
+- **F-B2-24 (S3, CONFIRMED, docs-fixed).** The `:placeholders` row's
+  past-tense `repo.exs:1092` pointer named the wrong test (the
+  both-tags test sits at :1106 at HEAD); reworded to the current
+  line. Nothing could self-fulfil — record-keeping only.
+- **F-B2-25 (S3, CONFIRMED, docs-fixed).** Neither artifact
+  disclosed that `:microsecond_precision` excludes one PASSING test
+  — conspicuous against the doc's own n/m convention. Both artifacts
+  now carry the 4/5 disclosure pointing at the recorded F-B2-8
+  trade. The narrowing itself stays deliberately not-churned.
+- **F-B2-26 (S3, CONFIRMED, message-fixed).** `update_op(:push|:pull)`
+  raised "Arrays are not supported for SQLite" — false since
+  F-B2-17 shipped arrays; only the two operators are unsupported.
+  Both messages now say exactly that (arrays themselves stored as
+  JSON text). Grep-verified: `push:`/`pull:` are exercised only
+  inside the excluded `type.exs:234`, so no committed behavior
+  moves. The implement option (push/pull via SQLite JSON functions)
+  filed as a menu line.
+- **F-B2-27 (S3, CONFIRMED, docs-fixed).** The `:duration_type`
+  rationale fused three separable facts and omitted the one a
+  maintainer needs: (a) the migration builds the durations table
+  WITHOUT complaint (re-driven — the table is absent only because
+  the tag is excluded; all four columns plain DURATION, the default
+  stored as literal text '10 MONTH'); (b) with the table present
+  the upstream body still dies at OUR encoder
+  (`UnencodableParameterError`, the strongest form, first shown
+  with the table there); (c) even an encode+load path could not
+  satisfy the Postgres fields:/precision: truncation asserts — the
+  schema carries nothing to truncate by. Row rewritten three-way.
+- **Filed sweep:** F-B2-8 CONFIRMED as the ONLY over-broad
+  exclusion — the 26-include run leaves exactly one non-failing
+  name, `interval.exs:194` (its four siblings RED in the same run =
+  the built-in control); disclosure landed (above), narrowing stays
+  a recorded trade. F-B2-7-code stays superseded; the three ALTER
+  pointers survive Run 37's churn (`refuse_reference_changes!`
+  fires first on all three, live stacks). F-B2-14/18-adjacent stay
+  closed — their structured errors are the two this pass observed.
+  macOS-flake bookkeeping CORRECTED: the LEDGER records one
+  occurrence (Run 32's addendum); the second lives in the Run-33
+  board stanza (re-run green) — count stands at TWO, disposition
+  unchanged (a third = exclusion-with-rationale through this
+  axis's court; the test passed in all three of this pass's suite
+  runs).
+- **Clean census (controls named):** census 440/26 exit 0 (the
+  26-include run is the RED twin: 25 failures, exit 2); the six
+  ex-`:array_type` tests run and pass IN-SUITE (type.exs:234 shows
+  `(excluded)` in the same trace — Priority 1 discharged, Run 30's
+  gate ruling satisfied); all 11 tags + 9 location tuples measured
+  against claims — every count exact, bijection doc↔helper exact
+  both directions (the comm/unmatched branches printed empty; the
+  SNAP_MISMATCH branch that caught F-B2-19 fired zero times);
+  transaction.exs:161 re-proven jointly-caused (2×2 matrix: only
+  pool 2 + :deferred passes); logging.exs:74 mechanism pinned
+  (handler fires; the in-handler params assert raises first);
+  `:like_match_blob` re-anchored (LIKE_DOESNT_MATCH_BLOBS absent
+  from 54 compile options); `x in t.ints` → JSON_EACH live; the
+  header's 16/18 file count true. Observed-not-proven: Run 37's
+  nine validators break no rationale (green suite is the positive
+  evidence; the negative direction is unreachable from the vendored
+  surface); the ~12 plain "supported" mechanism sentences
+  dispositioned structural-only.
+- **MAINTAINER SCOPE DIRECTIVE (Dimi, 2026-08-21, recorded at this
+  gate):** no interest in hunting valid+invalid pragma-value
+  COMBINATIONS or schema-resolution-order edge cases. Applied:
+  B3's combinations seed and B7's ATTACH deep-probe seed are
+  reframed — the standing posture for those surfaces is
+  validate-or-refuse at our boundary plus documentation, not
+  resolution probing (annotations in the axes seed lists).
+- Dryness: two S2 — **B2 stays 0 of 2, NOT DRY**; the fixes re-wet
+  the tags doc + helper rationale prose and the push/pull messages.
+  Completeness critic (next B2 pass): start by DIFFING every helper
+  rationale paragraph against its doc row (the F-B2-20/21 class is
+  the axis's recurring leak — two laps running); sweep the
+  adapter's refusal messages against the doc's feature claims
+  (F-B2-26 was found by accident); run every remaining
+  grammar-blaming rationale through bare `Repo.query`; the
+  migration-conditional pair (bitstring/duration) keeps its
+  adapter-owned probes each pass; upstream-bump watch still owed
+  (mix.lock unmoved since before Run 24).
+
+EIGHTEEN straight finding runs.

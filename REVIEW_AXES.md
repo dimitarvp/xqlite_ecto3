@@ -237,6 +237,46 @@ Next-pass seeds: the corrected surface inside the suite; the three
 array tuples across an upstream bump; other migration-conditional
 tables in vendored files; the duration subtlety split; a mechanical
 line-pointer sweep loop.
+COVERING RE-RUN (Run 38, 2026-08-21 — lap 5, batch 7): census at
+HEAD **440/26, ZERO delta from Run 30** across 25 commits; vendored
+deps unchanged; the six ex-`:array_type` tests re-proven IN-SUITE
+(the gate ruling's re-cover discharged). INSTRUMENT UPGRADE banked:
+full-suite `--trace` census + `--include "test:test <name>"` for all
+26 names in ONE run (441/466, exactly 25 failures = ground truth
+with built-in control); `--only` isolate-runs retired; the
+migration-conditional pair (bitstring/duration) keeps adapter-owned
+probes. **F-B2-21 (S2, docs-fixed)** — the public `:bitstring_type`
+rationale was false at HEAD (named `default_expr/1` + a bare
+FunctionClauseError; reality is arity 3 + structured
+`UnsupportedDefaultError` — Run 31 fixed the helper and left the
+doc: the F-B2-20 re-wetter-without-sweep class, second lap running).
+**F-B2-22 (S2, docs-fixed)** — `sql.exs:30` blamed Postgres cast
+GRAMMAR; SQLite accepts the statement ($1::text = TCL-style param,
+[] = bracket alias) and the real cause is the untyped-raw-result
+JSON-decode gap (= the type.exs:359 argument); three references
+reworded, sibling :38 verified genuinely-grammar. S3s: F-B2-23
+(stale 362 comment → 359), F-B2-24 (placeholders pointer → :1106),
+F-B2-25 (the 4/5 disclosure landed both artifacts — F-B2-8 stays a
+recorded trade, now disclosed), F-B2-26 (push/pull refusal said
+"Arrays are not supported" — false since F-B2-17; messages now name
+the two operators; push/pull-via-JSON filed as menu), F-B2-27 (the
+duration rationale rewritten three-way: migration builds the table
+fine / the encoder is the blocker with the table present /
+fields:/precision: leave nothing to truncate by). Filed sweep:
+F-B2-8 confirmed the ONLY over-broad exclusion (interval.exs:194
+the lone non-failing include; four siblings RED in the same run);
+ALTER pointers survive Run 37; macOS-flake count corrected on
+record (two: Run 32 ledger + Run 33 board; disposition unchanged).
+Stash-RED N/A (prose-only fixes; recorded honestly). CLEAN: all
+counts exact, bijection exact both ways, transaction.exs:161
+jointly-caused (2×2), logging.exs:74 mechanism pinned,
+like_match_blob re-anchored over 54 compile options. DRYNESS: two
+S2 — **B2 stays 0 of 2, NOT DRY**. Re-wets ALSO on: the tags-doc ↔
+helper rationale pair (diff them FIRST next pass), the push/pull
+messages. Next-pass seeds: the helper↔doc rationale diff as step
+one; refusal-message sweep vs the doc's feature claims; bare-
+`Repo.query` checks for every grammar-blaming rationale; the
+upstream-bump watch (unmoved since pre-Run-24).
 
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
@@ -419,8 +459,12 @@ documented. Filed sweep: F-B3-4-xqlite / F-B3-1 hold; the Run-14
 unverified seed superseded by F-B3-5. Stash-RED 7 predicted exactly
 → 88/88. DRYNESS: three S2 — **B3 stays 0 of 2, NOT DRY**. Re-wets
 ALSO on: the nine `validate_*` connect validators, `leading_keyword/1`'s
-skip set. Next-pass seeds: config-value COMBINATIONS (+ the readonly
-`writable/2` profile); the `hooks` config value (never swept);
+skip set. Next-pass seeds: the `hooks` config value (never swept);
+[config-value COMBINATIONS seed CUT by maintainer scope directive
+2026-08-21 — the posture for pragma-value surfaces is
+validate-or-refuse at connect plus documentation, not combination
+probing; the readonly `writable/2` profile rides the same
+directive];
 tokenizer skip set read from SQLite's C source; with_xqlite under
 Sandbox at pool > 1 from an allowed process; a second lock-hold
 duration for the amplification curve; the Multi RuntimeError shape.
@@ -1154,8 +1198,10 @@ case variance. Stash-RED 7 (predicted exactly) → 151/151. DRYNESS:
 fetch, the dependents read + `rewritten_dependents/3`,
 `read_triggers/2` + the snapshot trigger shape, the `:unencodable`
 rescue. Next-pass seeds: property-test the blanking over generated
-six-token-kind texts; ATTACHed schemas (the third namespace all four
-reads still miss); cancel landing on chosen dance statements
+six-token-kind texts; ATTACHed schemas [REFRAMED by maintainer scope
+directive 2026-08-21 — do not probe cross-schema resolution; the
+posture is refuse-or-degrade on ambiguity plus a documented
+main-schema-only line]; cancel landing on chosen dance statements
 (DROP→RENAME window); the Sandbox × ownership × confirm-savepoint
 three-way; the shared-helper enumeration (F-B7-46's class); down/
 rollback migrations; COLLATE/DEFERRABLE live legs for the comment

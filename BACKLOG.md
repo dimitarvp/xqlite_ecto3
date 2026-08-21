@@ -127,6 +127,15 @@ after the S0–S2 burn-down.
   fragment default and both honest workarounds (constant default +
   `execute` UPDATE, or deliberately bundle with a modify — probed
   working). (Run 36, B7)
+- [F-B2-26-menu] (maintainer menu, from Run 38) `update_all`'s
+  `push:`/`pull:` array operators refuse (message corrected at Run
+  38's gate — arrays themselves ARE supported as JSON text). The
+  implement option: translate them via SQLite JSON functions —
+  `push:` ≈ `json_insert(col, '$[#]', ?)`, `pull:` ≈ a
+  `json_group_array` filter rewrite. Both exercised upstream only
+  inside the excluded `type.exs:234`, so landing this un-excludes
+  nothing by itself; feature-taste call. (Run 38, B2 → translation
+  court)
 - [F-B3-14-menu] (maintainer menu, from Run 37) `with_xqlite/3`
   always starts its own checkout, so nested calls (inside
   `Repo.transaction`/`Repo.checkout`/another bridge call) queue
@@ -462,8 +471,10 @@ after the S0–S2 burn-down.
 - [F-B2-8] (S3) `:microsecond_precision` is over-broad by exactly one
   hidden PASSING test (interval.exs:194 "datetime_add with
   microsecond" — asserts the rounding SQLite actually does; confirmed
-  again in Run 30). Narrowing costs 4 location tuples — recorded, not
-  churned. The `:array_type` half of this entry was WRONG by five: the
+  again in Run 30, and again in Run 38 as the ONLY non-failing name
+  in the all-26-include ground-truth run). Narrowing costs 4 location
+  tuples — recorded, not churned; the 4/5 DISCLOSURE now lives in
+  both artifacts (Run 38, F-B2-25), so the trade is public. The `:array_type` half of this entry was WRONG by five: the
   tag hid SIX passing tests, invisible because the shared migration
   only creates the array tables when the tag is not excluded (the
   isolate-run measured the missing table, not the adapter). CLOSED in
