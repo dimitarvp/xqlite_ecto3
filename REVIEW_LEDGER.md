@@ -5466,3 +5466,138 @@ in the gate log.
   :invalid_stream_handle constructible only via stream_close).
 
 TWENTY straight finding runs. LAP 5 COMPLETE.
+
+## Run 41 — 2026-08-21 — lap 6, batch 1 (the opener): B8 solo
+
+Lap-6 step-0 (orchestrator, git-verified): five driver.ex commits
+since B8's Run-32 gate at `91415ff` — its own fix `6bc7d00`, TWO
+keyword-sync churns (`36e7a5b`, `72e4407` — named B8 re-wet
+triggers), busy_timeout validation (`3d96665`), the Run-40 statement
+stamping (`9d11c17`). Single Opus reviewer at `08ea3cb`; xqlite dep
+0.11.0 from hex (XQLITE_PATH confirmed unset). Gate: all four
+finding probes + the F-B8-1 re-drive re-driven by the orchestrator
+(p1/p10/p4/p11 all exit 1, reproduced; p3 at 3007/3005/301 ms);
+every code claim spot-checked at HEAD; fixes BY THE ORCHESTRATOR;
+stash-RED PREDICTED 5 red — got exactly 5 (105/110 stashed →
+110/110 restored).
+
+- **F-B8-8 (S2, CONFIRMED, FIXED, RED→green).** The keyword sync
+  (`sync_after_transaction_control/2`) refreshed the transaction
+  FLAG but never the savepoint COUNTER — its two siblings
+  (`handle_commit/2`, `handle_rollback/2` non-savepoint arms) reset
+  both. A raw `COMMIT`/`ROLLBACK` run as ordinary SQL amid a managed
+  savepoint left the counter stale-high forever; the next outermost
+  RELEASE decremented to non-zero, took `released_savepoint_state/1`'s
+  read-free `_nested` arm, and the cached flag then lied
+  (`:transaction` vs real autocommit) — over-disconnecting the next
+  failed autocommit statement. Falsified BOTH the rebuild comment's
+  raw-dance safety claim (xqlite_ecto3.ex) and Run 32's
+  no-over-disconnect pin. Blast radius capped at S2: through pure
+  Repo/Sandbox flows the drift self-heals behind an unrelated
+  "no such savepoint" disconnect (probed both routes). Fix:
+  `refresh_transaction_status/1` zeroes the counter when landing
+  `:idle` (autocommit means every savepoint is gone);
+  `released_savepoint_state/1` treats non-positive as outermost
+  (belt). Committed pins: counter zeroed after raw ROLLBACK +
+  end-to-end truthful top-level-savepoint scope afterwards
+  (`driver_transaction_state_test.exs` +2). NB: this F-B8-8
+  (finding) ≠ Run 32's [F-B8-8-handoff] (closed Run 33) — the
+  handoff id predates the finding id sequence.
+- **F-B8-9 (S2, CONFIRMED, FIXED, RED→green).** A transaction-mode
+  atom in repo config's `:mode` key — DBConnection's own spelling
+  for transaction mode, and the README used both meanings one
+  sentence apart — failed EVERY connect via `open_database/2`'s
+  refusal, bricking the pool; callers saw only
+  `%DBConnection.ConnectionError{reason: :queue_timeout}`, the error
+  the README's table says a bigger pool fixes. `mode: :immediate` is
+  the plausible-mistake spelling (the adapter's own
+  default_transaction_mode value). Fix: `validate_connection_mode/1`
+  heads the connect chain — the five transaction-mode atoms get a
+  dedicated `{:transaction_mode_as_connection_mode, _}` refusal
+  (generic wrap, no new wrap clause; type union is open), garbage
+  keeps `{:invalid_connection_mode, _}`; `open_database/2` dropped
+  its now-unreachable catch-all; README disambiguates. Mirror
+  direction probed CLEAN (config `:readonly` does not leak into
+  `handle_begin`). Seed-6 correction on record: ecto_sql's
+  @pool_opts forwards only timeout/pool keys from repo config into
+  operations — `:mode` never reaches `handle_begin/2` from config,
+  so the seed's premise (config mode applies per-transaction) was
+  false; the connect-time collision is the real bite. Committed pin:
+  all five transaction modes refused with the dedicated type
+  (`driver_connect_pragmas_test.exs` +1).
+- **F-B8-10 (S2, CONFIRMED, FIXED, RED→green).** `XqliteEcto3.URL`
+  documented AND parsed `busy_timeout=infinity` (spec typed
+  `:timeout`) while Run 35's `validate_busy_timeout/1` deliberately
+  refuses `:infinity` — the documented URL could not open a single
+  connection (`{:connect_failed, %Error{type: :invalid_busy_timeout}}`,
+  control `busy_timeout=10000` connects). Ruling: refuse at the
+  parser rather than translate (silent infinity→int32-max is a
+  silent config transformation; the driver's refusal was a gated
+  Run-35 decision). Fix: busy_timeout's spec is `:non_neg_integer`;
+  moduledoc dropped `| infinity`; `timeout`/`connect_timeout` keep
+  `:infinity` (existing controls green). The old
+  accepts-infinity test REWRITTEN into the refusal pin
+  (`url_test.exs`, deliberate contract change, gated here). Filed
+  cross-court note: the drift was created by B5's `3d96665`
+  validation landing without the URL surface sweep.
+- **F-B8-11 (S3, CONFIRMED, FIXED, RED→green).** The rollback
+  guard's `_open_or_unknown` arm folded status-READ ERRORS into
+  fail-open while `checkout/1` and `ping/1` disconnect on the
+  identical error (`{:error, :connection_closed}` live-probed) — a
+  dead connection stayed checked into the pool. Reachability low
+  (needs an already-closed handle: `disconnect/2` or the
+  `with_xqlite/3` escape hatch), hence S3; fixed in-run anyway
+  (three-arm split, read error ⇒ disconnect with the original
+  wrapped error, matching the siblings' disposition). Committed pin:
+  closed-conn guard path disconnects
+  (`driver_transaction_state_test.exs` +1).
+- **F-B8-1 re-driven at 0.11.0: REPRODUCES** — 3007 ms return for a
+  300 ms token on a lock-contended write; the `:infinity` control at
+  3005 ms proves the token contributed nothing; the uncontended
+  control cancels at 301 ms proving the token works when the
+  progress handler ticks. Its DOCS half CLOSED: README pitch bullet
+  + timeout section now state the busy-wait carve-out (the busy
+  handler blocks the progress handler; `busy_timeout` bounds the
+  wait; structured `:database_busy_or_locked` distinguishes it; set
+  `busy_timeout` at or below the deadline when lock waits must
+  respect it). STE drafts mirrored. Backlog entry updated —
+  behavior half stays open, options unchanged.
+- **CLEAN (controls named):** declare/fetch error routing inside a
+  top-level savepoint asserted against a live `transaction_status`
+  read; streamed rollback-class DML under a top-level savepoint
+  disconnects at the point of damage (plain-BEGIN control — the
+  savepoint arm is not weaker); commit/rollback hooks × cancelled
+  write coherent across four instruments (cancelled-read fires no
+  hook and keeps its transaction; normal-commit control); a
+  multi-statement string cannot slip transaction control past the
+  `columns: []` gate (`:multiple_statements` both directions, single
+  COMMIT control syncs); an abandoned stream across a disconnect
+  retains no read lock (`wal_checkpoint(TRUNCATE)` `{0,0,0}`;
+  deallocate + GC controls); non-integer `:timeout` unreachable
+  through Repo (DBConnection's deadline arithmetic raises
+  ArgumentError first; driver-direct FunctionClauseError noted,
+  shielded); the cancelled branch still skips `wrap_execute_error/4`
+  — consistent with Run 40's stamping (ConnectionError carries no
+  statement field).
+- **HANDOFFS FILED:** [F-X1-7] `handle_fetch/4` error-branch
+  statement stamping — Run 40's truthful-nil rationale CORRECTED
+  (the QUERY param carries the SQL; the driver ignores it);
+  [F-B8-12-handoff] top-level `mode: :savepoint` runs DEFERRED,
+  silently discarding the `default_transaction_mode: :immediate`
+  promise (B1/B2 court, txn_state leg unmeasured — the probe died
+  on F-B8-9's brick first).
+- Dryness: three S2 + one S3 — **B8 stays 0 of 2, NOT DRY**;
+  TWENTY-ONE straight finding runs. Re-wets ALSO on:
+  `validate_connection_mode/1`, the URL busy_timeout spec, the
+  guard's read-error arm, `refresh_transaction_status/1`'s counter
+  reset. Completeness critic (next B8 pass): the `{:fallback, state}`
+  partly-dead path (`{:error, {:cannot_execute, _}}` half unprobed);
+  `stmt_prepare` before any cancel token exists (the F-B8-1 shape
+  may cover preparation — measure); repo-config `timeout:` sweep
+  (`:infinity`/`0`/sandbox — the one B8-relevant key ecto_sql DOES
+  forward per-operation); FK-replay × guard fault injection (a
+  failed `release_savepoint` cleanup hands the guard a
+  diagnostics-started transaction — the F-B8-4 shape); the
+  negative-counter impossibility (belt-guarded, probe-unpinned);
+  rebuild's `in_wrapping_transaction?` DBConnection.status
+  half-blindness (shared with B7).

@@ -1416,6 +1416,86 @@ top-level savepoint; the managed counter vs caller raw SAVEPOINT
 names; the guard's fail-open `_open_or_unknown` fallback (unpinned);
 F-B8-1 at 0.11.0; commit/rollback hooks × cancelled write;
 `mode: :savepoint` via repo config.
+COVERING RE-RUN (Run 41, 2026-08-21 — lap 6, solo; five driver.ex
+commits since 91415ff re-anchored, two of them keyword-sync churn):
+**F-B8-8 (S2, FIXED, RED→green)** — the keyword sync refreshed the
+FLAG but never the savepoint COUNTER: a raw COMMIT/ROLLBACK amid a
+managed savepoint left the counter stale-high forever, so the next
+outermost RELEASE decremented to non-zero, took the read-free
+`_nested` arm, and the cached flag then lied (:transaction vs real
+autocommit) — over-disconnect on the next failed autocommit
+statement, falsifying the in-code raw-dance safety claim
+(xqlite_ecto3.ex rebuild comment) AND Run 32's no-over-disconnect
+pin. Public-API blast radius capped: through Repo the drift
+self-heals via an unrelated "no such savepoint" disconnect (probed
+both per-call savepoint mode and the SQL Sandbox). Fixed:
+refresh_transaction_status/1 zeroes the counter when landing :idle
+(autocommit means every savepoint is gone); released_savepoint_state/1
+treats non-positive as outermost (belt). NB: this F-B8-8 (finding) is
+distinct from Run 32's [F-B8-8-handoff] (closed Run 33). **F-B8-9
+(S2, FIXED, RED→green)** — a transaction-mode atom in repo config's
+`:mode` key (DBConnection spells the transaction mode with the same
+key; the README used both meanings one sentence apart) failed EVERY
+connect with {:invalid_connection_mode, _}, bricking the pool;
+callers saw only `:queue_timeout` — the error the README's own table
+says a bigger pool fixes. Fixed: validate_connection_mode/1 in the
+connect chain refuses the five transaction-mode atoms with a
+dedicated {:transaction_mode_as_connection_mode, _} (generic wrap —
+no new wrap clause); open_database/2 dropped its now-unreachable
+catch-all; README disambiguates the two `mode:` meanings. Mirror
+direction probed clean (config :readonly does not leak into
+handle_begin; read-only pools run transactions and streams).
+Seed-6 correction on record: ecto_sql's @pool_opts never forwards
+`:mode` from repo config into operations — the premise "config mode
+applies to every transaction" is false; the real bite is the
+connect-time collision. **F-B8-10 (S2, FIXED, RED→green)** —
+XqliteEcto3.URL documented AND parsed `busy_timeout=infinity` while
+Run 35's validate_busy_timeout deliberately refuses :infinity at
+connect: the documented URL could not open a single connection.
+Fixed parser-side: busy_timeout's spec is :non_neg_integer now
+(integer-only — it is a SQLite-side value), moduledoc dropped
+`| infinity`; timeout/connect_timeout keep :infinity (controls
+green). **F-B8-11 (S3, FIXED, RED→green)** — the guard's
+`_open_or_unknown` arm folded status-READ ERRORS into fail-open
+while checkout/1 and ping/1 disconnect on the identical error — a
+dead connection stayed checked into the pool. Fixed: three-arm
+split, read error ⇒ disconnect with the original wrapped error.
+**F-B8-1 re-driven at 0.11.0: REPRODUCES** (3007 ms for a 300 ms
+token; :infinity control 3005 ms proves the token contributed
+nothing; uncontended control cancels at 301 ms); its DOCS half
+closed — README pitch bullet + timeout section now state the
+busy-wait carve-out (the busy handler blocks the progress handler,
+so `busy_timeout` bounds the wait; structured
+:database_busy_or_locked distinguishes it). CLEAN with controls:
+declare/fetch error routing + streamed rollback-class DML under a
+top-level savepoint (plain-BEGIN control — savepoint arm not weaker);
+commit/rollback hooks × cancelled write coherent across four
+instruments (cancelled-read + normal-commit controls);
+multi-statement transaction control cannot slip the columns: [] gate
+(:multiple_statements refusal, both directions); an abandoned stream
+across a disconnect holds no read lock (deallocate + GC controls,
+wal_checkpoint TRUNCATE evidence); non-integer :timeout unreachable
+through Repo (DBConnection's deadline arithmetic raises ArgumentError
+first); the cancelled branch still skips wrap_execute_error/4 —
+consistent with Run 40's stamping (ConnectionError carries no
+statement field). Handoffs FILED: [F-X1-7] handle_fetch error-branch
+statement stamping (Run 40's truthful-nil rationale corrected: the
+QUERY param carries the SQL and is ignored); [F-B8-12-handoff]
+top-level mode: :savepoint runs DEFERRED, silently discarding the
+default_transaction_mode: :immediate promise (B1/B2 court).
+Stash-RED predicted 5/5 exactly. DRYNESS: three S2 + one S3 — **B8
+stays 0 of 2, NOT DRY**; re-wets ALSO on validate_connection_mode/1,
+the URL busy_timeout spec, the guard's read-error arm,
+refresh_transaction_status/1's counter reset. Next-pass seeds: the
+{:fallback, state} partly-dead path ({:error, {:cannot_execute, _}}
+half unprobed); stmt_prepare before any cancel token (the F-B8-1
+shape may cover preparation — measure); repo-config `timeout:`
+(:infinity/0/sandbox — the one B8-relevant key ecto_sql DOES forward
+per-operation); FK-replay × guard fault injection (a failed
+release_savepoint cleanup hands the guard a diagnostics-started
+transaction — the F-B8-4 shape); the negative-counter impossibility
+(belt-guarded, probe-unpinned); rebuild's in_wrapping_transaction?
+DBConnection.status half-blindness (shared with B7).
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test

@@ -266,6 +266,13 @@ after the S0–S2 burn-down.
   bounded + doc-remedy. Options: document prominently; lower the default
   `busy_timeout`; or (xqlite change) a busy handler that polls the token.
   (Run 3, B8)
+  Run 41: re-driven at 0.11.0 — reproduces (3007 ms for a 300 ms token
+  vs an `:infinity` control at 3005 ms; uncontended control cancels at
+  301 ms). The docs half LANDED: README's timeout section and the pitch
+  bullet now state the busy-wait carve-out (+ STE mirror). The behavior
+  half stays open, options unchanged. Adjacent unmeasured (Run 41
+  critic): `stmt_prepare` also runs before any cancel token exists, so
+  the same busy-wait shape may cover statement preparation.
 - [F-B8-2] (S3) The streaming path ignores `:timeout`.
   `handle_declare`/`handle_fetch` create no cancel token, and xqlite 0.10.0
   exposes no cancellable `stream_fetch` (only `stream_fetch/2`). A
@@ -551,6 +558,26 @@ after the S0–S2 burn-down.
   state permanent-vs-trackable. (wave-1)
 - [S3] `async: false` ban is honored (0/52) but written down
   nowhere in this repo — codify in the CLAUDE.md bootstrap. (wave-1)
+
+- [F-X1-7] (S3, X1 court, from Run 41) `handle_fetch/4`'s error branch
+  wraps without `put_statement/2` while both `handle_declare/4` error
+  branches stamp the SQL — Run 40's stamping is one branch short. Run
+  40 recorded the nil as truthful because "the cursor does not carry
+  the SQL", but DBConnection passes the QUERY as `handle_fetch`'s first
+  argument and the driver ignores it (`_query`) — the statement is
+  available at the site. (Run 41, B8 → X1)
+- [F-B8-12-handoff] (S3, B1/B2 court, from Run 41) A top-level
+  `Repo.transaction(fun, mode: :savepoint)` runs DEFERRED — a lone
+  SAVEPOINT behaves as BEGIN DEFERRED — silently discarding the
+  `default_transaction_mode: :immediate` promise the README sells
+  (write transactions take their lock up front). The savepoint arm of
+  `handle_begin/2` never consults `default_transaction_mode`. The
+  `txn_state` measurement leg was written (b8_cover_r41
+  p7_repo_config_mode.exs L4) but never reached — the probe died on
+  F-B8-9's pool brick first; measure when adjudicating. Candidate
+  dispositions: document the carve-out next to the mode: docs, or
+  refuse `mode: :savepoint` with no enclosing transaction.
+  (Run 41, B8 → B1/B2)
 
 ## Feature follow-ups (owed, not review findings)
 
