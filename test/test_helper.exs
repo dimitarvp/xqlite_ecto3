@@ -175,9 +175,9 @@ excludes = [
   # fractions because SQLite cannot compute them. Non-arithmetic
   # microsecond round-trips pass — TEXT storage keeps full precision
   # (see types_test.exs). Not an adapter gap; won't be fixed here.
-  # Disclosure: over-broad by exactly one — interval.exs:194 passes
-  # when re-enabled; the tag is kept over four location tuples as a
-  # recorded deliberate trade (BACKLOG F-B2-8).
+  # Over-broad by exactly one — interval.exs:194 passes when
+  # re-enabled; keeping the tag over four location tuples is a
+  # deliberate trade.
   :microsecond_precision,
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
