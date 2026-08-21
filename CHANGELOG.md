@@ -109,6 +109,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Top-level `Repo.transaction(fun, mode: :savepoint)` is refused.**
+  A lone SAVEPOINT runs the transaction DEFERRED, silently discarding
+  `default_transaction_mode: :immediate` — and a deferred write that
+  loses the lock race fails instantly with a lost update, because
+  SQLite never consults the busy handler for a stale-snapshot lock
+  upgrade. The begin now fails loudly (`DBConnection.ConnectionError`
+  naming the rule) when no enclosing transaction is open; nested
+  savepoints — including everything the SQL Sandbox does — are
+  unaffected.
+
 - **Query placeholders render as numbered `?N`.** Previously bare
   `?`; numbering pins each placeholder to its parameter-list
   position, so clause-reordering rewrites (DISTINCT ON) cannot skew
@@ -160,6 +170,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **A non-0/1 stored value under a `:boolean` field fails the load
+  with Ecto's typed error instead of crashing the query.** The
+  boolean loader returned an error tuple, a shape Ecto's loader
+  pipeline has no clause for, so `Repo.all` died with a
+  `FunctionClauseError` deep in `Ecto.Type`. It now refuses like
+  every other loader and Ecto raises its load failure naming field,
+  type, and value.
+
+- **A foreign-key violation without rich diagnostics surfaces the
+  structured error instead of a nil constraint name.** With the
+  default `rich_fk_diagnostics: false`, `to_constraints/2` returned
+  `[foreign_key: nil]`: a declared `foreign_key_constraint/3` never
+  matched (`Ecto.ConstraintError` advising the very call the user
+  already made), and `match: :suffix`/`:prefix`/regex crashed with a
+  `FunctionClauseError` inside Elixir's `String`. It now returns `[]`
+  — like every reference adapter that cannot name the constraint —
+  so the raised error is the adapter's own, with
+  `subtype: :constraint_foreign_key` and full details.
+
+- **URL database paths are percent-decoded.** `sqlite:///var/lib/
+  my%20app/db.sqlite` used to open — and silently create — a file
+  literally named `my%20app`; Ecto's own URL parsing decodes, and now
+  the adapter's does too. The parser also rejects `busy_timeout`
+  values past int32 max, which connect-time validation would refuse
+  anyway.
+
+- **`Repo.explain/4` with an unknown `:type` raises a named
+  `ArgumentError`** listing the supported values (`:query_plan`,
+  `:instructions`) and pointing at `XqliteEcto3.explain_analyze/3`,
+  instead of a `FunctionClauseError` naming a private function.
 
 - **The savepoint counter survives raw transaction-control SQL.** A
   raw `COMMIT`/`ROLLBACK` run as ordinary SQL amid a managed
