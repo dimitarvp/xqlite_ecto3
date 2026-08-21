@@ -34,7 +34,7 @@ defmodule XqliteEcto3.URL do
       temp_store = default | file | memory
       auto_vacuum = none | full | incremental
       foreign_keys = true | false | on | off | 1 | 0
-      busy_timeout = <non-negative integer ms> | infinity
+      busy_timeout = <non-negative integer ms>
       cache_size = <integer, negative = KB>
       wal_autocheckpoint = <non-negative integer pages>
       mmap_size = <non-negative integer bytes>
@@ -60,7 +60,9 @@ defmodule XqliteEcto3.URL do
     "temp_store" => {:temp_store, :atom_enum, [:default, :file, :memory]},
     "auto_vacuum" => {:auto_vacuum, :atom_enum, [:none, :full, :incremental]},
     "foreign_keys" => {:foreign_keys, :boolean, nil},
-    "busy_timeout" => {:busy_timeout, :timeout, nil},
+    # not :timeout — busy_timeout is SQLite-side and integer-only; the driver
+    # refuses :infinity at connect, so the parser must not produce it
+    "busy_timeout" => {:busy_timeout, :non_neg_integer, nil},
     "cache_size" => {:cache_size, :integer, nil},
     "wal_autocheckpoint" => {:wal_autocheckpoint, :non_neg_integer, nil},
     "mmap_size" => {:mmap_size, :non_neg_integer, nil},

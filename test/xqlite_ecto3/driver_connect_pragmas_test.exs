@@ -203,6 +203,13 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
       assert {:error, %XqliteEcto3.Error{type: :invalid_connection_mode}} =
                Driver.connect(database: tmp_db!("badmode"), mode: :turbo)
     end
+
+    test "a transaction mode in the connection :mode slot gets its own refusal" do
+      for txn_mode <- [:transaction, :savepoint, :deferred, :immediate, :exclusive] do
+        assert {:error, %XqliteEcto3.Error{type: :transaction_mode_as_connection_mode}} =
+                 Driver.connect(database: tmp_db!("txnmode"), mode: txn_mode)
+      end
+    end
   end
 
   describe "connect failure surface" do

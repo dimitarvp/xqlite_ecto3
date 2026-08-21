@@ -134,6 +134,17 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
 
       assert {:transaction, _state} = Driver.handle_status([], state)
     end
+
+    test "a status-read failure on the guard path disconnects like checkout and ping",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      :ok = NIF.close(state.conn)
+
+      bad = %XqliteEcto3.Query{statement: "INSERT INTO missing_table(x) VALUES (1)"}
+
+      assert {:disconnect, %XqliteEcto3.Error{}, _state} =
+               Driver.handle_execute(bad, [], [], state)
+    end
   end
 
   describe "savepoint counter lifecycle" do
@@ -190,6 +201,33 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       {:ok, _result, state} = Driver.handle_begin([], state)
       {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
       assert state.savepoint == 1
+    end
+
+    test "raw ROLLBACK amid a managed savepoint zeroes the counter with the flag",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
+
+      raw = %XqliteEcto3.Query{statement: "ROLLBACK"}
+      {:ok, _query, _result, state} = Driver.handle_execute(raw, [], [], state)
+
+      assert state.savepoint == 0
+      assert state.transaction_status == :idle
+    end
+
+    test "a top-level savepoint scope opened after a raw ROLLBACK stays truthful end to end",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+      {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
+      raw = %XqliteEcto3.Query{statement: "ROLLBACK"}
+      {:ok, _query, _result, state} = Driver.handle_execute(raw, [], [], state)
+
+      {:ok, _result, state} = Driver.handle_begin([mode: :savepoint], state)
+      {:ok, _result, state} = Driver.handle_commit([mode: :savepoint], state)
+      assert state.transaction_status == :idle
+
+      bad = %XqliteEcto3.Query{statement: "INSERT INTO missing_table(x) VALUES (1)"}
+      assert {:error, %XqliteEcto3.Error{}, _state} = Driver.handle_execute(bad, [], [], state)
     end
   end
 

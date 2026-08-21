@@ -92,9 +92,9 @@ defmodule XqliteEcto3.URLTest do
       assert opts[:busy_timeout] == 0
     end
 
-    test "timeout: accepts `infinity`" do
-      assert {:ok, opts} = URL.parse("sqlite:///x?busy_timeout=infinity")
-      assert opts[:busy_timeout] == :infinity
+    test "rejects `infinity` — the driver refuses it at connect" do
+      assert {:error, %URLError{reason: {:invalid_option, "busy_timeout", :not_an_integer}}} =
+               URL.parse("sqlite:///x?busy_timeout=infinity")
     end
 
     test "timeout: rejects negative integer" do

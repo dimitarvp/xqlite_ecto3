@@ -53,7 +53,8 @@ defmodule XqliteEcto3.Driver do
 
     span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
       result =
-        with {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
+        with {:ok, mode} <- validate_connection_mode(mode),
+             {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
              {:ok, stmt_cache_size} <- validate_statement_cache_size(statement_cache_size),
              {:ok, busy_timeout_ms} <- validate_busy_timeout(busy_timeout),
              {:ok, journal_mode} <- validate_journal_mode(journal_mode),
@@ -115,6 +116,19 @@ defmodule XqliteEcto3.Driver do
   # are clamped to 0 at the PRAGMA level, silently disabling the busy handler.
   # Reject them (and :infinity, floats, strings) instead of letting the clamp
   # decide; 2_147_483_647 ms (~24.8 days) is the accepted "wait forever".
+  # DBConnection spells the transaction mode with the same :mode key this
+  # config slot uses for the connection mode; without the dedicated refusal
+  # a transaction mode here fails every connect and the caller only ever
+  # sees the pool's :queue_timeout.
+  defp validate_connection_mode(mode) when mode in [:readwrite, :readonly], do: {:ok, mode}
+
+  defp validate_connection_mode(mode)
+       when mode in [:transaction, :savepoint, :deferred, :immediate, :exclusive] do
+    {:error, {:transaction_mode_as_connection_mode, mode}}
+  end
+
+  defp validate_connection_mode(other), do: {:error, {:invalid_connection_mode, other}}
+
   defp validate_busy_timeout(ms) when is_integer(ms) and ms >= 0 and ms <= 2_147_483_647 do
     {:ok, ms}
   end
@@ -241,7 +255,6 @@ defmodule XqliteEcto3.Driver do
 
   defp open_database(database, :readwrite), do: NIF.open(database)
   defp open_database(database, :readonly), do: NIF.open_readonly(database)
-  defp open_database(_database, other), do: {:error, {:invalid_connection_mode, other}}
 
   # Write-requiring pragmas are skipped on read-only connections: setting
   # journal_mode / auto_vacuum / wal_autocheckpoint needs write access, and
@@ -543,11 +556,14 @@ defmodule XqliteEcto3.Driver do
   # transaction that will report failure. Disconnect at the point of
   # damage instead, so DBConnection tears the transaction down and no
   # later statement can run. One cheap status read, on the error path
-  # only, only while a transaction is supposed to be open.
+  # only, only while a transaction is supposed to be open. A failed status
+  # read means the connection itself is unusable — disconnect, the same
+  # disposition checkout/1 and ping/1 give that error.
   defp disconnect_if_rolled_back(wrapped, %__MODULE__{transaction_status: :transaction} = state) do
     case NIF.transaction_status(state.conn) do
+      {:ok, true} -> {:error, wrapped, state}
       {:ok, false} -> {:disconnect, wrapped, state}
-      _open_or_unknown -> {:error, wrapped, state}
+      {:error, _read_failed} -> {:disconnect, wrapped, state}
     end
   end
 
@@ -584,7 +600,7 @@ defmodule XqliteEcto3.Driver do
     state = %{state | savepoint: state.savepoint - 1}
 
     case state.savepoint do
-      0 -> refresh_transaction_status(state)
+      sp when sp <= 0 -> refresh_transaction_status(state)
       _nested -> state
     end
   end
@@ -592,7 +608,10 @@ defmodule XqliteEcto3.Driver do
   defp refresh_transaction_status(state) do
     case NIF.transaction_status(state.conn) do
       {:ok, true} -> %{state | transaction_status: :transaction}
-      {:ok, false} -> %{state | transaction_status: :idle}
+      # autocommit means every savepoint is gone too — the managed counter
+      # must follow the flag or the next outermost release is misread as
+      # nested and skips its status read (the guard then over-disconnects)
+      {:ok, false} -> %{state | transaction_status: :idle, savepoint: 0}
       {:error, _reason} -> state
     end
   end
