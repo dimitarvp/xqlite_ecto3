@@ -32,11 +32,39 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     end
   end
 
+  defmodule EdgeRec do
+    use Ecto.Schema
+
+    @primary_key {:id, :id, autogenerate: true}
+    schema "roundtrip_edges" do
+      field(:dec_text, :decimal)
+      field(:dec_num, :decimal)
+      field(:dec_arr, {:array, :decimal})
+      field(:dec_map, :map)
+    end
+  end
+
+  defmodule EdgeRaw do
+    use Ecto.Schema
+
+    @primary_key {:id, :id, autogenerate: true}
+    schema "roundtrip_edges" do
+      field(:dec_text, :string)
+      field(:dec_num, :string)
+    end
+  end
+
   setup_all do
     create_table!(
       "roundtrip_matrix",
       "id INTEGER PRIMARY KEY AUTOINCREMENT, int_field INTEGER, str_field TEXT, " <>
         "bin_field BLOB, bool_field INTEGER, map_field TEXT, arr_field TEXT, dec_field DECIMAL"
+    )
+
+    create_table!(
+      "roundtrip_edges",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, dec_text TEXT, dec_num DECIMAL, " <>
+        "dec_arr TEXT, dec_map TEXT"
     )
   end
 
@@ -214,6 +242,74 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
           exponent <- StreamData.integer(-20..20)
         ) do
       Decimal.new(sign, coefficient, exponent)
+    end
+  end
+
+  describe "decimal edge contracts" do
+    setup do
+      clear_table!("roundtrip_edges")
+    end
+
+    # SQLite renders the bound float to text on a TEXT-affinity column, so
+    # some accepted decimals come back as a different number — a documented
+    # limitation; the exact escape hatch is a :string FIELD.
+    test "a :decimal field over a TEXT column drifts; a :string field is exact" do
+      drifter = Decimal.new("9999999999999.99")
+
+      {:ok, rec} = Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_text: drifter}))
+      loaded = Map.fetch!(Repo.get(EdgeRec, rec.id), :dec_text)
+      refute Decimal.equal?(loaded, drifter)
+
+      {:ok, raw} =
+        Repo.insert(Ecto.Changeset.change(%EdgeRaw{}, %{dec_text: "9999999999999.99"}))
+
+      assert Map.fetch!(Repo.get(EdgeRaw, raw.id), :dec_text) == "9999999999999.99"
+
+      beyond = Decimal.new("12345678901234567890.12345")
+
+      assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_text: beyond}))
+      end
+    end
+
+    test "non-numeric stored values under :decimal fail the load with Ecto's typed error" do
+      Repo.query!("INSERT INTO roundtrip_edges (dec_num) VALUES (X'DEADBEEF')")
+      Repo.query!("INSERT INTO roundtrip_edges (dec_num) VALUES ('not a number')")
+
+      assert_raise ArgumentError, fn -> Repo.all(EdgeRec) end
+
+      # The same rows are readable — only the decimal loader must refuse.
+      raw = Repo.all(EdgeRaw)
+      assert length(raw) == 2
+
+      Repo.query!("INSERT INTO roundtrip_edges (dec_num) VALUES (12.34)")
+
+      [clean] = Repo.all(from(r in EdgeRec, where: r.dec_num == 12.34))
+      assert Decimal.equal?(clean.dec_num, Decimal.new("12.34"))
+    end
+
+    # JSON-encoded collections carry decimals as strings, so the precision
+    # guard never sees them: exact past float64 in {:array, :decimal}, and
+    # loaded back as a String from a :map.
+    test "JSON-carried decimals bypass the guard, exactly" do
+      beyond = Decimal.new("12345678901234567890.12345")
+
+      {:ok, arr} =
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_arr: [beyond, Decimal.new(1)]}))
+
+      [a, b] = Map.fetch!(Repo.get(EdgeRec, arr.id), :dec_arr)
+      assert Decimal.equal?(a, beyond)
+      assert Decimal.equal?(b, Decimal.new(1))
+
+      {:ok, map} =
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_map: %{"amount" => beyond}}))
+
+      assert %{"amount" => "12345678901234567890.12345"} =
+               Map.fetch!(Repo.get(EdgeRec, map.id), :dec_map)
+
+      assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_num: beyond}))
+      end
     end
   end
 end

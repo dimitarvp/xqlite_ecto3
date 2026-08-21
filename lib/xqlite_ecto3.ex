@@ -2273,11 +2273,22 @@ defmodule XqliteEcto3 do
 
   defp time_decode(val), do: {:ok, val}
 
-  defp decimal_decode(val) when is_binary(val), do: {:ok, Decimal.new(val)}
+  # NUMERIC affinity stores BLOBs and non-numeric text (legacy writers);
+  # Decimal.new/1 raises a bare Decimal.Error on them, killing the whole
+  # query. A failed or partial parse returns :error instead, which routes
+  # into Ecto's typed load failure naming field, type, and value.
+  defp decimal_decode(val) when is_binary(val) do
+    case Decimal.parse(val) do
+      {%Decimal{} = d, ""} -> {:ok, d}
+      _partial_or_error -> :error
+    end
+  end
+
   defp decimal_decode(val) when is_integer(val), do: {:ok, Decimal.new(val)}
   defp decimal_decode(val) when is_float(val), do: {:ok, Decimal.from_float(val)}
   defp decimal_decode(nil), do: {:ok, nil}
   defp decimal_decode(%Decimal{} = val), do: {:ok, val}
+  defp decimal_decode(_val), do: :error
 
   defp json_decode(val) when is_binary(val) do
     case Jason.decode(val) do

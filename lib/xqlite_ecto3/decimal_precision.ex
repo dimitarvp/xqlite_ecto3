@@ -150,6 +150,8 @@ defmodule XqliteEcto3.DecimalPrecisionError do
     "decimal #{Decimal.to_string(value, :normal)} exceeds SQLite's exact numeric " <>
       "precision — a :decimal column has NUMERIC affinity and stores as float64 (REAL), " <>
       "exact only to ~15 significant digits, so storing this value would silently round " <>
-      "it. Use a :string column to keep the exact digits, or reduce the value's precision."
+      "it. To keep the exact digits, use a :string FIELD (with a :string column) and " <>
+      "store the canonical string yourself — a :decimal field over a TEXT column does " <>
+      "not help, the value still binds as a number. Or reduce the value's precision."
   end
 end

@@ -133,10 +133,8 @@ defmodule XqliteEcto3.DataType do
   defp normalize_column(column), do: to_string(column)
 
   defp encode_default(value, context) do
-    library = Application.get_env(:xqlite_ecto3, :json_library, Jason)
-
     value
-    |> library.encode_to_iodata!()
+    |> Jason.encode_to_iodata!()
     |> IO.iodata_to_binary()
   rescue
     e in [Protocol.UndefinedError, Jason.EncodeError] ->
