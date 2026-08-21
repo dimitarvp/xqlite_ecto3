@@ -599,6 +599,42 @@ S1 + S2 — **B4 resets to 0 of 2, NOT DRY**. Re-wets ALSO on:
 in `:map` fields / `insert_all placeholders` / `on_conflict set:`;
 `{:array, :decimal}`; `json_default` under a non-Jason
 `:json_library`; the migration-helper `default:` entry points.
+COVERING RE-RUN (Run 39, 2026-08-21 — lap 5, batch 8):
+`bind_form/1`/`encode_param/2` git-verified untouched since Run 31.
+**F-B4-10 (S1; message+docs remedied, code fix = [F-B4-10-menu])** —
+a `:decimal` field over a TEXT-affinity column silently stores
+SQLite's float-to-text rendering (~10% of accepted values drift;
+regression consequence of the bind-as-number fix, unfixable at the
+column-blind bind boundary) and the `DecimalPrecisionError` message
+itself steered users into it ("use a :string column"); message now
+prescribes a :string FIELD, README gained the TEXT twin of the REAL
+caveat, drift characterized in a pin. **F-B4-11 (S2, FIXED)** —
+`decimal_decode/1` raised bare `Decimal.Error` on BLOB/non-numeric
+TEXT, killing whole queries; now full-clean-parse-or-`:error`
+(Ecto's typed load failure) + the missing catch-all; pinned.
+**F-B4-12 (S3, FIXED)** — the undocumented `:json_library` knob was
+honored on one of four JSON paths with a Jason-specific rescue
+(configured-library defaults could be unreadable); knob DELETED per
+pre-1.0 policy. **F-B4-13 (S3, docs-fixed)** — `precision:/scale:`
+are DDL documentation only; README line landed. **F-B4-14 (S3,
+pinned)** — JSON-carried decimals bypass the guard (array exact
+past float64, map loads Strings); three characterization pins with
+the plain-field guard RED. Filed sweep: F-B4-1 remedy / F-B4-4 /
+bitstring class / [UUID-case] / the column contract all HOLD; the
+migration-helper `default:` seed does not exist. CLEAN: the
+affinity rewrite (13 spellings, raw-REAL truncation RED, three
+2000-run sweeps zero NUMERIC drift); wrong-results dead on exotic
+columns (pre-fix text-bind RED empty); Run 34's census note
+corrected (arithmetic vulnerable on the comparison side too);
+defaults 44/44 structured, refusals leave no debris. Stash-RED 1
+predicted exactly → 34/34. DRYNESS: S1+S2 — **B4 resets to 0 of 2,
+NOT DRY**. Re-wets ALSO on: `decimal_decode/1`,
+`encode_default/2`, the precision-error message + README decimal
+section. Next-pass seeds: F-B4-10 via insert_all/update_all/
+on_conflict on TEXT; the migrator route for exotic DDL; a
+two-competing-markers spelling sweep; `references(type: :float8)`;
+the rebuild re-rendering exotic spellings; the full
+`expr(%Decimal{})` matrix; an external foreign writer.
 
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA

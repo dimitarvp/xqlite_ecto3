@@ -127,6 +127,17 @@ after the S0–S2 burn-down.
   fragment default and both honest workarounds (constant default +
   `execute` UPDATE, or deliberately bundle with a modify — probed
   working). (Run 36, B7)
+- [F-B4-10-menu] (maintainer menu, from Run 39; the docs/message
+  half landed at the gate) A `:decimal` field over a TEXT-affinity
+  column silently stores SQLite's float-to-text rendering of the
+  bound number (~10% of accepted values drift) — unfixable at the
+  bind boundary, which cannot see the column. The implement option:
+  an opt-in exact Ecto type (dump `Decimal` → canonical string,
+  load string → `Decimal`) for users who want arbitrary-precision
+  text storage with a `:decimal`-shaped field; would forfeit
+  numeric ORDER BY/range semantics on that column, which the docs
+  would state. Until ruled, the README caveat + corrected
+  `DecimalPrecisionError` message are the contract. (Run 39, B4)
 - [F-B2-26-menu] (maintainer menu, from Run 38) `update_all`'s
   `push:`/`pull:` array operators refuse (message corrected at Run
   38's gate — arrays themselves ARE supported as JSON text). The

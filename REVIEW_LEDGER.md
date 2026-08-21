@@ -5299,3 +5299,95 @@ no-text-assertion doctrine (recorded honestly, not skipped silently).
   (mix.lock unmoved since before Run 24).
 
 EIGHTEEN straight finding runs.
+
+## Run 39 — 2026-08-21 — lap 5, batch 8: B4 solo (the affinity-rewrite round-trips + the loader side)
+
+Single Opus reviewer at `c854993`; xqlite 0.11.0 (hex).
+`bind_form/1`/`encode_param/2` git-verified UNTOUCHED since Run 31's
+own fixes — one anchor re-drive of the bind-exactness property covered
+them; the weight went to the Run-34 affinity rewrite, defaults, and
+the loader. Gate: seven probes re-driven (p1/p2/p3/p4/p5@2000/p6/p10,
+rc 0 each, decisive lines read); fixes BY THE ORCHESTRATOR; stash-RED
+1 red (exactly the predicted one — the typed-load-error pin; the two
+characterization pins are green by nature, recorded) → 34/34.
+
+- **F-B4-10 (S1, CONFIRMED; message+docs remedied in-run, code fix =
+  maintainer menu).** A `:decimal` field over a TEXT-affinity column
+  silently stores SQLite's float-to-text rendering — ~10% of accepted
+  values drift (2/12 full-route; 130-150/~1280 across three 2000-run
+  property sweeps; `CAST` attribution to SQLite's rendering; the
+  pre-fix text-bind control exact 12/12). A regression consequence of
+  Run 31's bind-as-number fix (which stays right — it killed the
+  wrong-results class); unfixable at the bind boundary (column-blind).
+  Worst part: `DecimalPrecisionError`'s own message said "use a
+  :string column", steering users EXACTLY into the drift. Remedied:
+  the message now prescribes a :string FIELD and says a :decimal
+  field over TEXT does not help; README gained the TEXT-affinity twin
+  of the REAL caveat (+ STE mirror); a characterization pin asserts
+  the drift and the string-field exactness. The opt-in exact type
+  filed [F-B4-10-menu].
+- **F-B4-11 (S2, CONFIRMED, FIXED, RED→green).** `decimal_decode/1`
+  called `Decimal.new/1` unguarded, so a BLOB or non-numeric TEXT
+  under a :decimal field (NUMERIC affinity preserves both; legacy
+  writers produce both) raised a bare `Decimal.Error` — no message
+  field, no table/column — killing the whole query incl. good rows.
+  Fixed: full-clean `Decimal.parse/1` or `:error` (routing into
+  Ecto's typed load failure naming field+value, the same path
+  inf/nan already took) + the missing catch-all clause. Pins: blob +
+  non-numeric text raise Ecto's ArgumentError, the same rows load
+  via :string, a clean numeric row loads. Sub-facts recorded:
+  sum/avg coerce non-numeric to 0 (SQLite semantics, README line
+  landed); digit-bytes BLOBs still parse (bytes are valid text).
+- **F-B4-12 (S3, CONFIRMED, FIXED).** The undocumented
+  `:json_library` knob was honored on ONE of four JSON paths and its
+  rescue named Jason's exception, so a configured library's encode
+  error escaped bare — and a DDL default written by it could be
+  unreadable by the Jason-hardcoded loader. Pre-1.0 ruling applied:
+  knob DELETED, Jason hardcoded (zero references anywhere public).
+- **F-B4-13 (S3, CONFIRMED, docs-fixed).** `precision:`/`scale:`
+  render into the DDL but SQLite ignores them and the guard's limit
+  is float64's — stated only in a private moduledoc; README line
+  landed (declared precision is documentation value only).
+- **F-B4-14 (S3, CONFIRMED, pinned).** JSON-carried decimals bypass
+  the guard entirely: `{:array, :decimal}` round-trips
+  beyond-precision values EXACTLY (Jason encodes decimals as
+  strings), `:map` loads them back as Strings — undefended until
+  now; three characterization pins landed with the plain-field guard
+  refusal as the RED.
+- **Filed sweep:** F-B4-1's remedy record HOLDS on all four claims
+  (numeric storage classes, ORDER BY/range vs the TEXT control,
+  HAVING/coalesce agreement); F-B4-4's positions HOLD (incl. nested
+  structs); the bitstring refusal class HOLDS on four doors;
+  [UUID-case] holds exactly as filed; the F-B6-5/F-B7-45 column
+  contract HOLDS (44 refusals, zero atom columns). The
+  migration-helper `default:` seed DOES NOT EXIST at HEAD (recorded).
+- **Clean census:** the affinity rewrite is CLEAN with the strongest
+  RED of the lap — 13 spellings (incl. three invented REAL-affinity
+  ones) all land NUMERIC and round-trip exactly, while a raw REAL
+  control truncates every witness value; guard verdicts
+  column-independent; three 2000-run property sweeps: NUMERIC legs
+  zero drift/zero unexpected raises. The wrong-results class stays
+  dead on exotic columns with a true pre-fix RED (text-bind returns
+  empty on all three shapes). Run 34's census note CORRECTED on
+  record: arithmetic IS vulnerable when the decimal sits on the
+  comparison side of the operator (`f8 + 0 > text` empty) — the
+  shipped fix covers it; the note's "comparison, not arithmetic"
+  wording was too narrow. Defaults: 44 structured refusals / 0
+  accepted across 11 classes × 4 doors; refused rebuilds leave no
+  debris (5 rounds). Seeds insert_all-placeholders / on_conflict-set
+  / update_all-set CLEAN with positions. Anchors 172 committed tests
+  green. Observed-not-proven: the DateTime legs (untouched by churn,
+  anchors only); F-B4-10's Ecto-route pre-fix RED is inference from
+  the shared bind path (repo read-only for the reviewer).
+- Dryness: an S1 + an S2 — **B4 resets to 0 of 2, NOT DRY**; the
+  fixes re-wet `decimal_decode/1`, `encode_default/2`, the
+  `DecimalPrecisionError` message + README decimal section.
+  Completeness critic (next B4 pass): drive F-B4-10 through
+  insert_all/update_all/on_conflict on a TEXT column; the full
+  migrator route for exotic-spelling DDL; a systematic
+  two-competing-markers spelling sweep; `references(type: :float8)`;
+  the rebuild re-rendering an exotic spelling under the rewrite;
+  `expr(%Decimal{})` full matrix (spot-checked here); a genuinely
+  external foreign writer for the loader legs.
+
+NINETEEN straight finding runs.
