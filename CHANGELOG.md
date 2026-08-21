@@ -161,6 +161,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A non-numeric stored value under a `:decimal` field fails the
+  load with Ecto's typed error instead of a bare `Decimal.Error`.**
+  NUMERIC affinity preserves BLOBs and non-numeric text (a legacy
+  writer's leftovers); loading such a row used to raise a
+  message-less `Decimal.Error` that took the whole query down. The
+  loader now accepts only a full clean parse; anything else surfaces
+  as Ecto's load failure naming the field, type, and value. The
+  undocumented, half-wired `:json_library` config was removed in the
+  same pass — Jason is the JSON library on every path.
+
 - **Every pragma-bound repo-config value is validated at connect.**
   SQLite's pragma parser never errors on an unrecognized value — it
   silently picks a default, so `journal_mode: :walk` meant DELETE
