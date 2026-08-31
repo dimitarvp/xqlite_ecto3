@@ -171,6 +171,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`type(expr, :decimal)` casts to NUMERIC instead of REAL.** The
+  query-side cast forced every tagged decimal through float64, so an
+  integer-exact decimal past 2^53 came back as a different number
+  from `select: type(o.amount, :decimal)` and an equality filter
+  written as `where: o.amount == type(^dec, :decimal)` found no rows
+  — silently, in both cases. NUMERIC is the same affinity the DDL
+  side already declares for `:decimal` columns. `type(expr, :float)`
+  still casts to REAL.
+
+- **Known text and blob type spellings no longer land on NUMERIC
+  affinity.** A ported `add :doc, :jsonb` (or `:json`, `:xml`,
+  `:inet`, `:cidr`, `:macaddr`, `:tsvector`) produced a column that
+  rewrote numeric-looking text on the way in — `"007"` stored as the
+  integer `7`, leading zeros gone, no error, and a delayed load
+  failure later. Those spellings now declare `TEXT`, and `:bytea`
+  declares `BLOB`. Unrecognized spellings still follow SQLite's own
+  affinity rule; the README's Known limitations names the residual
+  (`:money`, `:bit`, and friends stay NUMERIC).
+
+- **A type spelling outside SQLite's typename grammar is refused
+  with `UnsupportedTypeError`.** The passthrough rendered any atom
+  verbatim into DDL, so a computed spelling containing a comma
+  (`:"text, oops INTEGER"`) spliced an extra column definition into
+  `CREATE TABLE`. Identifier words plus an optional `(N)`/`(N,M)`
+  suffix pass; everything else raises with the offending spelling on
+  the error.
+
 - **A non-0/1 stored value under a `:boolean` field fails the load
   with Ecto's typed error instead of crashing the query.** The
   boolean loader returned an error tuple, a shape Ecto's loader
