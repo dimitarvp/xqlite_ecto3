@@ -932,6 +932,60 @@ on_conflict under the emission rule; equal cross-schema index
 names; DDL racing the candidate count; `Ecto.Multi` conversion
 shape. Handoff: [R35-handoff-config-validation] (B3/B8 court — the
 other dozen unvalidated repo-config pragmas).
+COVERING RE-RUN (Run 44, 2026-09-01 — lap 6, batch 4): step-0 over
+`23d9524..HEAD` (28 commits): unique_index_names.ex +
+fk_diagnostics.ex blob-identical since Run 35; connection.ex's one
+on-axis hunk = the e166c5f FK `[]` clause (re-anchored end-to-end
+both configs, all five match modes, p02); error.ex churn = the
+details-union widening, the statement field rides the constraint
+path (p12/p10); both driver re-wetters byte-checked —
+wrap_execute_error gained only put_statement (cancel-token position
++ guard ordering byte-stable), connect-chain FK ordering intact and
+re-proven live (200/200 over 5 members + witnessed reconnect, p01).
+SEVEN findings — F-B5-26 (S2, FIXED): the `[unique: nil]` class
+alive on unique/PK/check with a LIVE producer (FTS5 duplicate rowid
+→ bare "constraint failed" → all-nil details → matcher crashes /
+nil advice); `named_or_empty/2` makes to_constraints/2 nil-total;
+FTS5 + unit pins. F-B5-27 (S2, FIXED): unqualified
+`foreign_key_check` scanned the WHOLE database — one pre-existing
+orphan anywhere (foreign_keys: false is a supported repo option;
+OFF is SQLite's default elsewhere) broke FK conversion for every
+statement under rich diagnostics; fixed by a baseline diff inside
+the replay savepoint (report only rows absent pre-statement);
+commit path has no baseline — documented + [F-B5-27-commit] filed
+probe-first. F-B5-28 (S2, FIXED): `[not_null:]` advised the
+nonexistent not_null_constraint/3 and discarded the structured
+error; clause dropped → [] (reference-adapter parity), CHANGELOG
+Changed + README/guide/STE; THREE pin-of-the-bug flips (the third
+found by the widened sweep, not the reviewer). F-B5-29 (S3,
+FIXED): unbounded violation materialization (100k structs on a
+100k-child delete) → capped 24 + `{:truncated, total}`. F-B5-30
+(S3, docs-FIXED): the guide's "one deliberate difference" → three
+(unique names / FK-under-default raises incl. no_assoc / NOT NULL
+structured); no_assoc_constraint now named in README + pinned under
+the default config. F-B5-31 (S3, FILED): `:constraint_rowid`
+parseable but unmapped — split-court (xqlite parse arm queued
+post-0.11.1 + adapter mapping). F-B5-32 (S3, FIXED): empty
+index_info for a vanished index silently shrank the candidate
+count, flipping the emitted name ~50/50 under a verified-concurrent
+index rebuild; now halts `{:unavailable, {:index_vanished, name}}`
+→ derived-name degrade (supersedes F-B5-13's promotion);
+budgeted_match @doc false public, deterministic pin. Debts paid:
+seed 1 CLOSED — the lookup budget halt is deterministic (10/10 RED
+at 1 ms budget vs 10/10 GREEN control, twice; structural note: with
+budget = busy_timeout and elapsed <= budget, one blocked read can
+never trip it); F-B5-16's ceiling proven deterministically (1502 ms
+block vs 1 ms read control; BACKLOG text downgraded from the
+one-off sum). Filed sweep: 1 closed-stays, 4/25 directive-parked,
+5/7/8-residual/10/11/14-fork/15+22(SHARPENED: the two paths emit
+DIFFERENT names — remedy must equalize the name)/16/17 all
+reproduce. Seed-7 handoff adjudicated: CHECK expression-as-name +
+table-nil is faithful-to-SQLite docs-gap ([F-B1-11-docs], stays
+B1); unique field split is designed contract. DRYNESS: findings —
+**B5 stays 0 of 2, NOT DRY**. Re-wets ADD: `named_or_empty/2` +
+the nil-totality contract, `collect_violations/2` baseline diff +
+`cap_rows/2`, `budgeted_match/4`'s empty-info clause, the guide's
+three-differences paragraph.
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

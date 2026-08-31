@@ -247,14 +247,26 @@ after the S0–S2 burn-down.
   README's rich-FK caveats). Check/not-null/unique classification
   itself survives the stream path (parsed in Rust). Whatever lands
   here covers both enrichments. (Run 35, B5)
+  Sharpened (Run 44): the gap is not merely a poorer status — the two
+  paths emit DIFFERENT constraint names for one violation
+  (execute: the resolved custom name; stream: the derived
+  conventional name, b5_cover_r44 p11), so a changeset correct on one
+  path raises on the other. Any remedy must equalize the emitted
+  name, not just the status. (Run 44, B5)
 - [F-B5-16] (S3) The rich-FK-diagnostics replay is a WRITE, so it
   contends for WAL's single write lock where the unique lookup's reads
-  do not: measured a replay blocking 3,006 ms against a 3,000 ms
-  `busy_timeout` on top of the failing statement's own 2,731 ms —
-  the opt-in error path costs up to two full busy waits. Cost note
-  added to the moduledoc in-run; a budget for the replay folds into
-  [F-B5-14-fork]. Cleanup verified clean under contention (no open
-  txn, `defer_foreign_keys` reset). (Run 27, B5)
+  do not. Proven deterministically at Run 44 (b5_cover_r44 p10): with
+  another connection holding the write lock, an isolated replay blocks
+  a full `busy_timeout` (1502 ms against 1500) and degrades
+  `{:unavailable, {:database_busy_or_locked, 5, _}}`, while the
+  read-only unique lookup under the same lock completes in 1 ms — the
+  ceiling is one extra full busy wait on top of the failing
+  statement's own. Both waits landing in one statement was observed
+  once (Run 27) and did not recur over 12 staggered-holder iterations;
+  the ceiling, not the sum, is the documented cost. Cost note in the
+  moduledoc; a budget for the replay folds into [F-B5-14-fork].
+  Cleanup verified clean under contention (no open txn,
+  `defer_foreign_keys` reset). (Run 27, B5; re-measured Run 44)
 - [F-B5-17] (S3) `wrap_execute_error/4` (FK replay + unique lookup)
   runs BEFORE `disconnect_if_rolled_back/2`, so enrichment work runs
   on a connection the driver may be about to destroy, and under
@@ -667,6 +679,35 @@ after the S0–S2 burn-down.
   keywords in type position; quoting the spelling instead would
   turn the loud failure into a silent NUMERIC-affinity column —
   rejected). Thin reachability. (Run 43, B6)
+
+- [F-B5-31] (S3, B5 court + xqlite half, from Run 44) A duplicate
+  explicit-rowid write on a table with no INTEGER PRIMARY KEY fails
+  with extended code SQLITE_CONSTRAINT_ROWID and the fully
+  parseable message "UNIQUE constraint failed: t.rowid", but
+  xqlite's `parse_details` has no arm for that code, so the details
+  arrive empty (`table: nil, columns: []`) and `to_constraints/2`
+  falls to `[]` (b5_cover_r44 p04). The safe half of the F-B5-26
+  family — empty, not nil. Fix is split-court: xqlite adds
+  `SQLITE_CONSTRAINT_ROWID => parse_unique(message)` in
+  `constraint_parse.rs` (queue for the next xqlite release AFTER the
+  staged 0.11.1 — its notes are frozen); the adapter then maps
+  `:constraint_rowid` beside `:constraint_primary_key`. The
+  remaining unmapped codes (trigger/datatype/function/vtab/pinned/
+  commit_hook) verified correctly `[]` at Run 44. (Run 44, B5)
+
+- [F-B5-27-commit] (S3, B5 court, from Run 44) Run 44's baseline
+  diff fixed pre-existing-orphan contamination on the REPLAY path
+  only. `wrap_at_commit/2` (commit-time deferred-FK failures) still
+  runs `PRAGMA foreign_key_check` database-wide with no baseline —
+  there is no pre-transaction snapshot to diff against — so orphans
+  written under `foreign_keys: false` anywhere in the file appear
+  among a committing transaction's reported violations. Documented
+  in the FkDiagnostics moduledoc at Run 44. Remedy needs a design:
+  a baseline captured at BEGIN (cost on every transaction under
+  rich diagnostics — likely wrong), or an accepted documented gap.
+  The commit path was also never probed end-to-end (Run 44 critic
+  item 3 — user-deferred FKs, raw "COMMIT" via Repo.query replaying
+  the string "COMMIT"); probe before designing. (Run 44, B5)
 
 ## Feature follow-ups (owed, not review findings)
 

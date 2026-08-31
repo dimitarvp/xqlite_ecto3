@@ -5897,3 +5897,214 @@ corrected run exactly 8 by identity → 45/45 green restored.
   quote_string on adversarial content — byte-comparison never
   done).
 
+
+## Run 44 — 2026-09-01 — lap 6, batch 4: B5 solo (constraint mapping over the Runs-36-43 churn)
+
+Single Opus reviewer at `3bfa1c9`; ecto 3.14.1, ecto_sql 3.14.0,
+db_connection 2.10.2, xqlite 0.11.0 (hex) live-verified; SQLite
+3.53.2 probe-confirmed. Gate: ALL FOURTEEN probes re-driven by the
+orchestrator (p01-p14 — rc matched the manifest on each: eleven 0s +
+the three intended REDs p03/p13/p14 at rc 1; decisive outputs read
+line-by-line); fixes BY THE ORCHESTRATOR; stash-RED PREDICTED 8 —
+observed exactly 8 by identity (7 in the four assert-flip files + the
+vanish pin red in its own file; prediction honesty: that eighth was
+predicted as a warnings-as-errors COMPILE abort on the pre-fix
+private function, it actually surfaced as a runtime
+UndefinedFunctionError — same pin, same cause, failure mode
+mispredicted). The widened pre-prediction sweep caught a THIRD
+not_null pin (error_paths_test:61) beyond the two the reviewer named
+— the Run-42 seventh-file lesson executed. Post-fix 100/100 across
+the six pin files.
+
+- **F-B5-26 (S2, CONFIRMED, FIXED, RED→green).** The `[unique: nil]`
+  shape Run 42 removed from the FK clause was alive on the
+  unique/primary-key/check clauses, with a LIVE producer: an FTS5
+  virtual table reports a duplicate rowid as
+  SQLITE_CONSTRAINT_PRIMARYKEY with the bare message "constraint
+  failed" — xqlite's parse has no arm for it, details arrive empty,
+  and the mapping emitted `[unique: nil]`: FunctionClauseError deep
+  in Ecto under match: :suffix/:prefix/regex, `* nil` advice under
+  :exact (p13 RED, 4/4 ordinary-table control converts; p12 leg H
+  swept eight further shapes — fts5 is the only all-nil producer).
+  Grade held at S2 vs Run 42's S1 on the same mechanism: the trigger
+  needs a virtual table (plausible — SQLite's documented
+  rowid-aligned FTS5 pattern — not ordinary). FIX: no nil name ever
+  leaves `to_constraints/2` — a shared `named_or_empty/2` on the
+  PK, autoindex-unique, fallback-unique, and check emissions; empty
+  re-raises the structured error (the F-B1-7 shape). The xqlite
+  half (a parse arm for bare "constraint failed") rides [F-B5-31]'s
+  queue note. Pins: nil-totality unit sweep (three subtypes,
+  detail-less structs → []) + the live FTS5 duplicate-rowid RED→
+  green (constraints_test).
+- **F-B5-27 (S2, CONFIRMED, FIXED, RED→green).** The rich-FK replay
+  ran `PRAGMA foreign_key_check` with no table argument — a
+  DATABASE-WIDE scan — so any pre-existing orphan anywhere was
+  reported as a violation of the failing statement: sorted first,
+  Ecto's matcher raised on the stranger before ever reaching the
+  declared constraint (p03 RED: `[foreign_key:
+  "audit_log_owner_id_fkey", foreign_key: "fk_child_parent_id_fkey"]`
+  for a violation of the latter; by-the-book
+  foreign_key_constraint(:parent_id) raised ConstraintError naming
+  the stranger). Reachability CORRECTED on record: raw xqlite
+  connections enforce FK by default (`XqliteNIF.open` sets it), but
+  the adapter's own supported `foreign_keys: false` repo option
+  writes orphans, and SQLite's own default is OFF for every other
+  tool (p14 RED, three legs). One bad row anywhere permanently broke
+  FK conversion for the whole database under rich diagnostics. FIX:
+  baseline diff — the replay scans once BEFORE the replayed
+  statement (inside the savepoint, after defer), again after, and
+  reports only rows absent from the baseline (raw check-row
+  identity; a statement re-breaking an already-broken row folds into
+  the baseline — the row was broken either way, edge recorded in
+  the moduledoc). The update-hook tracking variant was REJECTED
+  (clobbers the connection's single update-hook slot — user-visible
+  surface). Scope honesty: the fix covers the REPLAY path only;
+  `wrap_at_commit/2` has no pre-transaction snapshot to diff — the
+  commit-path residue is documented in the moduledoc and FILED
+  [F-B5-27-commit] (probe-first: the commit path was never probed
+  end-to-end, critic item 3). Pin: plant an orphan with
+  `PRAGMA foreign_keys = 0` on the same conn, violate elsewhere,
+  exactly one violation naming the failing table
+  (fk_diagnostics_test).
+- **F-B5-28 (S2, CONFIRMED, FIXED, RED→green).** `[not_null:
+  "table.column"]` pointed users at `not_null_constraint/3` — a
+  function Ecto does not have (source-cited: ConstraintError's
+  advice is built as "call #{type}_constraint/3"), so the only
+  outcome was an unmatchable Ecto.ConstraintError AND the structured
+  error (table+columns intact) was discarded. postgres/myxql/tds all
+  emit nothing for NOT NULL (source-verified). FIX: the clause
+  dropped, falls to `[]` — the structured error reaches the caller;
+  CHANGELOG Changed entry, README + guide + STE note
+  (validate_required/2 is the Ecto-side answer). THREE
+  pin-of-the-bug flips (connection_test [not_null:] pin,
+  constraints_test + error_paths_test ConstraintError pins → the
+  structured shape; the sweep-found third was outside the reviewer's
+  list).
+- **F-B5-29 (S3, CONFIRMED, FIXED).** The replay materialized one
+  FkViolation struct per violating row, unbounded (p08 leg C:
+  100k children → 100k structs, 187 ms, the whole list into
+  logs/telemetry). FIX: capped at 24 (mirrors the unique lookup's
+  candidate cap), `fk_diagnostics: {:truncated, total}` past it —
+  the typespec + docs widened; `diag_tag` gains :truncated for
+  telemetry. Pin: 30-child delete → exactly 24 violations +
+  `{:truncated, 30}` (fk_diagnostics_test).
+- **F-B5-30 (S3, CONFIRMED, docs-FIXED).** The migration guide's
+  "changeset mapping works the same way with one deliberate
+  difference" undersold two more: under the SHIPPED default no FK
+  declaration converts (foreign_key_constraint/3 AND
+  no_assoc_constraint/3 raise the structured error — p02 leg C 5/5,
+  p08 leg B; correct per F-B1-7, undocumented), and NOT NULL now
+  (F-B5-28) raises structured. Guide rewritten to three named
+  differences; README rich-FK section gains no_assoc_constraint/3
+  (converts under rich — p08 leg A) + the without-flag sentence;
+  STE mirrors same gate. Pin: a no_assoc arm in
+  fk_constraint_default_config_test (raises structured under the
+  default; the converts-under-rich half stays probe-proven, p08 A).
+- **F-B5-31 (S3, CONFIRMED, FILED).** `:constraint_rowid` maps to
+  nothing though its message is fully parseable ("UNIQUE constraint
+  failed: t.rowid") — xqlite's parse has no arm for the extended
+  code, details arrive empty, `[]` (the SAFE half of the F-B5-26
+  family). Split-court entry filed: xqlite parse arm (queued for the
+  release AFTER the frozen 0.11.1) + adapter mapping. The remaining
+  six unmapped codes verified correctly `[]` (p04).
+- **F-B5-32 (S3, CONFIRMED, FIXED).** `PRAGMA index_info` on a
+  vanished index returns EMPTY, not an error, so an index dropped
+  between the two pragma reads was silently subtracted from the
+  candidate count — the emission rule keys on that count, so a
+  concurrent index rebuild flipped the emitted name ~50/50 (p09:
+  verified-concurrent race, 1500 violations × 1779-2628 DDL cycles,
+  both runs ~50/50) and a stable changeset raised intermittently.
+  FIX: zero index_info rows for a name index_list just returned →
+  halt `{:unavailable, {:index_vanished, name}}` → derived-name
+  degrade (an indexed expression yields rows with nil column names,
+  never zero rows — no collision). `budgeted_match/4` promoted to
+  @doc false public (the within_budget?/lookup_budget_ms
+  testability precedent). F-B5-13's planned promotion is SUPERSEDED
+  by this fix; its residual (names reflect schema as of the read)
+  stays moduledoc prose. Pin: real index → match, DROP INDEX →
+  index_vanished halt (unique_index_names_test, deterministic).
+- **Filed sweep (all open B5 items at HEAD):** F-B5-1 stays closed
+  (p02: [] + 5/5 structured, zero crashes); F-B5-4/25 unchanged,
+  unprobed per the cross-schema directive; F-B5-5 reproduces (p11:
+  the "a, b" column-name split matches the wrong real index);
+  F-B5-7 reproduces WIDENED (both pragma reads collapse empty —
+  the index_info half now FIXED as F-B5-32); F-B5-8-residual
+  reproduces (1202 ms rollback-journal block vs 981 µs control; WAL
+  immune); F-B5-10-structural/11 reproduce (creation order decides;
+  expression form still table-nil); F-B5-14-fork reproduces
+  (budgets unchanged, no repo option); F-B5-15/22 reproduce with a
+  SHARPER consequence — the execute and stream paths emit DIFFERENT
+  names for one violation (custom vs derived, p11) — BACKLOG entry
+  sharpened (any remedy must equalize the name, not the status);
+  F-B5-16 mechanism + ceiling now proven DETERMINISTICALLY (p10:
+  isolated replay blocks a full busy_timeout 1502/1500 ms and
+  degrades busy; the unique lookup under the same lock: 1 ms; the
+  two-full-waits sum did not recur over 12 staggered iterations) —
+  BACKLOG text downgraded from the one-off Run-27 sum to the proven
+  ceiling; F-B5-17 reproduces (ordering byte-stable through the
+  guard churn; live: in-txn ROLLBACK conversion still yields
+  {:error, :rollback} + disconnect at the point of damage).
+- **Clean census (controls named):** seed 8 (the e166c5f re-wet) —
+  rich ON emits the full named tuple + all five match modes
+  convert, rich OFF `[]` + 5/5 structured no-crash, two-FK
+  statement emits both/declares both, replay interplay green (p02);
+  seed 1 CLOSED — the budget halt is now DETERMINISTIC (p05: 10/10
+  `{:lookup_budget_exceeded, 3..4}` at budget 1 ms vs 10/10 :ok at
+  5000 ms, single-variable control, twice; structural insight
+  recorded: budget = busy_timeout with elapsed <= budget means a
+  single blocked-then-successful read can never exceed it — a
+  contention halt needs two blocked reads + a third candidate);
+  seed 3 CLEAN — enrichment on a rolled-back-to-autocommit
+  connection leaves no residue, the guard is not fooled (the
+  replay's savepoint balances), and BOTH steering hypotheses
+  refuted (a trigger RAISE fires before the FK check; UNIQUE
+  outranks FK on a double violation) (p07); seed 4 CLEAN — the
+  emission rule identical across plain/multi-row/UPDATE/
+  INSERT-SELECT; insert_all/update_all re-raise structured
+  (reference-adapter behavior); ON CONFLICT targets match by
+  column, custom index names irrelevant (p06); seed 6 CLEAN —
+  Ecto.Multi carries the same names as bare Repo calls, rollback
+  verified, repo usable (p06); seed 7 ADJUDICATED — CHECK
+  table-nil + expression-as-name is FAITHFUL to SQLite's message
+  (check_constraint/3 has no derived default name at all — raises
+  ArgumentError without name:; passing the expression verbatim
+  converts) → the docs half IS [F-B1-11-docs] (stays open, B1/docs
+  court, enum_check/array_check half still owed); unique
+  index_name-nil-vs-unique_index_names-populated is the designed
+  split, moduledoc states it, no change owed (p04); driver
+  re-wetters — wrap_execute_error gained only put_statement
+  (cancel-token position byte-stable: git log -S empty for
+  spawn_canceller/step_to_completion; ordering vs the guard
+  unchanged at driver.ex:548-549), the connect chain's
+  foreign_keys ordering intact and re-proven LIVE (p01: 200/200
+  structured over 5 members, 0 orphans, witnessed reconnect cycle,
+  40/40 after, foreign_keys=1 across 20 checkouts); error.ex churn
+  = the details-union widening only, statement field rides the
+  constraint path correctly (plain unique, FK-with-replay,
+  busy-degraded FK all carry the failing SQL; the stream-path nil
+  is [F-X1-7], X1's court, cross-referenced not re-filed) (p12
+  leg S, p10 leg E). Cross-court incidental (not B5's):
+  two-connection journal_mode=wal connect race on a fresh file at
+  pool_size 2 — B3/B8's court, test_helper already documents the
+  dodge.
+- Dryness: three S2 + four S3 — **B5 stays 0 of 2, NOT DRY**;
+  TWENTY-FOUR straight finding runs. Re-wets ADD: `named_or_empty/2`
+  and the nil-totality contract, `collect_violations/2` + the
+  baseline diff + `cap_rows/2`, `budgeted_match/4`'s empty-info
+  clause, the guide's three-differences paragraph. Completeness
+  critic (next B5 pass): the unmapped-extended-code surface
+  enumerated (13 subtypes × message shapes, virtual-table modules
+  as generators — the nil class bit twice in three runs);
+  fix-creates-the-next-finding on the baseline diff (its cost, a
+  failing baseline scan's status, rowid reuse in the diff key —
+  probe before trusting); the handle_commit FK path end-to-end
+  (inherits the contamination residue + the cap; raw "COMMIT" via
+  Repo.query replays the string "COMMIT" — worth its own look);
+  insert_all + on_conflict against partial/expression unique
+  indexes (conflict_target renders columns alone, SQLite needs the
+  WHERE clause for partial); the stream path's different-name half
+  (F-B5-15's hard half); the status shapes as a machine-readable
+  contract (seven now exist across two fields, no closed-set test —
+  F-B5-7's want since Run 14); Ecto.Multi × the disconnect guard
+  (ON CONFLICT ROLLBACK inside a Multi step unmeasured).
+
