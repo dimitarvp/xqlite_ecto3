@@ -180,6 +180,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The table rebuild refuses a `modify` that would silently rewrite
+  stored values.** The rebuild's `INSERT … SELECT` converts every row
+  through SQLite's affinity rules — the one door the parameter-binding
+  guards never see — so `modify :code, :decimal` on a populated TEXT
+  column silently turned `'007'` into `7` and rounded a 20-digit
+  decimal through float64 while the migration reported success, and a
+  `modify` re-rendering a column into TEXT affinity (the `:jsonb`
+  alias family) stringified numeric storage classes, silently changing
+  `ORDER BY` and range filters. A pre-flight now counts the stored
+  values the copy would rewrite and refuses before any destructive
+  step, naming the column and both affinities; values that convert
+  exactly migrate freely.
+
+- **A column named `check` (or `collate`, `deferrable`, `on`) no
+  longer blocks its table's rebuild.** The construct scans read
+  quoted identifiers verbatim, so `add :check, :boolean` made every
+  later `modify` refuse claiming a CHECK constraint the table does
+  not have. The scans now run over a product that empties quoted
+  identifiers; real constructs still refuse.
+
+- **A stored column type SQLite cannot re-read bare no longer bricks
+  the rebuild.** A carried type text like `foo-bar` or a reserved
+  word was spliced bare into the transient `CREATE TABLE` — a syntax
+  error that made the table permanently un-rebuildable. Such spellings
+  are re-emitted as quoted identifiers (same affinity). The same
+  keyword rule now also applies to migration type atoms:
+  `add :x, :set` raises `UnsupportedTypeError` instead of dying as a
+  raw SQLite syntax error.
+
+- **A parenthesis inside a string literal no longer aborts a rebuild's
+  default check.** `default: fragment("('a)b')")` rendered and stored
+  correctly but the post-check's parenthesis counter read the literal's
+  `)` as structure and aborted the migration; it now counts over the
+  literal-blanked text.
+
 - **A constraint error with no derivable name maps to no constraint
   instead of a nil one.** A virtual table (FTS5) reports a duplicate
   rowid as a primary-key violation with the bare message "constraint
