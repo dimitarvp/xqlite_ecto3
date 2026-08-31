@@ -180,6 +180,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A misconfigured `hooks:` progress option no longer takes the repo
+  supervision tree down.** `hooks: [progress: {Name, every_n: "500"}]`
+  (an env-var string), `every_n: nil`, a negative, or a non-atom
+  `tag:` raised inside `connect/1` — a crash DBConnection counts
+  against restart intensity, so the repo's whole supervision tree
+  died within milliseconds of boot with no error naming the config
+  key. Every progress option is validated now (`every_n` an integer
+  >= 1, `tag` an atom, unknown keys and non-keyword option lists
+  refused) with structured connect errors DBConnection retries with
+  backoff.
+
+- **A fresh database's first boot no longer logs a burst of failed
+  connects.** Pool members racing each other to run
+  `PRAGMA journal_mode = wal` on a not-yet-WAL file collided on most
+  first boots, and SQLite refuses the losing flip without consulting
+  the busy handler — so `busy_timeout` could not help (measured up to
+  120 s). The connect now retries the journal-mode write a bounded
+  number of times, milliseconds apart; the loser succeeds on the
+  first retry in practice. A genuinely held lock still fails with the
+  structured busy error. The README section that blamed boot-time
+  migrations and recommended raising `busy_timeout` is rewritten.
+
+- **A vertical tab before a transaction keyword no longer desyncs the
+  transaction-state tracking.** SQLite skips a vertical tab inside a
+  whitespace run (settled from the bundled tokenizer source), but the
+  adapter's keyword scan did not — `" \vBEGIN"` through raw SQL
+  opened a transaction the tracking missed, re-opening both failure
+  doors the BOM/semicolon fix closed: a silently-committing "open"
+  transaction, and a healthy pooled connection destroyed by a stale
+  flag.
+
+- **The FK-diagnostics stop event carries the real violation total.**
+  The event's `violations_count` saturates at the materialization cap
+  while the real number was discarded; `violations_total` now carries
+  it, and the `diagnostics_status` values (`:ok`/`:truncated`/
+  `:unavailable`) are enumerated on both doc surfaces.
+
 - **The table rebuild refuses a `modify` that would silently rewrite
   stored values.** The rebuild's `INSERT … SELECT` converts every row
   through SQLite's affinity rules — the one door the parameter-binding
