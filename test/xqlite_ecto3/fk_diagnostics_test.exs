@@ -91,6 +91,18 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
   end
 
   test "violations past the cap are truncated with the total on the status", %{pid: pid} do
+    handler_id = "fk-trunc-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler_id,
+      [:xqlite_ecto3, :fk_diagnostics, :stop],
+      fn _event, _measurements, metadata, _config -> send(parent, {:fk_stop, metadata}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     exec!(pid, "INSERT INTO p VALUES (1)")
     for i <- 1..30, do: exec!(pid, "INSERT INTO ch VALUES (#{i}, 1)")
 
@@ -98,6 +110,11 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
 
     assert d.fk_diagnostics == {:truncated, 30}
     assert length(d.fk_violations) == 24
+
+    assert_receive {:fk_stop, metadata}
+    assert metadata.diagnostics_status == :truncated
+    assert metadata.violations_count == 24
+    assert metadata.violations_total == 30
   end
 
   test "repeated replay of the same violation is byte-identical", %{pid: pid} do

@@ -470,17 +470,7 @@ If sustained write volume outgrows all of this, that is SQLite's honest ceiling 
 
 ### First-boot WAL noise on a fresh database
 
-The adapter opens every pooled connection in WAL mode, which on a brand-new, never-opened database file means the first connections each run `PRAGMA journal_mode = wal` — a write that needs a brief exclusive lock. If something else is holding a write lock at that exact moment — most commonly a boot-time migration running on a fresh file while the app pool is starting — those flips can lose the race and DBConnection logs a burst of
-
-```
-[error] XqliteEcto3.Driver (#PID<...>) failed to connect: {:database_busy_or_locked, 5, "database is locked"}
-```
-
-then retries with backoff. **This is harmless and self-healing:** the connections reconnect once the lock clears, every query succeeds, and the WAL header persists to the file, so every later boot is clean (the noise only ever appears on the very first boot of a fresh database). No query caller sees an error. The only cost is the log burst, which can look alarming or trip error-rate alerts. To avoid it:
-
-- **Run migrations before starting the app pool** (or in a separate release step) so the pool never opens connections while a migration holds the write lock. This is the cleanest fix.
-- **Pre-create the database with WAL already set** — open it once and run `PRAGMA journal_mode = wal` before the app starts (this is exactly what the test suite does), so pool connections find WAL already in place and never write it.
-- **Raise the connect-time `busy_timeout`** (repo config or URL parameter) so the flip waits out a short-lived competing lock instead of failing.
+The adapter opens every pooled connection in WAL mode, so on a database file that is not yet in WAL mode — a brand-new file, or an existing one in a rollback-journal mode — the first connections each run `PRAGMA journal_mode = wal`, a write that needs a brief exclusive lock. No other writer is needed for those flips to collide: two pool members racing each other is enough, and SQLite refuses the losing flip immediately **without consulting the busy handler**, so a large `busy_timeout` does not help (measured up to 120 s — the refusal still lands in about a millisecond). The adapter absorbs the race itself: on a busy-refused journal-mode write the connect retries the flip a bounded number of times, a few milliseconds apart — the loser succeeds on the first retry in practice, and every later boot finds WAL already in the file and never writes it. A lock genuinely held for longer (another process converting the same file, say) still fails the connect with the structured `{:database_busy_or_locked, ...}` and DBConnection's own backoff takes over. If you want the flip to never happen at boot at all, run migrations before starting the pool, or pre-create the database with WAL already set (what the test suite does).
 
 ### Migration rebuild is opt-in
 

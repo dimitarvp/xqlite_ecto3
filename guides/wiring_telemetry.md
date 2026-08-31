@@ -49,7 +49,7 @@ true
 | `[:xqlite_ecto3, :handle_declare, :*]` | a streaming cursor opens | `:sql`, `:query` |
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
-| `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count`, `:diagnostics_status` |
+| `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count` (rows carried, capped), `:violations_total` (the real number), `:diagnostics_status` (`:ok` \| `:truncated` \| `:unavailable`) |
 | `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
@@ -103,7 +103,9 @@ value, and a callback that raised never returned one.
 binds `%{result_class: class}` therefore disappears from the whole VM
 the first time an exception event reaches it — silently, taking every
 other event that handler subscribed to with it. Give handler functions
-a catch-all clause, as the samples below do.
+a catch-all clause, as the samples below do. The phase is not
+theoretical: anything that raises inside a span's body (connect
+included) emits it.
 
 ### Two shapes of `error_reason`
 

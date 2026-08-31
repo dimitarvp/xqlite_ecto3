@@ -46,6 +46,9 @@ defmodule XqliteEcto3.Telemetry do
   binds `%{result_class: class}` is removed from the whole VM the first
   time an exception event reaches it — silently, taking every other event
   it subscribed to with it. Give handler functions a catch-all clause.
+  The phase is not theoretical: anything that raises inside a span's body
+  (connect included) emits it, so a handler must tolerate it from any
+  span.
 
   ### Connection lifecycle
 
@@ -107,8 +110,13 @@ defmodule XqliteEcto3.Telemetry do
       [:xqlite_ecto3, :fk_diagnostics, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
         metadata:     %{conn, mode}; on :stop also
-                      %{violations_count, diagnostics_status}
+                      %{violations_count, violations_total,
+                        diagnostics_status}
 
+  `diagnostics_status` is `:ok`, `:truncated` (more violations existed
+  than the cap materializes — `violations_count` is the rows carried,
+  `violations_total` the real number), or `:unavailable` (the diagnosis
+  failed; the original error is surfaced regardless).
   Fires only when `rich_fk_diagnostics: true` and a foreign-key
   violation triggered the replay. The unique-index-name lookup (the
   sibling error-path read) has no span of its own today; its cost lands

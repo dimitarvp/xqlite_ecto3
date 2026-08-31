@@ -72,7 +72,7 @@ defmodule XqliteEcto3.Driver do
              # (existing databases additionally need VACUUM — SQLite semantics).
              {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", writable(auto_vacuum, mode)),
              {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout_ms),
-             {:ok, _} <- set_writable_pragma(conn, "journal_mode", to_string(journal_mode), mode),
+             {:ok, _} <- set_journal_mode(conn, to_string(journal_mode), mode),
              {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", foreign_keys),
              {:ok, _} <- NIF.set_pragma(conn, "cache_size", cache_size),
              {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
@@ -219,11 +219,15 @@ defmodule XqliteEcto3.Driver do
 
   defp register_config_hook(conn, {:progress, {name, opts}})
        when is_atom(name) and is_list(opts) do
-    every_n = Keyword.get(opts, :every_n, 1000)
-    tag = progress_tag(Keyword.get(opts, :tag))
-
-    with {:ok, pid} <- resolve_hook_subscriber(name),
-         {:ok, _handle} <- NIF.register_progress_hook(conn, pid, every_n, tag) do
+    with :ok <- validate_progress_opts(opts),
+         {:ok, pid} <- resolve_hook_subscriber(name),
+         {:ok, _handle} <-
+           NIF.register_progress_hook(
+             conn,
+             pid,
+             Keyword.get(opts, :every_n, 1000),
+             progress_tag(Keyword.get(opts, :tag))
+           ) do
       :ok
     end
   end
@@ -241,6 +245,25 @@ defmodule XqliteEcto3.Driver do
   defp register_hook_kind(conn, :wal, pid), do: NIF.register_wal_hook(conn, pid)
   defp register_hook_kind(conn, :commit, pid), do: NIF.register_commit_hook(conn, pid)
   defp register_hook_kind(conn, :rollback, pid), do: NIF.register_rollback_hook(conn, pid)
+
+  # A raise out of connect/1 crashes the connection process instead of
+  # returning the structured error DBConnection retries with backoff — a
+  # misconfigured hook took a whole repo supervision tree down in
+  # milliseconds. Every progress option is validated to a refusal in the
+  # same tag-tuple family as the connect validators; unknown keys refuse
+  # too (a typo would otherwise silently mean the default), and a
+  # non-keyword opts list refuses instead of silently meaning defaults.
+  defp validate_progress_opts(opts) do
+    if Keyword.keyword?(opts) do
+      Enum.reduce_while(opts, :ok, fn
+        {:every_n, n}, :ok when is_integer(n) and n >= 1 -> {:cont, :ok}
+        {:tag, t}, :ok when is_atom(t) -> {:cont, :ok}
+        {key, value}, :ok -> {:halt, {:error, {:invalid_hook_option, {key, value}}}}
+      end)
+    else
+      {:error, {:invalid_hook_config, {:progress, opts}}}
+    end
+  end
 
   defp progress_tag(nil), do: nil
   defp progress_tag(tag) when is_atom(tag), do: Atom.to_string(tag)
@@ -262,8 +285,34 @@ defmodule XqliteEcto3.Driver do
   defp writable(value, :readwrite), do: value
   defp writable(_value, :readonly), do: nil
 
-  defp set_writable_pragma(_conn, _name, _value, :readonly), do: {:ok, :skipped}
-  defp set_writable_pragma(conn, name, value, :readwrite), do: NIF.set_pragma(conn, name, value)
+  # SQLite refuses a journal-mode conversion against a concurrently held
+  # write lock in ~1 ms WITHOUT consulting the busy handler, so a fresh
+  # pool racing itself to convert a new file lost a member on most first
+  # boots and busy_timeout could not help (measured up to 120 s). The
+  # loser succeeds ~1 ms later, so the driver does the waiting SQLite
+  # refuses to — the cap is generous against a measured need of one
+  # retry; a lock held longer than the cap still fails structurally.
+  @journal_mode_attempts 10
+
+  defp set_journal_mode(conn, value, mode) do
+    set_journal_mode(conn, value, mode, @journal_mode_attempts)
+  end
+
+  defp set_journal_mode(_conn, _value, :readonly, _attempts_left), do: {:ok, :skipped}
+
+  defp set_journal_mode(conn, value, :readwrite, attempts_left) do
+    case NIF.set_pragma(conn, "journal_mode", value) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, {:database_busy_or_locked, _code, _msg}} when attempts_left > 1 ->
+        Process.sleep(2)
+        set_journal_mode(conn, value, :readwrite, attempts_left - 1)
+
+      {:error, _} = err ->
+        err
+    end
+  end
 
   defp apply_custom_pragmas(_conn, []), do: {:ok, :done}
 
@@ -642,7 +691,7 @@ defmodule XqliteEcto3.Driver do
   # BOM (what Windows editors put at the start of a .sql file) is skipped by
   # SQLite's tokenizer — both must not hide the transaction keyword behind
   # them from this sync.
-  defp leading_keyword(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r, ?\f, ?;] do
+  defp leading_keyword(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r, ?\f, ?\v, ?;] do
     leading_keyword(rest)
   end
 

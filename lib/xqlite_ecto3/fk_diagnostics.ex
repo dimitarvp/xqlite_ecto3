@@ -45,8 +45,13 @@ defmodule XqliteEcto3.FkDiagnostics do
   write lock. With another writer holding the database, the replay
   can block for up to a full `busy_timeout` on top of the failing
   statement's own busy wait before degrading — the diagnosed error
-  path then costs roughly two busy waits. This runs only after a
-  violation and only under `rich_fk_diagnostics: true`.
+  path then costs roughly two busy waits. Cost in table size:
+  `foreign_key_check` scans every FK-bearing table in the database,
+  and the replay runs it twice (the baseline and the post-statement
+  read), so the diagnosed error path is linear in total rows —
+  measured ~36 ms at 200k child rows against ~0.1 ms with the flag
+  off. This runs only after a violation and only under
+  `rich_fk_diagnostics: true`.
 
   One side effect survives the replay: SQLite does not undo
   `last_insert_rowid()` on rollback, so after a replay the connection
@@ -113,6 +118,7 @@ defmodule XqliteEcto3.FkDiagnostics do
         stop_md =
           Map.merge(start_md, %{
             violations_count: length(violations),
+            violations_total: violations_total(status, violations),
             diagnostics_status: diag_tag(status)
           })
 
@@ -132,6 +138,13 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp diag_tag(:ok), do: :ok
   defp diag_tag({:truncated, _}), do: :truncated
   defp diag_tag({:unavailable, _}), do: :unavailable
+
+  # The stop event's honest count: how many violations really existed,
+  # not how many the cap let through — a consumer summing
+  # violations_count would otherwise undercount with no way to recover
+  # the total the error struct carries.
+  defp violations_total({:truncated, total}, _violations), do: total
+  defp violations_total(_status, violations), do: length(violations)
 
   # ---------------------------------------------------------------------------
   # Replay under deferred enforcement

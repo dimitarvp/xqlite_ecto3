@@ -110,6 +110,45 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
       end
     end
 
+    test "malformed hook options are structured connect errors, never raises" do
+      name = :"hook_probe_#{System.os_time(:nanosecond)}"
+      Process.register(self(), name)
+
+      rejections = [
+        {[progress: {name, [tag: "string_tag"]}], :invalid_hook_option},
+        {[progress: {name, [tag: 7]}], :invalid_hook_option},
+        {[progress: {name, [every_n: -1]}], :invalid_hook_option},
+        {[progress: {name, [every_n: "x"]}], :invalid_hook_option},
+        {[progress: {name, [every_n: nil]}], :invalid_hook_option},
+        {[progress: {name, [every_n: 5, bogus: 1]}], :invalid_hook_option},
+        {[progress: {name, [1, 2, 3]}], :invalid_hook_config}
+      ]
+
+      for {hooks, type} <- rejections do
+        assert {:error, %XqliteEcto3.Error{type: ^type}} =
+                 Driver.connect(database: tmp_db!("cfg_hooks"), hooks: hooks)
+      end
+
+      assert {:ok, _state} =
+               Driver.connect(
+                 database: tmp_db!("cfg_hooks_ok"),
+                 hooks: [progress: {name, [every_n: 5, tag: :probe]}]
+               )
+    end
+
+    test "concurrent connects on a fresh file survive the WAL conversion race" do
+      for round <- 1..8 do
+        db = tmp_db!("cfg_walrace_#{round}")
+
+        results =
+          1..2
+          |> Enum.map(fn _ -> Task.async(fn -> Driver.connect(database: db) end) end)
+          |> Task.await_many(30_000)
+
+        assert Enum.all?(results, &match?({:ok, _}, &1))
+      end
+    end
+
     test "config-only enum values the URL parser does not offer still connect" do
       state =
         connect!(
