@@ -53,22 +53,46 @@ defmodule XqliteEcto3.DataType do
   def column_type({:map, _}, _opts), do: "TEXT"
   def column_type(:uuid, _opts), do: binary_id_column_type()
 
+  # DB-specific spellings the adapter knows carry text or bytes get that
+  # affinity directly. Left to the affinity rule below they would land on
+  # NUMERIC, which rewrites numeric-looking text on the way in ("007"
+  # becomes the integer 7) and the loss is silent and irreversible.
+  def column_type(:json, _opts), do: "TEXT"
+  def column_type(:jsonb, _opts), do: "TEXT"
+  def column_type(:xml, _opts), do: "TEXT"
+  def column_type(:inet, _opts), do: "TEXT"
+  def column_type(:cidr, _opts), do: "TEXT"
+  def column_type(:macaddr, _opts), do: "TEXT"
+  def column_type(:tsvector, _opts), do: "TEXT"
+  def column_type(:bytea, _opts), do: "BLOB"
+
+  # SQLite's typename grammar: identifier words, then an optional (N) or
+  # (N,M) size suffix.
+  @typename_grammar ~r/^[A-Z_][A-Z0-9_]*(?: [A-Z_][A-Z0-9_]*)*(?:\([+-]?\d+(?:,[+-]?\d+)?\))?$/
+
   # Unrecognized atoms pass through upcased so DB-specific spellings keep
   # working — except any spelling SQLite would give REAL affinity, which
   # becomes NUMERIC for the same reason :real does above. SQLite's affinity
   # rules decide in order: INT wins first, then CHAR/CLOB/TEXT, then BLOB,
   # and only then REAL/FLOA/DOUB — so a marker from an earlier rule keeps
-  # the spelling out of the rewrite.
+  # the spelling out of the rewrite. The spelling must fit SQLite's own
+  # typename grammar; anything else would splice extra tokens into the
+  # rendered DDL.
   def column_type(type, _) when is_atom(type) do
     declared =
       type
       |> Atom.to_string()
       |> String.upcase()
 
-    if real_affinity?(declared) do
-      "NUMERIC"
-    else
-      declared
+    cond do
+      not Regex.match?(@typename_grammar, declared) ->
+        raise XqliteEcto3.UnsupportedTypeError, type: type
+
+      real_affinity?(declared) ->
+        "NUMERIC"
+
+      true ->
+        declared
     end
   end
 

@@ -125,8 +125,44 @@ defmodule XqliteEcto3.DataTypeTest do
 
   describe "unknown atoms" do
     test "pass through upcased" do
-      assert DataType.column_type(:jsonb, []) == "JSONB"
       assert DataType.column_type(:custom_type, []) == "CUSTOM_TYPE"
+    end
+
+    test "multi-word and sized spellings pass through" do
+      assert DataType.column_type(:"native character", []) == "NATIVE CHARACTER"
+      assert DataType.column_type(:"varchar(255)", []) == "VARCHAR(255)"
+      assert DataType.column_type(:"numeric(10,2)", []) == "NUMERIC(10,2)"
+    end
+  end
+
+  describe "known text and blob spellings are aliased to their affinity" do
+    test "text-carrying DB-specific spellings become TEXT" do
+      for type <- [:json, :jsonb, :xml, :inet, :cidr, :macaddr, :tsvector] do
+        assert DataType.column_type(type, []) == "TEXT"
+      end
+    end
+
+    test ":bytea becomes BLOB" do
+      assert DataType.column_type(:bytea, []) == "BLOB"
+    end
+  end
+
+  describe "spellings outside SQLite's typename grammar are refused" do
+    test "a spelling that would splice extra column definitions" do
+      err =
+        assert_raise XqliteEcto3.UnsupportedTypeError, fn ->
+          DataType.column_type(:"text, oops INTEGER", [])
+        end
+
+      assert err.type == :"text, oops INTEGER"
+    end
+
+    test "quotes, semicolons, and empty spellings" do
+      for type <- [:"text\"", :"text; DROP TABLE x", :""] do
+        assert_raise XqliteEcto3.UnsupportedTypeError, fn ->
+          DataType.column_type(type, [])
+        end
+      end
     end
   end
 

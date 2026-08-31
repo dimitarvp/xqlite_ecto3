@@ -1786,8 +1786,14 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  defp expr(%Ecto.Query.Tagged{value: other, type: type}, sources, query)
-       when type in [:decimal, :float] do
+  # NUMERIC, not REAL: a REAL cast rounds an integer-exact decimal past
+  # 2^53 through float64 — the same rule the DDL side applies to
+  # :decimal columns.
+  defp expr(%Ecto.Query.Tagged{value: other, type: :decimal}, sources, query) do
+    ["CAST(", expr(other, sources, query), " AS NUMERIC)"]
+  end
+
+  defp expr(%Ecto.Query.Tagged{value: other, type: :float}, sources, query) do
     ["CAST(", expr(other, sources, query), " AS REAL)"]
   end
 
