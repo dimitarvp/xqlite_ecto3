@@ -164,6 +164,17 @@ defmodule XqliteEcto3.DataTypeTest do
         end
       end
     end
+
+    test "SQLite keywords in type position" do
+      for type <- [:set, :select, :"character varying set"] do
+        err =
+          assert_raise XqliteEcto3.UnsupportedTypeError, fn ->
+            DataType.column_type(type, [])
+          end
+
+        assert err.type == type
+      end
+    end
   end
 
   describe "REAL-affinity spellings are rewritten to NUMERIC" do

@@ -1,0 +1,220 @@
+defmodule XqliteEcto3.RebuildAffinityGuardTest do
+  @moduledoc """
+  The table rebuild's value-safety pre-flights.
+
+  A `modify` that moves a populated column's affinity refuses before any
+  destructive step when the copy would rewrite stored values — byte loss
+  toward a numeric affinity ("007" becomes 7), stringified storage
+  classes toward TEXT — and leaves the table byte-identical. Values the
+  conversion carries exactly migrate freely.
+
+  Beside it, the carried-type and construct-scan fixes: a column whose
+  NAME spells a scanned keyword does not block a rebuild, a stored type
+  text SQLite cannot re-read bare is quoted, a parenthesis inside a
+  string literal in a fragment default does not abort the post-check,
+  and a `SELECT *` trigger passes the pre-flight exactly as SQLite's own
+  `DROP COLUMN` allows it (the documented parity hole).
+  """
+  use ExUnit.Case, async: true
+
+  alias Ecto.Migration.Table
+
+  defmodule GuardRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  setup_all do
+    database =
+      Path.join(
+        System.tmp_dir!(),
+        "xqlite_ecto3_affinity_guard_#{System.os_time(:nanosecond)}.db"
+      )
+
+    remove_database(database)
+
+    config = [
+      adapter: XqliteEcto3,
+      database: database,
+      pool_size: 1,
+      support_alter_via_table_rebuild: true
+    ]
+
+    Application.put_env(:xqlite_ecto3, GuardRepo, config)
+    :ok = XqliteEcto3.storage_up(config)
+    start_supervised!({GuardRepo, config})
+
+    on_exit(fn -> remove_database(database) end)
+
+    :ok
+  end
+
+  defp remove_database(database) do
+    Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(database <> suffix) end)
+  end
+
+  defp alter!(table, changes) do
+    {:ok, []} =
+      XqliteEcto3.execute_ddl(
+        Ecto.Adapter.lookup_meta(GuardRepo),
+        {:alter, %Table{name: table}, changes},
+        []
+      )
+
+    :ok
+  end
+
+  defp dump(table, cols) do
+    select = Enum.map_join(cols, ", ", fn c -> ~s|typeof("#{c}"), "#{c}"| end)
+    %{rows: rows} = GuardRepo.query!("SELECT #{select} FROM \"#{table}\" ORDER BY rowid")
+    rows
+  end
+
+  defp declared_type(table, col) do
+    %{rows: rows} = GuardRepo.query!("SELECT name, type FROM pragma_table_info(?1)", [table])
+    [type] = for [n, t] <- rows, n == col, do: t
+    type
+  end
+
+  describe "the affinity guard" do
+    test "refuses a text-to-numeric modify that would lose bytes, table intact" do
+      GuardRepo.query!("CREATE TABLE ag_lossy (id INTEGER PRIMARY KEY, code TEXT)")
+      GuardRepo.query!("INSERT INTO ag_lossy (code) VALUES ('007'), ('12345678901234567890')")
+
+      rows_before = dump("ag_lossy", ["code"])
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_lossy", [{:modify, :code, :decimal, []}])
+      end
+
+      assert declared_type("ag_lossy", "code") == "TEXT"
+      assert dump("ag_lossy", ["code"]) == rows_before
+    end
+
+    test "lets a text-to-numeric modify through when every value converts exactly" do
+      GuardRepo.query!("CREATE TABLE ag_exact (id INTEGER PRIMARY KEY, amount TEXT)")
+      GuardRepo.query!("INSERT INTO ag_exact (amount) VALUES ('42'), ('1.5')")
+
+      assert :ok = alter!("ag_exact", [{:modify, :amount, :decimal, []}])
+
+      assert declared_type("ag_exact", "amount") == "DECIMAL"
+      assert dump("ag_exact", ["amount"]) == [["integer", 42], ["real", 1.5]]
+    end
+
+    test "refuses a numeric-to-text modify that would stringify storage classes" do
+      GuardRepo.query!("CREATE TABLE ag_jsonb (id INTEGER PRIMARY KEY, payload JSONB)")
+      GuardRepo.query!("INSERT INTO ag_jsonb (payload) VALUES (7), ('{\"a\":1}'), (10)")
+
+      rows_before = dump("ag_jsonb", ["payload"])
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_jsonb", [{:modify, :payload, :jsonb, [null: false]}])
+      end
+
+      assert declared_type("ag_jsonb", "payload") == "JSONB"
+      assert dump("ag_jsonb", ["payload"]) == rows_before
+    end
+
+    test "an affinity-preserving modify stays a no-op for stored values" do
+      GuardRepo.query!("CREATE TABLE ag_money (id INTEGER PRIMARY KEY, fee MONEY)")
+      GuardRepo.query!("INSERT INTO ag_money (fee) VALUES (7), (3.5)")
+
+      assert :ok = alter!("ag_money", [{:modify, :fee, :money, [null: false]}])
+
+      assert declared_type("ag_money", "fee") == "MONEY"
+      assert dump("ag_money", ["fee"]) == [["integer", 7], ["real", 3.5]]
+    end
+  end
+
+  describe "construct scans over quoted identifiers" do
+    test "a column named check does not block the rebuild" do
+      GuardRepo.query!(~s|CREATE TABLE kw_t (id INTEGER PRIMARY KEY, "check" INTEGER, v TEXT)|)
+      GuardRepo.query!(~s|INSERT INTO kw_t ("check", v) VALUES (1, 'a')|)
+
+      assert :ok = alter!("kw_t", [{:modify, :v, :string, [null: false]}])
+
+      assert dump("kw_t", ["check", "v"]) == [["integer", 1, "text", "a"]]
+    end
+
+    test "a real CHECK constraint still refuses" do
+      GuardRepo.query!("CREATE TABLE ck_t (id INTEGER PRIMARY KEY, v INTEGER CHECK (v > 0))")
+
+      assert_raise ArgumentError, fn ->
+        alter!("ck_t", [{:modify, :v, :integer, [null: false]}])
+      end
+    end
+  end
+
+  describe "carried stored type texts" do
+    test "a type SQLite cannot re-read bare is quoted; bare and quoted forms carry" do
+      GuardRepo.query!(
+        ~s|CREATE TABLE ct_t (id INTEGER PRIMARY KEY, a "foo-bar", b "select", | <>
+          ~s|c VARCHAR (255), d NUMERIC(10, 2), e [my type], f 'legacy', v TEXT)|
+      )
+
+      GuardRepo.query!("INSERT INTO ct_t (a, b, c, d, e, f, v) VALUES (1, 2, 'x', 3, 4, 5, 'y')")
+
+      assert :ok = alter!("ct_t", [{:modify, :v, :string, [null: false]}])
+
+      assert declared_type("ct_t", "a") == "foo-bar"
+      assert declared_type("ct_t", "b") == "select"
+      assert declared_type("ct_t", "c") == "VARCHAR (255)"
+      assert declared_type("ct_t", "d") == "NUMERIC(10, 2)"
+
+      assert dump("ct_t", ["a", "b", "c", "d", "e", "f", "v"]) ==
+               [
+                 [
+                   "integer",
+                   1,
+                   "integer",
+                   2,
+                   "text",
+                   "x",
+                   "integer",
+                   3,
+                   "integer",
+                   4,
+                   "integer",
+                   5,
+                   "text",
+                   "y"
+                 ]
+               ]
+    end
+  end
+
+  describe "fragment defaults with parens inside literals" do
+    test "survive the rebuild and store the exact default" do
+      GuardRepo.query!("CREATE TABLE fd_t (id INTEGER PRIMARY KEY, v TEXT)")
+      GuardRepo.query!("INSERT INTO fd_t (v) VALUES ('seed')")
+
+      assert :ok =
+               alter!("fd_t", [
+                 {:add, :tag, :string, [default: {:fragment, "('a)b')"}]},
+                 {:modify, :v, :string, [null: false]}
+               ])
+
+      GuardRepo.query!("INSERT INTO fd_t (v) VALUES ('fresh')")
+
+      %{rows: rows} = GuardRepo.query!("SELECT tag FROM fd_t ORDER BY rowid")
+      assert rows == [["a)b"], ["a)b"]]
+    end
+  end
+
+  describe "the SELECT * trigger parity hole" do
+    test "passes the pre-flight and bricks later writes exactly as SQLite's own DROP COLUMN" do
+      GuardRepo.query!("CREATE TABLE tp_t (id INTEGER PRIMARY KEY, gone INTEGER, keep TEXT)")
+      GuardRepo.query!("CREATE TABLE tp_log (id INTEGER, gone INTEGER, keep TEXT)")
+
+      GuardRepo.query!(
+        "CREATE TRIGGER tp_tr AFTER INSERT ON tp_t BEGIN " <>
+          "INSERT INTO tp_log SELECT * FROM tp_t WHERE id = NEW.id; END"
+      )
+
+      assert :ok = alter!("tp_t", [{:remove, :gone}])
+
+      assert_raise XqliteEcto3.Error, fn ->
+        GuardRepo.query!("INSERT INTO tp_t (keep) VALUES ('x')")
+      end
+    end
+  end
+end

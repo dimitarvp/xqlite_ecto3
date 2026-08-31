@@ -66,18 +66,14 @@ defmodule XqliteEcto3.DataType do
   def column_type(:tsvector, _opts), do: "TEXT"
   def column_type(:bytea, _opts), do: "BLOB"
 
-  # SQLite's typename grammar: identifier words, then an optional (N) or
-  # (N,M) size suffix.
-  @typename_grammar ~r/^[A-Z_][A-Z0-9_]*(?: [A-Z_][A-Z0-9_]*)*(?:\([+-]?\d+(?:,[+-]?\d+)?\))?$/
-
   # Unrecognized atoms pass through upcased so DB-specific spellings keep
   # working — except any spelling SQLite would give REAL affinity, which
   # becomes NUMERIC for the same reason :real does above. SQLite's affinity
   # rules decide in order: INT wins first, then CHAR/CLOB/TEXT, then BLOB,
   # and only then REAL/FLOA/DOUB — so a marker from an earlier rule keeps
-  # the spelling out of the rewrite. The spelling must fit SQLite's own
-  # typename grammar; anything else would splice extra tokens into the
-  # rendered DDL.
+  # the spelling out of the rewrite. The spelling must render safely bare
+  # (SQLite's typename grammar, no keywords); anything else would splice
+  # extra tokens into the rendered DDL or die as a raw syntax error.
   def column_type(type, _) when is_atom(type) do
     declared =
       type
@@ -85,7 +81,7 @@ defmodule XqliteEcto3.DataType do
       |> String.upcase()
 
     cond do
-      not Regex.match?(@typename_grammar, declared) ->
+      not bare_typename?(declared) ->
         raise XqliteEcto3.UnsupportedTypeError, type: type
 
       real_affinity?(declared) ->
@@ -100,13 +96,63 @@ defmodule XqliteEcto3.DataType do
     raise XqliteEcto3.UnsupportedTypeError, type: type
   end
 
-  @real_affinity_markers ["REAL", "FLOA", "DOUB"]
-  @overriding_affinity_markers ["INT", "CHAR", "CLOB", "TEXT", "BLOB"]
+  # SQLite's typename grammar: identifier words, then an optional (N) or
+  # (N,M) size suffix, whitespace tolerated around the numbers.
+  @typename_grammar ~r/^[A-Z_][A-Z0-9_]*(?:\s+[A-Z_][A-Z0-9_]*)*\s*(?:\(\s*[+-]?\d+\s*(?:,\s*[+-]?\d+\s*)?\))?$/
 
-  defp real_affinity?(declared) do
-    Enum.any?(@real_affinity_markers, &String.contains?(declared, &1)) and
-      not Enum.any?(@overriding_affinity_markers, &String.contains?(declared, &1))
+  # www.sqlite.org/lang_keywords.html — the full list. A bare word from it
+  # in type position is a syntax error for the reserved ones and a
+  # different token for the rest, so no keyword ever renders bare.
+  @sqlite_keywords ~w(
+    ABORT ACTION ADD AFTER ALL ALTER ALWAYS ANALYZE AND AS ASC ATTACH
+    AUTOINCREMENT BEFORE BEGIN BETWEEN BY CASCADE CASE CAST CHECK COLLATE
+    COLUMN COMMIT CONFLICT CONSTRAINT CREATE CROSS CURRENT CURRENT_DATE
+    CURRENT_TIME CURRENT_TIMESTAMP DATABASE DEFAULT DEFERRABLE DEFERRED
+    DELETE DESC DETACH DISTINCT DO DROP EACH ELSE END ESCAPE EXCEPT
+    EXCLUDE EXCLUSIVE EXISTS EXPLAIN FAIL FILTER FIRST FOLLOWING FOR
+    FOREIGN FROM FULL GENERATED GLOB GROUP GROUPS HAVING IF IGNORE
+    IMMEDIATE IN INDEX INDEXED INITIALLY INNER INSERT INSTEAD INTERSECT
+    INTO IS ISNULL JOIN KEY LAST LEFT LIKE LIMIT MATCH MATERIALIZED NATURAL
+    NO NOT NOTHING NOTNULL NULL NULLS OF OFFSET ON OR ORDER OTHERS OUTER
+    OVER PARTITION PLAN PRAGMA PRECEDING PRIMARY QUERY RAISE RANGE RECURSIVE
+    REFERENCES REGEXP REINDEX RELEASE RENAME REPLACE RESTRICT RETURNING
+    RIGHT ROLLBACK ROW ROWS SAVEPOINT SELECT SET TABLE TEMP TEMPORARY THEN
+    TIES TO TRANSACTION TRIGGER UNBOUNDED UNION UNIQUE UPDATE USING VACUUM
+    VALUES VIEW VIRTUAL WHEN WHERE WINDOW WITH WITHOUT
+  )
+  @sqlite_keyword_set MapSet.new(@sqlite_keywords)
+
+  @doc false
+  # Whether an upcased type text renders safely bare in DDL type position:
+  # it fits SQLite's typename grammar and no word of it is an SQLite
+  # keyword. Shared by the migration passthrough (refuses) and the table
+  # rebuild's carried-type emission (quotes).
+  @spec bare_typename?(String.t()) :: boolean()
+  def bare_typename?(declared) when is_binary(declared) do
+    Regex.match?(@typename_grammar, declared) and
+      ~r/[A-Z_][A-Z0-9_]*/
+      |> Regex.scan(declared)
+      |> Enum.all?(fn [word] -> not MapSet.member?(@sqlite_keyword_set, word) end)
   end
+
+  @doc false
+  # SQLite's column-affinity rule over a declared type text, in the
+  # documented order: INT wins first, then CHAR/CLOB/TEXT, then BLOB (an
+  # empty declaration included), then REAL/FLOA/DOUB, else NUMERIC.
+  @spec sqlite_affinity(String.t()) :: :integer | :text | :blob | :real | :numeric
+  def sqlite_affinity(declared) when is_binary(declared) do
+    scannable = String.upcase(declared)
+
+    cond do
+      String.contains?(scannable, "INT") -> :integer
+      Enum.any?(["CHAR", "CLOB", "TEXT"], &String.contains?(scannable, &1)) -> :text
+      String.contains?(scannable, "BLOB") or scannable == "" -> :blob
+      Enum.any?(["REAL", "FLOA", "DOUB"], &String.contains?(scannable, &1)) -> :real
+      true -> :numeric
+    end
+  end
+
+  defp real_affinity?(declared), do: sqlite_affinity(declared) == :real
 
   # A map or list given as a column `default:` is stored as JSON text. Every
   # path that writes such a column — the plain ALTER, the table rebuild, and

@@ -402,7 +402,7 @@ defmodule XqliteEcto3.RebuildVerification do
     # The grammar allows a sort order and an ON CONFLICT clause between
     # KEY and AUTOINCREMENT (`PRIMARY KEY ASC AUTOINCREMENT` is legal and
     # autoincrements), so the two keywords are not always adjacent.
-    scannable = without_string_literals(create_sql)
+    scannable = without_string_literals_or_names(create_sql)
 
     Regex.match?(
       ~r/\bPRIMARY\s+KEY(?:\s+(?:ASC|DESC))?(?:\s+ON\s+CONFLICT\s+\w+)?\s+AUTOINCREMENT\b/i,
@@ -441,10 +441,29 @@ defmodule XqliteEcto3.RebuildVerification do
     Regex.replace(@quoted_text, create_sql, &blanked/1)
   end
 
+  @doc """
+  Like `without_string_literals/1`, with quoted identifiers emptied too.
+
+  A quoted identifier legally spells any keyword — a column named
+  `"check"` — so a construct scan over the name-preserving product reads
+  the name as the construct itself. Scans that only ask "does this
+  construct exist?" use this product; scans that need the names (dependent
+  objects, stranded constraints) keep `without_string_literals/1`.
+  """
+  @spec without_string_literals_or_names(String.t()) :: String.t()
+  def without_string_literals_or_names(create_sql) when is_binary(create_sql) do
+    Regex.replace(@quoted_text, create_sql, &blanked_nameless/1)
+  end
+
   defp blanked(<<?', _rest::binary>>), do: "''"
   defp blanked(<<?-, ?-, _rest::binary>>), do: " "
   defp blanked(<<?/, ?*, _rest::binary>>), do: " "
   defp blanked(quoted_name), do: quoted_name
+
+  defp blanked_nameless(<<?", _rest::binary>>), do: ~s|""|
+  defp blanked_nameless(<<?`, _rest::binary>>), do: "``"
+  defp blanked_nameless(<<?[, _rest::binary>>), do: "[]"
+  defp blanked_nameless(other), do: blanked(other)
 
   defp read_autoincrement?(table_name, query) do
     rows =
@@ -782,8 +801,11 @@ defmodule XqliteEcto3.RebuildVerification do
     end
   end
 
+  # Parentheses inside string literals are text, not structure — count
+  # over the blanked product or a literal holding `)` aborts the strip.
   defp balanced?(text) do
     text
+    |> without_string_literals()
     |> String.to_charlist()
     |> Enum.reduce_while(0, fn
       ?(, depth -> {:cont, depth + 1}

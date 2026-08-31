@@ -756,6 +756,7 @@ defmodule XqliteEcto3 do
     existing_columns = fetch_full_column_info!(meta, table, opts)
     refuse_removed_primary_key!(table, existing_columns, changes)
     refuse_key_grant_beside_kept_key!(table, existing_columns, changes)
+    refuse_affinity_rewrites_on_populated!(meta, table, existing_columns, changes, opts)
 
     triggers = fetch_table_triggers!(meta, table, opts)
     refuse_triggers_reading_removed_columns!(table, existing_columns, triggers, changes)
@@ -1352,6 +1353,91 @@ defmodule XqliteEcto3 do
     rows != []
   end
 
+  # A modify that moves a column to another affinity makes the rebuild's
+  # copy rewrite stored values through SQLite's conversion rules — the one
+  # door the parameter-binding guards never see. Toward a numeric affinity
+  # the rewrite can lose bytes ("007" becomes the integer 7; a 20-digit
+  # decimal rounds through float64); toward TEXT it stringifies numeric
+  # storage classes, silently changing ORDER BY and range comparisons.
+  # Either way the refusal is per-value: stored values the conversion
+  # carries exactly pass, so an all-clean column migrates freely.
+  defp refuse_affinity_rewrites_on_populated!(meta, table, existing_columns, changes, opts) do
+    Enum.each(changes, fn
+      {:modify, name, type, modify_opts} ->
+        case Enum.find(existing_columns, &same_column?(&1.name, name)) do
+          nil -> :ok
+          column -> refuse_affinity_rewrite!(meta, table, column, type, modify_opts, opts)
+        end
+
+      _other ->
+        :ok
+    end)
+  end
+
+  defp refuse_affinity_rewrite!(meta, table, column, type, modify_opts, opts) do
+    old_affinity = XqliteEcto3.DataType.sqlite_affinity(column.type || "")
+
+    new_affinity =
+      type
+      |> XqliteEcto3.DataType.column_type(modify_opts)
+      |> XqliteEcto3.DataType.sqlite_affinity()
+
+    rewritten = rewritten_count(meta, table, column, old_affinity, new_affinity, opts)
+
+    if rewritten > 0 do
+      raise ArgumentError,
+            affinity_rewrite_message(
+              table.name,
+              column.name,
+              {old_affinity, new_affinity},
+              rewritten
+            )
+    end
+  end
+
+  defp rewritten_count(_meta, _table, _column, affinity, affinity, _opts), do: 0
+
+  defp rewritten_count(meta, table, column, _old, new_affinity, opts) do
+    col = quote_name(column.name)
+
+    case new_affinity do
+      :blob ->
+        0
+
+      :text ->
+        count_rows!(meta, table, "typeof(#{col}) IN ('integer', 'real')", opts)
+
+      _numeric_family ->
+        count_rows!(
+          meta,
+          table,
+          "#{col} IS NOT NULL AND CAST(CAST(#{col} AS NUMERIC) AS TEXT) <> CAST(#{col} AS TEXT)",
+          opts
+        )
+    end
+  end
+
+  # sobelow_skip ["SQL.Query"]
+  defp count_rows!(meta, table, where_sql, opts) do
+    %{rows: [[n]]} =
+      Ecto.Adapters.SQL.query!(
+        meta,
+        "SELECT count(*) FROM #{quote_name(table.name)} WHERE #{where_sql}",
+        [],
+        opts
+      )
+
+    n
+  end
+
+  defp affinity_rewrite_message(table_name, column_name, {old_affinity, new_affinity}, count) do
+    "cannot rebuild #{inspect(table_name)} for ALTER ... MODIFY: changing " <>
+      "#{inspect(column_name)} moves it from #{old_affinity} to #{new_affinity} affinity, " <>
+      "and the copy would silently rewrite #{count} stored value(s) through SQLite's " <>
+      "conversion rules. Convert the data first with execute/1, or keep a type in the " <>
+      "column's current affinity family."
+  end
+
   defp incoming_actions_message(table_name, hits) do
     refs =
       Enum.map_join(hits, ", ", fn {ref, action} -> "#{inspect(ref)} (ON DELETE #{action})" end)
@@ -1406,9 +1492,10 @@ defmodule XqliteEcto3 do
   # REFERENCES and UNIQUE are preserved structurally, so they are not scanned
   # for here. DEFERRABLE and ON CONFLICT ride on those constructs but carry
   # detail the pragmas do not expose (deferred enforcement timing, a conflict
-  # resolution algorithm), so they must still refuse.
+  # resolution algorithm), so they must still refuse. The nameless product:
+  # a column named "check" is not a CHECK constraint.
   defp unpreservable_constraint(create_sql) do
-    scannable = XqliteEcto3.RebuildVerification.without_string_literals(create_sql)
+    scannable = XqliteEcto3.RebuildVerification.without_string_literals_or_names(create_sql)
 
     cond do
       Regex.match?(~r/\bCHECK\b/i, scannable) -> "CHECK constraints"
@@ -1864,7 +1951,7 @@ defmodule XqliteEcto3 do
     spec = [
       quote_name(name),
       " ",
-      if(type in [nil, ""], do: "BLOB", else: type),
+      carried_type(type),
       if(notnull, do: " NOT NULL", else: ""),
       default_clause(dflt),
       pk_clause
@@ -1884,6 +1971,27 @@ defmodule XqliteEcto3 do
         autoincrement?: autoincrement? and pk == 1 and not composite_pk?
       }
     }
+  end
+
+  # A stored type text that is already one complete quoted token re-parses
+  # as the same single name.
+  @quoted_typename ~r/^(?:"(?:[^"]|"")*"|\[[^\]]*\]|`(?:[^`]|``)*`|'(?:[^']|'')*')$/
+
+  # A stored type text re-renders verbatim only when SQLite reads it back
+  # as one typename: the bare grammar with no keywords, or one already
+  # fully quoted token. Everything else — reserved words, hyphens, dots,
+  # stray quotes — is emitted as a quoted identifier (same affinity: the
+  # marker scan reads the text either way). Splicing such text bare is a
+  # syntax error on the transient CREATE, bricking every rebuild.
+  defp carried_type(type) when type in [nil, ""], do: "BLOB"
+
+  defp carried_type(type) do
+    if XqliteEcto3.DataType.bare_typename?(String.upcase(type)) or
+         Regex.match?(@quoted_typename, type) do
+      type
+    else
+      quote_name(type)
+    end
   end
 
   defp default_clause(nil), do: ""

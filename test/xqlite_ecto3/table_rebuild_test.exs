@@ -264,7 +264,7 @@ defmodule XqliteEcto3.TableRebuildTest do
 
     test "batches modify + add + remove in one rebuild" do
       create("CREATE TABLE rb_batch(id INTEGER PRIMARY KEY, a TEXT, b INTEGER, c TEXT)")
-      TestRepo.query!("INSERT INTO rb_batch(a, b, c) VALUES ('x', 1, 'keep')")
+      TestRepo.query!("INSERT INTO rb_batch(a, b, c) VALUES ('7', 1, 'keep')")
 
       assert {:ok, []} =
                run_alter(:rb_batch, [
@@ -287,6 +287,11 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       %{rows: [[c_val]]} = TestRepo.query!("SELECT c FROM rb_batch WHERE id = 1")
       assert c_val == "keep"
+
+      %{rows: [[a_type, a_val]]} =
+        TestRepo.query!("SELECT typeof(a), a FROM rb_batch WHERE id = 1")
+
+      assert {a_type, a_val} == {"integer", 7}
     end
 
     test "user index on the table is recreated" do

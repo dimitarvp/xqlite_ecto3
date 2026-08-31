@@ -102,11 +102,20 @@ defmodule XqliteEcto3.TableRebuildLawTest do
       rows_before = row_count(plan.table)
       values_before = column_values(plan.table, kept)
 
-      assert {:ok, []} = alter(plan.table, changes)
+      # A modify that moves a seeded column's affinity may refuse rather
+      # than rewrite stored values — the refusal half of the law: the
+      # table must then be exactly as it was.
+      case attempt_alter(plan.table, changes) do
+        {:ok, []} ->
+          assert :ok = RebuildVerification.verify(before, changes, read_structure(plan.table))
+          assert row_count(plan.table) == rows_before
+          assert column_values(plan.table, kept) == values_before
 
-      assert :ok = RebuildVerification.verify(before, changes, read_structure(plan.table))
-      assert row_count(plan.table) == rows_before
-      assert column_values(plan.table, kept) == values_before
+        {:refused, %ArgumentError{}} ->
+          assert read_structure(plan.table) == before
+          assert row_count(plan.table) == rows_before
+          assert column_values(plan.table, kept) == values_before
+      end
 
       drop_table!(plan.table)
     end
@@ -139,6 +148,12 @@ defmodule XqliteEcto3.TableRebuildLawTest do
       {:alter, %Table{name: table}, changes},
       []
     )
+  end
+
+  defp attempt_alter(table, changes) do
+    {:ok, []} = alter(table, changes)
+  rescue
+    e in ArgumentError -> {:refused, e}
   end
 
   defp read_structure(table) do
