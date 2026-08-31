@@ -628,6 +628,33 @@ after the S0–S2 burn-down.
   and `array_check/2` emit named constraints; if not they inherit
   this. (Run 42, B1 → docs/B6)
 
+- [F-B8-13] (S3, B8 court, from CI watch 2026-08-31) A pooled
+  checkout deadline that expires while the client is still inside
+  `prepare_and_cache/2` (driver.ex:720 frame) surfaces to the
+  caller as the driver's own `%XqliteEcto3.Error{type:
+  :connection_closed}` instead of the
+  `%DBConnection.ConnectionError{reason: :error}` the cancel
+  surface promises (cancellation_test.exs:206's comment pins:
+  deadline-cancelled queries report `:error`). Observed once, on a
+  scheduled macOS run (GHA run 33384417033, macos-latest/1.18/OTP
+  26, sha db4d860 — same sha green at push 08-21 and on the 08-24
+  schedule): the 100 ms deadline burned in queue+prepare on the
+  slow runner, the pool disconnected and closed the handle, the
+  client's next NIF call returned `connection_closed`, and the
+  wrap passed straight through — a THIRD caller-visible shape for
+  the same user-facing event (query timed out), decided by which
+  process notices the deadline first. Both pool-timeout tests
+  (cancellation_test.exs:184 + :206) assert the ConnectionError
+  shape and are equally exposed. New flake class member — NOT the
+  sandbox.exs:174/:188 slow-macOS pair (that tally stays at 3;
+  this one starts its own count at 1). Candidate dispositions for
+  B8's court: widen the two asserts to accept the raced shape and
+  document the race as behavior, or normalize — map a
+  deadline-raced `:connection_closed` into the ConnectionError
+  surface (needs DBConnection-internals adjudication: whether the
+  driver can even tell the deadline expired). Not design-free;
+  filed, not fixed in-run.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —
