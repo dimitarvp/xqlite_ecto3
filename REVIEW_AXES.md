@@ -1416,6 +1416,62 @@ three-way; the shared-helper enumeration (F-B7-46's class); down/
 rollback migrations; COLLATE/DEFERRABLE live legs for the comment
 door.
 
+COVERING RE-RUN (Run 45, 2026-09-01 — lap 6, batch 5): step-0 over
+`df10b37..HEAD`: the rebuild engine BYTE-IDENTICAL since Run 36
+(rebuild_verification.ex empty diff, migration.ex zero bytes, every
+Run-36 re-wet trigger stable by git log -S); the one on-axis churn =
+0c09d01's data_type.ex (alias table + typename grammar) reaching the
+rebuild through the shared column_type/2. SIX findings — F-B7-47
+(S1, FIXED): a modify to a numeric affinity on a populated column
+silently rewrote stored values through the copy ("007"→7, a
+20-digit decimal rounds through float64 — the exact value the write
+path REFUSES; moduledoc promise broken; irreversible by rollback);
+new pre-flight `refuse_affinity_rewrites_on_populated!` counts
+at-risk values and refuses pre-destructively, per-value so
+exact-converting columns migrate. F-B7-49 (S2, FIXED): the Run-43
+alias table made `modify :payload, :jsonb` flip a legacy JSONB
+column NUMERIC→TEXT, stringifying storage classes — ORDER BY/range
+results changed silently, post-check blind (shared column_type/2 =
+the F-B7-46 class); same pre-flight, to-TEXT direction; GATE
+ADJUDICATION recorded: asymmetric rule (toward numeric = refuse
+byte loss only; toward TEXT = refuse any numeric storage class),
+README "three type-rendering details" + STE. F-B7-48 (S2, FIXED):
+a column NAMED check/collate/deferrable/on made its table
+permanently un-rebuildable with a false CHECK explanation (the
+construct scans read the name-preserving blanking); blanking SPLIT
+— `without_string_literals_or_names/1` for the construct scans +
+autoincrement_declared? (shared), name-preserving product for the
+name-hungry scans; real constructs still refuse. F-B7-50 (S3,
+FIXED): four legal stored type texts spliced bare bricked the
+transient CREATE; `carried_type/1` emits verbatim only for
+bare-grammar-no-keyword or already-quoted-token texts, else
+quote_name; stored text stable across rebuilds (pragma strips
+identifier quotes); CLOSES F-B6-9 — the full SQLite keyword list
+lands in DataType.bare_typename?/1, shared: passthrough atoms
+REFUSE (`add :x, :set` → UnsupportedTypeError), carried texts
+QUOTE. F-B7-51 (S3, FIXED): balanced? counted parens inside string
+literals — `('a)b')`-class fragment defaults aborted the rebuild
+while the plain ALTER accepted them; counts over the blanked
+product now. F-B7-52 (S3, docs): a SELECT*-trigger on a removed
+column passes the pre-flight and bricks later writes — EXACTLY as
+SQLite's own DROP COLUMN does (parity control); docs + a parity
+canary pin, over-approximating refusal rejected. The 2000-run law
+property TAUGHT the refusal branch (refused ⇒ byte-identical
+table, asserted on random shapes). CLEAN: the blanking
+PROPERTY-TESTED (640 generated CREATEs, SQLite itself as ground
+truth: 0 false passes / 0 false refusals); COLLATE+DEFERRABLE live
+consequences (closes Run-36 seed 7); carried_default 15/15;
+deterministic dance-window failures via the authorizer incl. the
+DROP→RENAME window; real cancel mid-dance 6/6; Sandbox × ownership
+× confirm 5 legs; down/rollback; UNIQUE-collision copy loud.
+Filed sweep: 27/46/25-feature/41-menu/B6-6-menu reproduce (menus
+NOT re-adjudicated); Run-28/36 fixes all hold. ATTACH seed
+directive-parked. DRYNESS: findings — **B7 stays 0 of 2, NOT
+DRY**. Re-wets ADD: the affinity guard trio, carried_type +
+@quoted_typename, DataType.bare_typename?/@sqlite_keywords/
+sqlite_affinity, the nameless blanking product, balanced?'s
+blanked counting, the README three-details paragraph.
+
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);
 here = the query dies. Deliberate divergence. Probes: post-cancel

@@ -667,19 +667,6 @@ after the S0–S2 burn-down.
   driver can even tell the deadline expired). Not design-free;
   filed, not fixed in-run.
 
-- [F-B6-9] (S3, B6 court, from Run 43) A passthrough type spelling
-  that is an SQLite keyword (`add :x, :set` — the MySQL type) fits
-  the typename grammar, so Run 43's grammar validation does not
-  catch it; it renders as a bare keyword token and fails the
-  migration with a raw `SqliteFailure` ("near \"SET\": syntax
-  error") instead of the adapter's `UnsupportedTypeError`
-  (b6_cover_r43 p02 leg C). Loud, so no data risk — the gap is
-  error quality. A structured refusal needs a decision on which
-  keyword list to refuse against (SQLite accepts many non-reserved
-  keywords in type position; quoting the spelling instead would
-  turn the loud failure into a silent NUMERIC-affinity column —
-  rejected). Thin reachability. (Run 43, B6)
-
 - [F-B5-31] (S3, B5 court + xqlite half, from Run 44) A duplicate
   explicit-rowid write on a table with no INTEGER PRIMARY KEY fails
   with extended code SQLITE_CONSTRAINT_ROWID and the fully
@@ -717,6 +704,15 @@ after the S0–S2 burn-down.
   doc references to the new `Xqlite` wrappers (additive, optional).
 
 ## Closed
+
+- 2026-09-01 [F-B6-9] (S3, from Run 43) CLOSED at Run 45's gate: the
+  keyword-list decision it waited on was made by F-B7-50's fix — the
+  full www.sqlite.org/lang_keywords.html list as
+  `DataType.@sqlite_keywords`, shared by `bare_typename?/1`. A
+  passthrough spelling containing any SQLite keyword now raises
+  `UnsupportedTypeError` (`add :x, :set` included); the rebuild's
+  carried stored types QUOTE instead (an existing column's spelling
+  is data, a migration atom is a request). Pinned in data_type_test.
 
 - 2026-08-20 [F-B7-16] (S3) RULED + IMPLEMENTED same day: removing
   every primary-key member now refuses loudly before any destructive

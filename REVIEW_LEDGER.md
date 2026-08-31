@@ -6108,3 +6108,195 @@ the six pin files.
   F-B5-7's want since Run 14); Ecto.Multi × the disconnect guard
   (ON CONFLICT ROLLBACK inside a Multi step unmeasured).
 
+
+## Run 45 — 2026-09-01 — lap 6, batch 5: B7 solo (migration ergonomics over the Run-43 churn)
+
+Single Opus reviewer at `d7fbf80`; ecto 3.14.1, ecto_sql 3.14.0,
+db_connection 2.10.2, xqlite 0.11.0 (hex) live-verified; SQLite
+3.53.2 probe-confirmed. Gate: ALL THIRTEEN probes re-driven by the
+orchestrator (rc 0 each, decisive outputs read); the five finding
+probes re-run POST-fix — every flip for the designed reason (refusals
+fire pre-flight with rows intact, six false refusals now `:rebuilt`,
+paren defaults survive, carried types quote); fixes BY THE
+ORCHESTRATOR; stash-RED PREDICTED 6 — first run 5 (the fragment-
+default pin exercised the WRONG DOOR: an alter with only an :add
+never reaches the rebuild, `requires_rebuild?` is :modify-only; a
+same-block :modify added to the pin), corrected run exactly 6 by
+identity. Fix-red sweep of the standing suite BEFORE stash-RED: the
+2000-run law property was taught the refusal branch (a refused
+rebuild must leave the table byte-identical — the law's own second
+property, now asserted inside the first on random shapes); 128/128
+green including both properties. Gate honesty: the FULL verify then
+caught one more file the name-pattern sweep missed
+(table_rebuild_test's batching fixture — modify :a, :integer over
+stored TEXT 'x', which the old rebuild silently rewrote to 0 with
+NOTHING asserting a's value; the new guard refused it). The fixture
+now seeds an exact-converting '7' AND asserts the converted value —
+the guard's first live save, and the sweep lesson upgraded: sweep by
+BEHAVIOR (rg the touched change-shapes over all of test/), not by
+file-name pattern. Step-0: the rebuild engine
+byte-identical since Run 36 (rebuild_verification.ex empty diff;
+xqlite_ecto3.ex five hunks all outside lines 598-2050; migration.ex
+zero bytes; every Run-36 re-wet trigger byte-stable by git log -S) —
+all findings come from the one on-axis churn commit (0c09d01's
+data_type.ex reaching the rebuild through the shared column_type/2)
+plus three never-swept code paths.
+
+- **F-B7-47 (S1, CONFIRMED, FIXED, RED→green).** A `modify` to a
+  numeric-affinity type on a populated column silently REWROTE
+  stored values through the rebuild's INSERT…SELECT — the one door
+  the parameter-binding guards never see: `modify :code, :decimal`
+  turned TEXT `'12345678901234567890'` into REAL …7000 (the exact
+  value insert_all REFUSES with DecimalPrecisionError — the
+  moduledoc's "rather than silently round" promise broken), `'007'`
+  into 7, `' 42 '` into 42, all silent, migration reports success,
+  rollback does NOT restore (p13 leg A, p03 leg C, p11 leg F).
+  Reachability ordinary (`modify :code, :decimal` on a :string
+  column is the textbook widen-this-column migration), S0 avoided
+  only by the opt-in flag. FIX: `refuse_affinity_rewrites_on_
+  populated!` pre-flight — per-modified-column, when the stored
+  declared affinity differs from the re-rendered one, count the
+  stored values the copy would rewrite and refuse (ArgumentError in
+  the engine's refusal family, naming column + both affinities +
+  execute/1) before any destructive step. The count is per-value so
+  an all-clean column migrates freely (the green control: '42'/'1.5'
+  → DECIMAL converts exactly and proceeds).
+- **F-B7-49 (S2, CONFIRMED, FIXED, RED→green).** Run 43's alias
+  table turned `modify :payload, :jsonb, null: false` on a
+  pre-Run-43 JSONB column (NUMERIC affinity) into an affinity flip
+  to TEXT that stringified every numeric storage class — ORDER BY
+  and range WHEREs changed results silently and permanently, a
+  rollback does not undo it, and the post-check is blind by
+  construction (both halves share column_type/2 — the F-B7-46
+  class realized on the churn's own surface) (p02 legs A-E, p11
+  leg G; :money single-variable control). SAME FIX, the to-TEXT
+  direction: any numeric storage class present → refuse. GATE
+  ADJUDICATION on record — the reviewer's two fix proposals
+  disagreed on one cell (valuewise, '42' text→integer converts
+  "exactly"; affinity-wise every flip refuses): resolved
+  ASYMMETRICALLY by each finding's harm — toward numeric affinities
+  refuse BYTE LOSS only (the requested numeric semantics are the
+  migration's point), toward TEXT refuse any numeric storage class
+  (the flip is what the finding shows users do not intend). A
+  deliberate int-column → :string conversion now needs execute/1
+  first — loud, documented, conservative. README's "Two
+  type-rendering details" paragraph → three, claim narrowed + the
+  refusal documented; STE mirrored.
+- **F-B7-48 (S2, CONFIRMED, FIXED, RED→green).** A column NAMED
+  `check` (or collate/deferrable/on — six spellings across all
+  three identifier quote forms) made its table PERMANENTLY
+  un-rebuildable with a false explanation: `blanked/1` deliberately
+  preserves quoted identifiers for the name-hungry scans, and the
+  four `unpreservable_constraint/1` keyword scans read the same
+  product, so `add :check, :boolean` — ordinary Ecto — read as a
+  CHECK constraint (p06 half 1; plainly-named control rebuilds).
+  FIX: the blanking split — `without_string_literals_or_names/1`
+  empties the three quoted-identifier forms too; the construct
+  scans and `autoincrement_declared?/1` (engine + verifier, shared)
+  moved onto it; the name-hungry scans keep the name-preserving
+  product. Real-CHECK/COLLATE/DEFERRABLE refusals unchanged
+  (p06 half 2 controls).
+- **F-B7-50 (S3, CONFIRMED, FIXED, RED→green).** The carried stored
+  type text spliced UNQUOTED into the transient CREATE — four legal
+  declarations (`"foo-bar"`, `"select"`, `"a.b"`, embedded-quote)
+  bricked every rebuild with a syntax error blaming nothing
+  actionable; rows always intact, first destructive statement
+  (p04 4/15 red). FIX: `carried_type/1` — verbatim only when the
+  text passes `DataType.bare_typename?/1` (grammar + NO SQLite
+  keyword) or is already one complete quoted token; otherwise
+  `quote_name/1`. The stored text is STABLE across rebuilds
+  (pragma strips identifier quotes on read-back — the pin's own
+  first expectation was wrong and corrected). The eleven
+  passing shapes stay bare (`VARCHAR (255)`, `NUMERIC(10, 2)`
+  included — the grammar tolerates their whitespace).
+  **CLOSES [F-B6-9]:** the keyword-list decision it waited on is
+  made — the full lang_keywords.html list in DataType, shared by
+  the passthrough (REFUSES `add :x, :set` with
+  UnsupportedTypeError — a migration atom is a request) and the
+  carried-type emission (QUOTES — an existing column's spelling is
+  data). Backlog entry moved to Closed.
+- **F-B7-51 (S3, CONFIRMED, FIXED, RED→green).** `balanced?/1`
+  counted parentheses inside string literals, so three legal
+  fragment defaults (`('a)b')` class) aborted a correct rebuild at
+  the post-check with a library-bug-shaped error — while the PLAIN
+  ALTER path accepted the identical option (p07 leg A, p08 control
+  B: the default_spec "same option, same result, either way"
+  contract broken). FIX: count over `without_string_literals/1`
+  (same module, already handles all six token kinds). Pathological
+  slicings still fail LOUD (an unterminated literal's parens count
+  — the never-silent property holds).
+- **F-B7-52 (S3, CONFIRMED, docs-FIXED).** A trigger depending on a
+  removed column WITHOUT naming it (`SELECT *`, late-bound column
+  lists) passes the word-boundary pre-flight and every later write
+  fails — but SQLite's own `ALTER TABLE DROP COLUMN` accepts the
+  identical shape and bricks identically, and refuses the named
+  shape identically (p07 leg C, p08 control A). ADJUDICATED
+  docs-only on the parity control (the Run-36 fts5 precedent): the
+  over-approximating refusal (any `*` in a trigger) rejected.
+  README + STE line landed ("name columns explicitly in trigger
+  bodies"); parity CANARY pinned (rebuild accepts + later write
+  fails structurally — so a future tightening is a deliberate act,
+  not an accident).
+- **Filed sweep (p12 + p13 leg C):** F-B7-27 reproduces (doc line
+  still Gate-3-owed); F-B7-46 reproduces unchanged (typeless→BLOB;
+  its CLASS got the systematic sweep this run); F-B7-25-feature
+  reproduces (clean refusal + guidance); F-B7-41-menu reproduces
+  (14 ArgumentError sites + 1 RuntimeError; Run-36's 13 was a
+  counting-method delta, engine byte-identical; NOT re-adjudicated
+  — noted that F-B7-48's wrong-reason refusal argues for the menu);
+  F-B6-6-menu reproduces (rebuild-batched add materializes ONE
+  timestamp for all rows; NOT re-adjudicated). Run-28/36 fixes all
+  hold (F-B7-29/30/31/32/36/42 — DESC+NULL key, fts5, checkout
+  pinning 0/12, trigger-names-column, savepointed confirm,
+  comment door over 640 generated cases).
+- **Clean census (controls named):** the blanking PROPERTY (p05):
+  640 generated CREATEs × 9 token kinds × 18 junk payloads, ground
+  truth from SQLite itself — 320 refused = 320 real CHECKs exactly,
+  0 false passes, 0 false refusals, 0 row damage; COLLATE/
+  DEFERRABLE live-consequence legs close Run 36's seed 7 (NOCASE
+  matches case-folded, DEFERRABLE moves the refusal to COMMIT;
+  comment-interleaved spellings refuse; literal-only control
+  rebuilds). carried_default 15/15 stored-DEFAULT forms
+  byte-identical through a rebuild. Deterministic dance-window
+  failures via the AUTHORIZER (p09 — deny :alter_table lands in
+  the DROP→RENAME window; every landing: table present, 0
+  transient, rows exact, defer reset, pool writable; the
+  deny-:insert legs honestly recorded as blocked by Ecto's own
+  bootstrap). Real cancel mid-dance 6/6 at 1-400 ms on 120k rows
+  (Run-36 reachability bound honored). Sandbox × ownership ×
+  confirm-savepoint 5 legs clean (checkin rolls the whole rebuild
+  away; allow-ed and shared modes clean; mid-dance failure inside
+  the sandbox clean). down/rollback structurally clean (change/0
+  with from: reverses; without from: refuses; declared-type
+  non-restoration recorded as F-B6-4's documented reach). Grammar
+  refusal pre-destructive on both rebuild doors (p02 F/G). UNIQUE
+  collisions during a value-rewriting copy fail LOUD and roll back
+  byte-identically (p13 leg B — why F-B7-47's silent collapse
+  where no constraint exists deserved S1). Cross-court incidental:
+  the pool_size-5 fresh-file journal-mode connect race
+  (B3/B8-court, already cross-referenced at Run 44).
+- Dryness: an S1 + two S2 + three S3 — **B7 stays 0 of 2, NOT
+  DRY**; TWENTY-FIVE straight finding runs. Re-wets ADD:
+  `refuse_affinity_rewrites_on_populated!`/`rewritten_count/6`/
+  `count_rows!`, `carried_type/1` + `@quoted_typename`,
+  `DataType.bare_typename?/1` + `@sqlite_keywords` +
+  `sqlite_affinity/1`, `without_string_literals_or_names/1`,
+  `balanced?/1`'s blanked counting, the README three-details
+  paragraph. Completeness critic (next B7 pass): the
+  affinity-change class beyond `modify` (an `add` whose default
+  materializes into existing rows through the copy — same shared
+  blindness one door over); `column_type(:decimal, opts)` as a
+  shared fact (the last unprobed branch — stored DECIMAL(10,2) vs
+  mismatched precision options); the copy under a same-block NOT
+  NULL with existing NULLs; widen the p05 property to COLLATE/
+  DEFERRABLE (would have caught F-B7-48 mechanically); the
+  fix-creates-the-next-finding sweep over the NEW pre-flight
+  (affinity guard vs generated columns, vs WITHOUT ROWID, vs a
+  modify whose column_type RAISES, count_rows! under contention);
+  `refuse_incoming_actions_on_populated!`/`fetch_incoming_action_
+  fks` under quoted/case-varied names; `restore_autoincrement_sql`
+  beside a case-varied sibling sequence row; concurrent
+  readers/writers during the dance at pool_size > 1 under WAL; the
+  refusal-message-vs-reality audit (fourteen refusal flavors, no
+  test asserts the REASON is right — F-B7-48 was one instance).
+
