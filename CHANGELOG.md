@@ -109,6 +109,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A NOT NULL violation raises the structured `XqliteEcto3.Error`
+  instead of `Ecto.ConstraintError`.** The old mapping emitted
+  `[not_null: "table.column"]`, but Ecto has no
+  `not_null_constraint/3` to declare, so the only outcome was an
+  `Ecto.ConstraintError` advising an impossible call — and the
+  structured error (table and column intact) was discarded on the
+  way. The reference adapters emit nothing here too. Catch the case
+  before the database with `validate_required/2`.
+
 - **Top-level `Repo.transaction(fun, mode: :savepoint)` is refused.**
   A lone SAVEPOINT runs the transaction DEFERRED, silently discarding
   `default_transaction_mode: :immediate` — and a deferred write that
@@ -170,6 +179,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **A constraint error with no derivable name maps to no constraint
+  instead of a nil one.** A virtual table (FTS5) reports a duplicate
+  rowid as a primary-key violation with the bare message "constraint
+  failed" — no table, no columns — and the mapping emitted
+  `[unique: nil]`: `match: :suffix`/`:prefix`/regex crashed inside
+  Ecto and `:exact` raised advice naming `nil`. No nil name ever
+  leaves the mapping now (unique, primary key, and check alike);
+  empty lets ecto_sql re-raise the structured error.
+
+- **Rich FK diagnostics no longer blame the statement for
+  pre-existing orphans.** `PRAGMA foreign_key_check` scans the whole
+  database, so orphans written with enforcement off (SQLite's own
+  default, or the `foreign_keys: false` repo option) anywhere in the
+  file were reported as violations of whatever statement failed —
+  breaking `foreign_key_constraint/3` conversion for the whole
+  database with one bad row. The replay now diffs against a baseline
+  taken inside its savepoint and reports only the statement's own
+  violations. (Commit-time deferred-FK failures still scan globally —
+  there is no pre-transaction baseline; documented.)
+
+- **Rich FK diagnostics cap the violations they materialize.** A
+  `Repo.delete` of a parent with N children built N violation structs
+  on the error path, unbounded. At most 24 are attached now; more
+  sets `fk_diagnostics: {:truncated, total}`.
+
+- **A unique index dropped by concurrent DDL mid-lookup degrades to
+  the derived name instead of silently changing the candidate
+  count.** `PRAGMA index_info` on a vanished index returns empty
+  rather than an error, and the silent subtraction flipped which
+  constraint name was emitted roughly 50/50 under a concurrent index
+  rebuild. The lookup now reports
+  `unique_index_lookup: {:unavailable, {:index_vanished, name}}` and
+  falls back to the conventional derived name.
 
 - **`type(expr, :decimal)` casts to NUMERIC instead of REAL.** The
   query-side cast forced every tagged decimal through float64, so an
