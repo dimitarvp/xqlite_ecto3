@@ -75,8 +75,10 @@ defmodule XqliteEcto3.Error do
     `rich_fk_diagnostics: true` repo config, `fk_violations` carries
     the exact violating rows and `fk_diagnostics` reports whether the
     diagnosis ran: `:not_run` (flag off or non-FK error), `:ok`
-    (violations populated), or `{:unavailable, reason}` (attempted but
-    failed — the original error is surfaced regardless).
+    (violations populated), `{:truncated, total}` (populated but
+    capped — `total` violations existed, the first 24 are carried), or
+    `{:unavailable, reason}` (attempted but failed — the original
+    error is surfaced regardless).
 
     For `subtype: :constraint_unique` reported as table and columns
     (every unique index except one built over an expression, which
@@ -118,7 +120,7 @@ defmodule XqliteEcto3.Error do
             target_type: atom() | nil,
             columns: [String.t()],
             fk_violations: [XqliteEcto3.Error.FkViolation.t()],
-            fk_diagnostics: :not_run | :ok | {:unavailable, term()},
+            fk_diagnostics: :not_run | :ok | {:truncated, pos_integer()} | {:unavailable, term()},
             unique_index_names: [String.t()],
             unique_index_lookup: :not_run | :ok | {:unavailable, term()}
           }

@@ -208,9 +208,18 @@ defmodule XqliteEcto3.UniqueIndexNames do
     end
   end
 
-  defp budgeted_match(conn, columns, name, acc) do
+  # Zero index_info rows means the index vanished between the two
+  # pragma reads (concurrent DDL) — index_info on a missing name
+  # returns empty, not an error. Silently subtracting it would change
+  # the candidate count, which the emission rule keys on, flipping the
+  # emitted name mid-race. Degrade to the derived name instead. (A
+  # real index always has rows; an indexed expression's rows carry a
+  # nil column name, not zero rows.)
+  @doc false
+  def budgeted_match(conn, columns, name, acc) do
     case index_columns(conn, name) do
       {:ok, ^columns} -> {:cont, {:ok, [name | acc]}}
+      {:ok, []} -> {:halt, {:error, {:index_vanished, name}}}
       {:ok, _other_columns} -> {:cont, {:ok, acc}}
       {:error, _reason} = err -> {:halt, err}
     end

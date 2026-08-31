@@ -76,6 +76,30 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
            } = err.details
   end
 
+  test "a pre-existing orphan elsewhere is not blamed on the statement", %{pid: pid} do
+    exec!(pid, "CREATE TABLE q(id INTEGER PRIMARY KEY)")
+    exec!(pid, "CREATE TABLE al(id INTEGER PRIMARY KEY, q_id INTEGER REFERENCES q(id))")
+    exec!(pid, "PRAGMA foreign_keys = 0")
+    exec!(pid, "INSERT INTO al VALUES (7, 999)")
+    exec!(pid, "PRAGMA foreign_keys = 1")
+
+    {:error, %Error{details: %Constraint{} = d}} = exec(pid, "INSERT INTO ch VALUES (1, 999)")
+
+    assert d.fk_diagnostics == :ok
+
+    assert [%FkViolation{child_table: "ch", constraint_name: "ch_p_id_fkey"}] = d.fk_violations
+  end
+
+  test "violations past the cap are truncated with the total on the status", %{pid: pid} do
+    exec!(pid, "INSERT INTO p VALUES (1)")
+    for i <- 1..30, do: exec!(pid, "INSERT INTO ch VALUES (#{i}, 1)")
+
+    {:error, %Error{details: %Constraint{} = d}} = exec(pid, "DELETE FROM p WHERE id = 1")
+
+    assert d.fk_diagnostics == {:truncated, 30}
+    assert length(d.fk_violations) == 24
+  end
+
   test "repeated replay of the same violation is byte-identical", %{pid: pid} do
     results =
       for _ <- 1..10 do

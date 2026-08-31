@@ -115,7 +115,7 @@ defmodule XqliteEcto3.Connection do
         },
         _opts
       ) do
-    [unique: unique_index_name(d)]
+    named_or_empty(:unique, unique_index_name(d))
   end
 
   def to_constraints(
@@ -151,18 +151,15 @@ defmodule XqliteEcto3.Connection do
         },
         _opts
       ) do
-    [check: d.constraint_name]
+    named_or_empty(:check, d.constraint_name)
   end
 
-  def to_constraints(
-        %XqliteEcto3.Error{
-          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_not_null} = d
-        },
-        _opts
-      ) do
-    [not_null: not_null_column(d)]
-  end
-
+  # NOT NULL deliberately maps to nothing: Ecto has no
+  # not_null_constraint/3 to declare, so any emission here raises
+  # Ecto.ConstraintError advising an impossible call. Falling through
+  # lets the structured error (table and column intact) reach the
+  # caller — the reference adapters do the same. The Ecto-side answer
+  # is validate_required/2.
   def to_constraints(_, _), do: []
 
   # A real index name read back from the database (see
@@ -181,14 +178,24 @@ defmodule XqliteEcto3.Connection do
   defp unique_constraints(
          %XqliteEcto3.Error.Constraint{unique_index_names: ["sqlite_autoindex_" <> _]} = d
        ) do
-    [unique: unique_index_name(d)]
+    named_or_empty(:unique, unique_index_name(d))
   end
 
   defp unique_constraints(%XqliteEcto3.Error.Constraint{unique_index_names: [name]}) do
     [unique: name]
   end
 
-  defp unique_constraints(%XqliteEcto3.Error.Constraint{} = d), do: [unique: unique_index_name(d)]
+  defp unique_constraints(%XqliteEcto3.Error.Constraint{} = d) do
+    named_or_empty(:unique, unique_index_name(d))
+  end
+
+  # A nil name must never leave to_constraints/2: it crashes Ecto's
+  # suffix/prefix/regex constraint matching and converts nothing under
+  # :exact. Empty makes ecto_sql re-raise the structured error instead.
+  # A virtual table (FTS5) reporting a bare "constraint failed" is a
+  # live producer of detail-less constraint errors.
+  defp named_or_empty(kind, name) when is_binary(name), do: [{kind, name}]
+  defp named_or_empty(_kind, _), do: []
 
   defp unique_index_name(%XqliteEcto3.Error.Constraint{index_name: name}) when is_binary(name),
     do: name
@@ -205,16 +212,6 @@ defmodule XqliteEcto3.Connection do
     # Mirror that shape so user-supplied defaults match.
     Enum.join([table | columns] ++ ["index"], "_")
   end
-
-  defp not_null_column(%XqliteEcto3.Error.Constraint{table: table, columns: [col | _]})
-       when is_binary(table) and is_binary(col) do
-    "#{table}.#{col}"
-  end
-
-  defp not_null_column(%XqliteEcto3.Error.Constraint{columns: [col | _]}) when is_binary(col),
-    do: col
-
-  defp not_null_column(_), do: nil
 
   defp merge_defaults(opts) do
     Enum.reduce(@default_opts, opts, fn {key, val}, acc ->

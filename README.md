@@ -219,6 +219,11 @@ codes preserved), `Error.Input` (offending SQL + byte offset), or
 `nil` for tag-only errors. Think Rust enum variants carrying data,
 expressed as structs.
 
+A NOT NULL violation raises this structured error too (table and
+column intact) rather than an `Ecto.ConstraintError`: Ecto has no
+`not_null_constraint/3` to declare, so no changeset could ever match
+one. Catch it before the database with `validate_required/2`.
+
 ### Rich FK diagnostics (opt-in)
 
 SQLite reports every foreign-key violation as a bare
@@ -244,10 +249,18 @@ e.details.fk_violations
 ```
 
 The synthesized name follows Ecto's default convention, so
-`foreign_key_constraint(:user_id)` converts the violation into a
-changeset error exactly like PostgreSQL does. Zero cost on the happy
-path — the replay runs only after a violation, and any diagnostic
-failure degrades to the original error
+`foreign_key_constraint(:user_id)` — and `no_assoc_constraint/3` on
+a `Repo.delete` of a still-referenced parent — converts the violation
+into a changeset error exactly like PostgreSQL does. (Without the
+flag, neither converts: SQLite names no FK constraint, so the
+structured error is raised instead.) The replay diffs
+`foreign_key_check` against a baseline taken inside the savepoint, so
+rows that already violated before the statement — orphans written
+under `foreign_keys: false` or by another tool — are not blamed on
+it; at most 24 violations are attached, more setting
+`fk_diagnostics: {:truncated, total}`. Zero cost on the happy path —
+the replay runs only after a violation, and any diagnostic failure
+degrades to the original error
 (`fk_diagnostics: {:unavailable, reason}`), never masking it.
 Caveat: explicitly named FK constraints still need
 `foreign_key_constraint(:field, name: ...)` with the synthesized

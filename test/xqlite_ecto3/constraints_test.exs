@@ -195,16 +195,33 @@ defmodule XqliteEcto3.ConstraintsTest do
   end
 
   # ---------------------------------------------------------------------------
-  # NOT NULL — raises ConstraintError without changeset constraint
+  # NOT NULL — surfaces the structured error; Ecto has nothing to match
   # ---------------------------------------------------------------------------
 
-  test "NOT NULL violation raises ConstraintError" do
+  test "NOT NULL violation raises the structured error with table and column" do
     error =
-      assert_raise Ecto.ConstraintError, fn ->
+      assert_raise XqliteEcto3.Error, fn ->
         Repo.insert(%CU{name: nil})
       end
 
-    assert error.type == :not_null
+    assert %XqliteEcto3.Error.Constraint{
+             subtype: :constraint_not_null,
+             table: "constr_users",
+             columns: ["name"]
+           } = error.details
+  end
+
+  test "a detail-less virtual-table violation maps to no constraint, not a nil name" do
+    Repo.query!("CREATE VIRTUAL TABLE cfts USING fts5(body)")
+    Repo.query!("INSERT INTO cfts(rowid, body) VALUES (1, 'a')")
+
+    error =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("INSERT INTO cfts(rowid, body) VALUES (1, 'b')")
+      end
+
+    assert error.details.subtype == :constraint_primary_key
+    assert XqliteEcto3.Connection.to_constraints(error, []) == []
   end
 
   test "NOT NULL caught by changeset validate_required" do

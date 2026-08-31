@@ -14,18 +14,31 @@ defmodule XqliteEcto3.FkDiagnostics do
      stack)
   2. `PRAGMA defer_foreign_keys = ON` — the replayed statement now
      succeeds, so its violating rows exist inside the savepoint
-  3. `PRAGMA foreign_key_check` — names each violation: child table,
-     rowid, parent table, FK index
-  4. `PRAGMA foreign_key_list(child)` — resolves the FK index to the
-     exact child/parent columns
-  5. Roll the savepoint back and explicitly reset
+  3. `PRAGMA foreign_key_check` — the BASELINE: rows already
+     violating before the statement (orphans written under
+     `foreign_keys: false`, or by any tool with enforcement off —
+     SQLite's own default). `foreign_key_check` scans the whole
+     database, so without this the statement would be blamed for
+     every pre-existing orphan anywhere in the file
+  4. Replay the statement, then `PRAGMA foreign_key_check` again —
+     only rows absent from the baseline are the statement's own.
+     (A statement that re-breaks an already-broken row in the same
+     way is folded into the baseline — the row was broken either
+     way.) At most 24 violations are materialized; more sets
+     `fk_diagnostics: {:truncated, total}` with the first 24 kept
+  5. `PRAGMA foreign_key_list(child)` — resolves each FK index to
+     the exact child/parent columns
+  6. Roll the savepoint back and explicitly reset
      `defer_foreign_keys` — inside a long-lived outer transaction
      (e.g. `Ecto.Adapters.SQL.Sandbox`) it would otherwise stay on
      until that transaction ends
 
   Commit-time FK failures (a transaction the caller deferred
   themselves) skip the replay: the violating rows still exist while
-  the transaction is open, so steps 3–4 run directly.
+  the transaction is open, so the check and resolve steps run
+  directly — with NO baseline: there is no pre-transaction snapshot
+  to diff against, so pre-existing orphans anywhere in the database
+  will appear among the reported violations on this path.
 
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
@@ -111,12 +124,13 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   defp run_collect(collect_fun) do
     case collect_fun.() do
-      {:ok, violations} -> {:ok, violations}
       {:error, reason} -> {{:unavailable, reason}, []}
+      {status, violations} -> {status, violations}
     end
   end
 
   defp diag_tag(:ok), do: :ok
+  defp diag_tag({:truncated, _}), do: :truncated
   defp diag_tag({:unavailable, _}), do: :unavailable
 
   # ---------------------------------------------------------------------------
@@ -127,8 +141,9 @@ defmodule XqliteEcto3.FkDiagnostics do
     result =
       with :ok <- NIF.savepoint(conn, @diag_savepoint),
            {:ok, _} <- NIF.set_pragma(conn, "defer_foreign_keys", true),
+           {:ok, %{rows: baseline}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
            {:ok, _} <- NIF.query_with_changes(conn, sql, params) do
-        collect_violations(conn)
+        collect_violations(conn, MapSet.new(baseline))
       end
 
     cleanup(conn)
@@ -150,15 +165,29 @@ defmodule XqliteEcto3.FkDiagnostics do
   # Violation collection: foreign_key_check + foreign_key_list
   # ---------------------------------------------------------------------------
 
-  defp collect_violations(conn) do
+  @violation_cap 24
+
+  defp collect_violations(conn, baseline \\ MapSet.new()) do
     with {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
-         {:ok, fk_defs} <- fk_definitions(conn, check_rows) do
+         {kept, status} = cap_rows(check_rows, baseline),
+         {:ok, fk_defs} <- fk_definitions(conn, kept) do
       violations =
-        check_rows
+        kept
         |> Enum.map(fn row -> build_violation(row, fk_defs) end)
         |> Enum.sort_by(fn v -> {v.child_table, v.fk_id, v.child_rowid} end)
 
-      {:ok, violations}
+      {status, violations}
+    end
+  end
+
+  defp cap_rows(check_rows, baseline) do
+    new_rows = Enum.reject(check_rows, &MapSet.member?(baseline, &1))
+    total = length(new_rows)
+
+    if total > @violation_cap do
+      {Enum.take(new_rows, @violation_cap), {:truncated, total}}
+    else
+      {new_rows, :ok}
     end
   end
 

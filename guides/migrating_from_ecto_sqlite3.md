@@ -86,18 +86,31 @@ end
 
 The changeset mapping (`Ecto.Changeset.unique_constraint/3`,
 `foreign_key_constraint/3`, `check_constraint/3`) works the same way
-with one deliberate difference: unique index names. ecto_sqlite3
-always reports Ecto's derived `<table>_<columns>_index` name, so a
-bare `unique_constraint(:email)` matches regardless of what the index
-is really called. XqliteEcto3 reads the real index name back from the
-database, like Postgres: when exactly one unique index covers the
-violated columns and it carries a custom name, the changeset must
-declare it — `unique_constraint(:email, name: :users_email_uniq)` —
-or Ecto raises `Ecto.ConstraintError`. Indexes with Ecto's default
-names, `UNIQUE` column constraints, and ambiguous multi-index cases
-keep matching the bare declaration; expression indexes always report
-their real name. See the `XqliteEcto3.UniqueIndexNames` moduledoc for
-the full contract.
+with three deliberate differences.
+
+Unique index names: ecto_sqlite3 always reports Ecto's derived
+`<table>_<columns>_index` name, so a bare `unique_constraint(:email)`
+matches regardless of what the index is really called. XqliteEcto3
+reads the real index name back from the database, like Postgres: when
+exactly one unique index covers the violated columns and it carries a
+custom name, the changeset must declare it —
+`unique_constraint(:email, name: :users_email_uniq)` — or Ecto raises
+`Ecto.ConstraintError`. Indexes with Ecto's default names, `UNIQUE`
+column constraints, and ambiguous multi-index cases keep matching the
+bare declaration; expression indexes always report their real name.
+See the `XqliteEcto3.UniqueIndexNames` moduledoc for the full
+contract.
+
+Foreign keys: SQLite's FK error names no constraint, so under the
+default config `foreign_key_constraint/3` and `no_assoc_constraint/3`
+do not convert — the structured `XqliteEcto3.Error` is raised instead.
+Set `rich_fk_diagnostics: true` and both convert with real,
+convention-synthesized constraint names.
+
+NOT NULL: a violation raises the structured `XqliteEcto3.Error`
+(table and column intact) rather than an `Ecto.ConstraintError` —
+Ecto has no `not_null_constraint/3` to declare, so nothing else could
+ever match. Catch it before the database with `validate_required/2`.
 
 ### 3b. `:timeout` actually cancels
 

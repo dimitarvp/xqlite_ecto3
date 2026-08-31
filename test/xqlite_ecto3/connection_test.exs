@@ -216,7 +216,7 @@ defmodule XqliteEcto3.ConnectionTest do
     assert SQL.to_constraints(error, []) == [check: "positive_balance"]
   end
 
-  test "to_constraints maps not null constraint" do
+  test "to_constraints maps not null to nothing — Ecto has no not_null_constraint to match" do
     error = %XqliteEcto3.Error{
       type: :constraint_violation,
       details: %XqliteEcto3.Error.Constraint{
@@ -226,7 +226,18 @@ defmodule XqliteEcto3.ConnectionTest do
       }
     }
 
-    assert SQL.to_constraints(error, []) == [not_null: "users.name"]
+    assert SQL.to_constraints(error, []) == []
+  end
+
+  test "to_constraints never emits a nil name from detail-less errors" do
+    for subtype <- [:constraint_unique, :constraint_primary_key, :constraint_check] do
+      error = %XqliteEcto3.Error{
+        type: :constraint_violation,
+        details: %XqliteEcto3.Error.Constraint{subtype: subtype}
+      }
+
+      assert SQL.to_constraints(error, []) == []
+    end
   end
 
   test "to_constraints maps primary key as unique" do

@@ -58,13 +58,17 @@ defmodule XqliteEcto3.ErrorPathsTest do
     assert error.type == :unique
   end
 
-  test "NOT NULL violation without changeset constraint raises ConstraintError" do
+  test "NOT NULL violation raises the structured error" do
     error =
-      assert_raise Ecto.ConstraintError, fn ->
+      assert_raise XqliteEcto3.Error, fn ->
         Repo.insert(%EU{name: nil})
       end
 
-    assert error.type == :not_null
+    assert %XqliteEcto3.Error.Constraint{
+             subtype: :constraint_not_null,
+             table: "err_users",
+             columns: ["name"]
+           } = error.details
   end
 
   # ---------------------------------------------------------------------------

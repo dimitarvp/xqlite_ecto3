@@ -23,6 +23,14 @@ defmodule XqliteEcto3.FkConstraintDefaultConfigTest do
     end
   end
 
+  defmodule Parent do
+    use Ecto.Schema
+
+    schema "fk_plain_parent" do
+      has_many(:children, Child, foreign_key: :parent_id)
+    end
+  end
+
   setup do
     db =
       Path.join(
@@ -61,5 +69,16 @@ defmodule XqliteEcto3.FkConstraintDefaultConfigTest do
       |> foreign_key_constraint(:parent_id, name: "_fkey", match: :suffix)
 
     assert_raise XqliteEcto3.Error, fn -> PlainRepo.insert(cs) end
+  end
+
+  test "no_assoc_constraint on a still-referenced parent surfaces the structured error" do
+    PlainRepo.query!("INSERT INTO fk_plain_parent (id) VALUES (1)")
+    PlainRepo.query!("INSERT INTO fk_plain_child (id, parent_id) VALUES (1, 1)")
+
+    cs = %Parent{id: 1} |> change() |> no_assoc_constraint(:children)
+
+    err = assert_raise XqliteEcto3.Error, fn -> PlainRepo.delete(cs) end
+
+    assert err.details.subtype == :constraint_foreign_key
   end
 end

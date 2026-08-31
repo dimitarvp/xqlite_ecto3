@@ -610,4 +610,19 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     :ok = XqliteNIF.close(conn)
     conn
   end
+
+  test "an index that vanishes between the pragma reads degrades instead of shrinking the count" do
+    conn = open_conn("vanish")
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE vt(v TEXT)", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX vanish_ix ON vt(v)", [])
+
+    assert {:cont, {:ok, ["vanish_ix"]}} =
+             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, ["v"], "vanish_ix", [])
+
+    {:ok, _} = XqliteNIF.query(conn, "DROP INDEX vanish_ix", [])
+
+    assert {:halt, {:error, {:index_vanished, "vanish_ix"}}} =
+             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, ["v"], "vanish_ix", [])
+  end
 end
