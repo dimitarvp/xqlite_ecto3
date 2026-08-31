@@ -76,22 +76,6 @@ after the S0–S2 burn-down.
   mirror); B2's share verified — the lone upstream test touching the
   option (alter.exs:60) is already excluded for unrelated reasons and
   could not detect inertness anyway; no exclusion change owed.
-- [F-B1-5] (S3, B9 court, from Run 33) `handle_deallocate/4` discards
-  `NIF.stream_close/1` failures (`_ =`) and returns
-  `{:ok, nil, state}` unconditionally, so a failed statement release
-  reports success and telemetry records `result_class: :ok`.
-  Conservative remedy (do NOT change the return shape — it feeds
-  Stream.resource's after-fun): carry the close result into the stop
-  event's metadata so failures are at least observable. Touches the
-  locked telemetry surface — deliberate B9-court pass, not a
-  gate-side edit. (Run 33, B1 → B9)
-  Caveat (Run 37): a failing close could NOT be constructed —
-  double-close returns :ok, and closing the connection under an open
-  stream then the stream also returns :ok; the discarded value was
-  :ok in every reachable construction, so real exposure is unproven
-  without NIF-level fault injection. The stop event's shape on
-  record: result_class :ok, error_reason nil, no field for a close
-  result. (Run 37, B9)
 - [F-B1-menu-connect-error-details] (maintainer menu, from Run 33's
   gate) Connect config-error payloads (unregistered hook subscriber
   NAME, malformed pragma entry, invalid mode atom) now live only in
@@ -107,6 +91,11 @@ after the S0–S2 burn-down.
   passed) can only parse message prose — against doctrine. The
   Run-37 validators grew this family by nine more tags; whatever
   payload shape lands here should carry {key, value}. (Run 37, B9)
+  Widened again (Run 46): the hooks validators add
+  {:invalid_hook_option, {key, value}} and the progress-shape
+  refusals — the {key, value} payload is already the tag's second
+  element there, the designed shape's natural precedent. (Run 46,
+  B3)
   Message consequence (Run 42 = F-B1-9, S3, MERGED here): a
   STRING-valued config (`journal_mode: "wal"`, env-var-driven
   spellings) hits `wrap/1`'s `{tag, binary}` clause — meant for NIF
@@ -704,6 +693,20 @@ after the S0–S2 burn-down.
   doc references to the new `Xqlite` wrappers (additive, optional).
 
 ## Closed
+
+- 2026-09-01 [F-B1-5] (S3, from Run 33) CLOSED as
+  discard-unreachable at Run 46's gate: xqlite's
+  `take_and_finalize_raw` (stream.rs:66) deliberately discards
+  `sqlite3_finalize`'s echo of the last evaluation error — commented
+  as such in the Rust — so the only returnable failures are a
+  poisoned Mutex (a panic already happened) or an invalid handle
+  (impossible from handle_deallocate, which passes cursor.handle).
+  Four constructions across Runs 37+46 (double-close, closed-conn,
+  mid-step runtime error, schema change under an open stream) all
+  return :ok — the adapter's `_ =` has nothing reachable to swallow,
+  and the :ok stop event is truthful (the close genuinely
+  succeeded). REOPEN TRIGGER: xqlite ever propagating the finalize
+  code from take_and_finalize_raw. (Runs 33/37/46)
 
 - 2026-09-01 [F-B6-9] (S3, from Run 43) CLOSED at Run 45's gate: the
   keyword-list decision it waited on was made by F-B7-50's fix — the

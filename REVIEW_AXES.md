@@ -548,6 +548,41 @@ tokenizer skip set read from SQLite's C source; with_xqlite under
 Sandbox at pool > 1 from an allowed process; a second lock-hold
 duration for the amplification curve; the Multi RuntimeError shape.
 
+COVERING RE-RUN (Run 46, 2026-09-01 — lap 6, batch 6, paired with
+B9): step-0 over `21026b7..HEAD` — the connect chain churned
+(validate_connection_mode head + savepoint refusal + statement
+stamping), the nine Run-37 validators byte-stable and re-anchored
+11/11; leading_keyword byte-stable but its CALLER churned (savepoint
+zeroing). THREE S2, all FIXED — F-B3-17: a hooks: progress option
+outside the accepted shapes RAISED in connect/1, crashing the
+connection process and killing the WHOLE repo supervision tree in
+5-30 ms (every_n: "500" — the env-var idiom — every_n: nil/-1,
+non-atom tag); validate_progress_opts/1 refuses structurally now,
+unknown keys and non-keyword lists included. F-B3-18: the
+first-boot WAL noise re-diagnosed — NO external writer needed (two
+pool members racing, ~90% of fresh boots at pool 2, DELETE-mode
+files too) and SQLite refuses the losing flip WITHOUT the busy
+handler (120 s busy_timeout helps zero — README's mitigation
+disproven, section rewritten + STE); FIXED with a bounded
+journal-mode retry (10 × 2 ms; measured need: every loser succeeds
+on attempt 1). F-B3-19: the vertical tab — settled from the bundled
+tokenizer SOURCE (0x0B is run-interior whitespace, rejected only
+statement-leading — the asymmetry Run 37's leading-position sweep
+could not see); " \vBEGIN"/" \vCOMMIT" reopened both F-B3-7 doors;
+?\v joined the skip set (safe unconditionally — leading VT never
+executes). Skip-set table now ledger-recorded (Run 46 entry).
+F-B1-5 CLOSED discard-unreachable at the Rust source (reopen
+trigger recorded). CLEAN: with_xqlite allowed-process Sandbox leg
+(owner's connection, nothing escapes; $callers-cleared stranger
+control); amplification FLAT in hold time (41-42/48 at 300 and
+1500 ms, 48/48 controls); Multi RuntimeError not reproduced through
+three doors (structured everywhere; kill-door unconstructed);
+BOM/semicolon pins hold; savepoint refusal pool-healthy.
+Combinations seed directive-parked. DRYNESS: findings — **B3 stays
+0 of 2, NOT DRY**. Re-wets ADD: validate_progress_opts/1 + the
+hooks refusal family, set_journal_mode/3 + @journal_mode_attempts,
+the skip set (again), the README first-boot section.
+
 ### B4. Type round-trips as properties
 dump → store → load == identity per Ecto type (StreamData);
 encode-only load paths pinned explicitly; Decimal precision path
@@ -1914,6 +1949,35 @@ the :exception construction; F-B1-5's fault injection or re-grade;
 the OFF-build guard pass when it lands (verify BOTH builds); the
 Multi RuntimeError shape; native-vs-ns when a non-Linux runtime is
 available.
+
+COVERING RE-RUN (Run 46, 2026-09-01 — lap 6, batch 6, paired with
+B3): emission modules byte-identical since Run 29 (git-verified);
+the churn = Run 44's fk_diagnostics {:truncated} status + baseline
+scan, Run 40's statement field, the savepoint refusal's
+ConnectionError shape — all re-anchored live. THREE S3 — F-B9-19
+(FIXED): violations_count saturates at the cap and diag_tag
+discarded the real total (40 orphans → count 24, total
+unrecoverable from the event); violations_total added to the stop
+metadata, diagnostics_status values enumerated on BOTH doc
+surfaces (:truncated had been unannounced on a locked surface);
+pinned with a handler capture (24/30). F-B9-20 (docs-FIXED): the
+span :exception leg became pool-reachable through F-B3-17's raising
+connect — full shape captured (kind/reason/stacktrace, no
+result_class, OTel error.type "function_clause") — falsifying
+F-B9-9's "pool-unreachable today"; both surfaces now say the phase
+is real and handlers must tolerate it. F-B9-21 (docs-FIXED): the
+fk_diagnostics span is linear in EVERY FK-bearing table's rows and
+Run 44 doubled the scans (~36 ms at 200k child rows vs ~0.11 ms
+flag-off, ~325×); the moduledoc cost paragraph now says so; numbers
+ledger-recorded, no timing pin. Filed sweep: F-B9-4 reproduces
+(lookup span-less); F-B9-13/17 reproduces statically (OFF lane
+still one smoke file, zero flag-guards — the next fixer MUST run
+both builds); F-B9-14 reproduces (five bare destructures — flagged
+as the likely first real fk_diagnostics :exception). The statement
+field rides handle_execute error_reason AND Multi's error value.
+DRYNESS: findings — **B9 stays 0 of 2, NOT DRY**. Re-wets ADD: the
+fk_diagnostics stop metadata + enumerated statuses, the
+:exception-reachability prose on both surfaces.
 
 ### B10. Benchmarks
 Any number the announcement might cite is reproduced from a clean

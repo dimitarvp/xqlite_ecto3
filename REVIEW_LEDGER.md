@@ -6300,3 +6300,170 @@ plus three never-swept code paths.
   refusal-message-vs-reality audit (fourteen refusal flavors, no
   test asserts the REASON is right — F-B7-48 was one instance).
 
+
+## Run 46 — 2026-09-01 — lap 6, batch 6: B3 + B9 paired cover (the hooks sweep + the boot race + the tokenizer settled)
+
+Single Opus reviewer at `511b229`; ecto 3.14.1, ecto_sql 3.14.0,
+db_connection 2.10.2, xqlite 0.11.0 (hex) live-verified; SQLite
+3.53.2 probe-confirmed; telemetry flag ON under MIX_ENV=test
+re-confirmed. Gate: ALL SEVENTEEN probes re-driven by the
+orchestrator at rc matching the manifest — with a GATE PROCEDURE
+ERROR recorded honestly: the first re-drive was launched
+run_in_background and lib edits began before it finished, so
+p10-p17 compiled a mid-edit tree (rc 1); repaired by stashing the
+fixes and re-driving those eight on the pre-fix tree (all rc 0).
+Lesson codified: NEVER edit lib/ while a re-drive is in flight —
+re-drive fully first, or stash while editing. Fixes BY THE
+ORCHESTRATOR; stash-RED PREDICTED 5 — observed exactly 5 by
+identity; one unused-function warnings-as-errors catch post-pop
+(set_writable_pragma lost its only caller to the retry wrapper —
+deleted); 88/88 green.
+
+- **F-B3-17 (S2, CONFIRMED, FIXED, RED→green).** A `hooks:`
+  progress option outside the two shapes `progress_tag/1` and the
+  NIF guard accept RAISED inside `connect/1` — and a raising
+  connect crashes the connection process instead of returning the
+  structured error DBConnection retries with backoff, so restart
+  intensity blew and THE WHOLE REPO SUPERVISION TREE DIED within
+  5-30 ms of boot, no error naming the config key (p02 27-value
+  sweep: 5 raising shapes; p03/p04 end-to-end: tree dead, parent
+  supervisor dead, controls alive). Reachability ordinary:
+  `every_n: "500"` is what System.get_env returns in runtime.exs;
+  the README's own hooks example is the shape. FIX:
+  `validate_progress_opts/1` ahead of registration — every_n an
+  integer >= 1, tag an atom, unknown keys refused, a non-keyword
+  opts list refused (it silently meant defaults — the S3 sub-note)
+  — all `{:invalid_hook_option, {key, value}}` /
+  `{:invalid_hook_config, _}` through the standard wrap. The
+  {key, value} payload noted on [F-B1-menu-connect-error-details]
+  as the designed shape's precedent. Pins: a 7-shape hook
+  rejection matrix + a valid-progress green control
+  (driver_connect_pragmas_test).
+- **F-B3-18 (S2, CONFIRMED, FIXED, RED→green).** The first-boot
+  WAL noise: the README blamed an external writer and recommended
+  raising busy_timeout — BOTH wrong. No other writer needed (two
+  pool members racing each other hit ~90% of fresh-file boots at
+  pool_size 2; an existing DELETE-mode file races too), and SQLite
+  refuses the losing `journal_mode = wal` flip in ~1 ms WITHOUT
+  consulting the busy handler (measured at 5 s/30 s/120 s
+  busy_timeout — 120 s was marginally WORSE; p07/p08, controls
+  0/125 + 0/50). Run 6's recorded busy-timeout-absorbs explanation
+  is corrected on the ledger by this entry. FIX (p09 settled the
+  candidates): re-read not viable (all 16 losers read back
+  "delete"); bounded retry — every loser succeeded on attempt 1 —
+  so `set_journal_mode/3` retries the flip up to 10 times at 2 ms
+  on `{:database_busy_or_locked, _, _}`, and a genuinely held lock
+  still fails structurally. README section rewritten (three
+  corrections) + STE mirror. Pin: 8 rounds × 2 concurrent connects
+  on fresh files, all must succeed (driver_connect_pragmas_test).
+- **F-B3-19 (S2, CONFIRMED, FIXED, RED→green).** The vertical tab:
+  settled from the BUNDLED TOKENIZER SOURCE (libsqlite3-sys 0.38.2
+  sqlite3.c — aiClass line 185484 marks 0x0B CC_ILLEGAL, but the
+  CC_SPACE run-consumer uses sqlite3Isspace whose ctype map
+  INCLUDES 0x0B), so SQLite skips a VT inside a whitespace run and
+  rejects it only statement-leading — an asymmetry Run 37's
+  behavioral sweep (leading-position spellings) could not see, and
+  why its "BOM + semicolon complete" conclusion was honest but
+  wrong. `" \vBEGIN"` reopened BOTH F-B3-7 doors (p11: leak
+  through the unseen open transaction; a healthy pooled connection
+  destroyed by the stale flag through `" \vCOMMIT"`). FIX: `?\v`
+  joined the skip set — safe unconditionally: statement-leading VT
+  is a syntax error SQLite never executes, and the sync runs only
+  after successful execution. The source-derived skip-set table is
+  RECORDED HERE for the next pass: SQLite whitespace bytes =
+  0x09 0x0A 0x0B(run-interior) 0x0C 0x0D 0x20; BOM = EF BB BF;
+  `;` = an accepted empty statement. Pins: transaction_state +2
+  (space-VT BEGIN flag sync; space-VT COMMIT no-destroy).
+- **F-B9-19 (S3, CONFIRMED, FIXED).** `violations_count` saturates
+  at the Run-44 cap while the real total was discarded by
+  `diag_tag` (p05: 40 orphans → count 24, status :truncated, total
+  recoverable from the event: NO). FIX: `violations_total` on the
+  stop metadata (count stays "rows materialized");
+  `diagnostics_status` values (:ok/:truncated/:unavailable)
+  enumerated in the telemetry moduledoc AND the guide's event
+  table — :truncated had been an unannounced value on a locked
+  surface. Pin: the Run-44 truncation test extended with a handler
+  capture asserting status/count/total (24/30).
+- **F-B9-20 (S3, CONFIRMED, docs-FIXED).** The span :exception leg
+  became pool-reachable through F-B3-17 (p03: full shape captured —
+  kind :error, reason :function_clause, no result_class; OTel
+  error.type "function_clause"), falsifying F-B9-9's
+  "pool-unreachable today". Both doc surfaces now say the phase is
+  not theoretical — anything raising inside a span's body emits it
+  — without naming a specific route (the F-B3-17 fix closes the
+  known one). The VM-wide handler-detachment warning stands with
+  teeth.
+- **F-B9-21 (S3, CONFIRMED, docs-FIXED).** The fk_diagnostics span
+  cost is linear in EVERY FK-bearing table's rows and Run 44
+  doubled the scans: measured ~36 ms at 200k child rows vs
+  ~0.11 ms flag-off (~325× amplification, linear; p06). The
+  moduledoc's cost paragraph now names the two whole-database
+  scans and the measured curve. No code change — the baseline is
+  what makes the diagnosis correct; no pin (timing) — numbers
+  ledger-recorded here.
+- **F-B1-5 CLOSED as discard-unreachable.** Settled at the SOURCE:
+  xqlite's take_and_finalize_raw deliberately discards
+  sqlite3_finalize's evaluation-error echo (stream.rs:66, commented
+  as such), so the only returnable failures are a poisoned Mutex or
+  an impossible-from-here invalid handle. Four constructions across
+  Runs 37+46 (double-close, closed-conn, mid-step "malformed JSON"
+  runtime error, schema change under an open stream) all :ok — the
+  adapter's `_ =` has nothing reachable to swallow and the :ok stop
+  event is truthful. REOPEN TRIGGER recorded in the Closed entry:
+  xqlite ever propagating the finalize code. (p14/p17.)
+- **Filed sweep (rest):** F-B3-1 reproduces (`:memory:` + pool 10:
+  22 no_such_table / 2 empty of 24 reads); F-B3-4-xqlite reproduces
+  (observer empties the busy slot 4567→0, unregister does not
+  restore, remedy works); F-B3-14-menu reproduces in the NEW
+  configuration (allowed process, pool 5 — "never nest" holds);
+  F-B9-4 reproduces (lookup span-less: 12 candidates resolve with
+  zero events of their own); F-B9-13/17 reproduces STATICALLY (the
+  OFF lane still runs one smoke file; zero flag-guards in the four
+  broken files; not run-verified under the no-mix-test rule — the
+  next fixer MUST drive both builds); F-B9-14 reproduces (five
+  bare destructures, still LATENT, and now flagged as the likely
+  first real fk_diagnostics :exception).
+- **Clean census (controls named):** with_xqlite under the Sandbox
+  from an ALLOWED process lands on the OWNER'S sandboxed connection
+  (marker read, nothing escapes checkin; genuine-stranger control
+  OwnershipError — after clearing $callers, which a naive Task
+  control inherits and silently passes by); the F-B3-10
+  amplification curve is FLAT in hold time (300 ms vs 1500 ms:
+  41-42/48 absorbed either way, 0-poisoned controls 48/48 ok —
+  reproducing Run 37's 41/48 exactly; the reviewer's own first
+  dirty control diagnosed as its key-shape bug via p16, corrected
+  on record); the bare-RuntimeError Multi shape does NOT reproduce
+  through three constructed doors (all escapes structured, the
+  statement field riding Multi's error value; the process-kill door
+  remains unconstructed — observed-not-reproduced stands); the
+  Run-37 BOM/semicolon pins hold live; the nine validators hold
+  11/11 around the new validate_connection_mode head; the
+  savepoint-mode refusal is telemetry-clean (ConnectionError as
+  {:disconnect, _} error_reason, OTel "DBConnection.ConnectionError",
+  pool healthy after, nested-savepoint control commits); telemetry
+  emission modules byte-identical since Run 29 (git-verified);
+  Run 45's count_rows! pre-flight reads classified benign
+  (caller's own checkout, no pool interaction). Brief correction
+  on record: e166c5f never touched driver.ex (the Run-46 brief
+  listed it there).
+- Dryness: three S2 (B3) + three S3 (B9) — **B3 stays 0 of 2, B9
+  stays 0 of 2, NOT DRY**; TWENTY-SIX straight finding runs.
+  Re-wets ADD: `validate_progress_opts/1` + the hooks refusal
+  family, `set_journal_mode/3` + `@journal_mode_attempts`,
+  `leading_keyword/1`'s skip set (again), the fk_diagnostics stop
+  metadata (violations_total) + the enumerated status values on
+  both doc surfaces, the README first-boot section. Completeness
+  critic (next pass): connect/1's remaining raise-capable surface
+  (apply_custom_pragmas over an arbitrary user list is the
+  candidate — any raise = crash + :exception); the hooks value at
+  scale (a subscriber dying between connects — half the pool
+  hooked; message volume at pool > 1); the journal-mode retry's
+  own covering pass (cap exhausted under a genuinely held lock);
+  `refresh_transaction_status/1`'s new savepoint zeroing (drive
+  the counter negative / autocommit with outstanding savepoints);
+  the OFF build ACTUALLY RUN (three runs static now); the
+  :exception phase on the other seven spans (fk_diagnostics's
+  F-B9-14 destructures are the live candidate); the mid-Multi
+  connection kill via DBConnection's own registry; with_xqlite
+  under :shared mode at pool > 1.
+
