@@ -655,6 +655,19 @@ after the S0–S2 burn-down.
   driver can even tell the deadline expired). Not design-free;
   filed, not fixed in-run.
 
+- [F-B6-9] (S3, B6 court, from Run 43) A passthrough type spelling
+  that is an SQLite keyword (`add :x, :set` — the MySQL type) fits
+  the typename grammar, so Run 43's grammar validation does not
+  catch it; it renders as a bare keyword token and fails the
+  migration with a raw `SqliteFailure` ("near \"SET\": syntax
+  error") instead of the adapter's `UnsupportedTypeError`
+  (b6_cover_r43 p02 leg C). Loud, so no data risk — the gap is
+  error quality. A structured refusal needs a decision on which
+  keyword list to refuse against (SQLite accepts many non-reserved
+  keywords in type position; quoting the spelling instead would
+  turn the loud failure into a silent NUMERIC-affinity column —
+  rejected). Thin reachability. (Run 43, B6)
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

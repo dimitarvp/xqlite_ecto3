@@ -1020,6 +1020,46 @@ B5/B2. DRYNESS: findings — **B6 stays 0 of 2, NOT DRY**. Re-wet
 triggers GROW: `column_type/2`'s affinity rewrite +
 `unsupported_default!/3`'s column normalization, plus the standing
 list.
+COVERING RE-RUN (Run 43, 2026-09-01 — lap 6, batch 3): step-0 over
+`0a5386a..HEAD` (28 commits, all other axes' churn): connection.ex
+three hunks (build_explain_query catch-all re-anchored GREEN
+through Repo.explain; push/pull refusal renaming re-anchored GREEN;
+to_constraints → B5's court), data_type.ex churn = encode_default
+only (the F-B6-5 column-normalization residue closed at 059d9ec,
+re-anchored GREEN all renderers × both reasons), migration.ex ZERO
+bytes, escape_string/limit/quote_entity byte-unchanged (anchor-only
+held). FOUR findings — F-B6-7 (S1, FIXED): `type(expr, :decimal)`
+emitted `CAST(… AS REAL)`, forcing float64 on the query side: a
+big integer-exact decimal came back a different number from a
+tagged select and a tagged equality WHERE matched no rows, both
+silent; the shared clause split — :decimal casts NUMERIC (the DDL
+side's own affinity), :float keeps REAL; emission + live
+select/where pinned (typed_decimal_cast_test). F-B6-4's
+consequence, one layer up. F-B6-8 (S2, FIXED): the affinity
+rewrite's rule-5 residue — :jsonb/:json/:xml/:inet/:cidr/:macaddr/
+:tsvector/:bytea landed NUMERIC, mutating numeric-looking text on
+write ("007"→7, silent, delayed load error); bounded semantic
+alias table ahead of the unchanged TOTAL rule (7 → TEXT, :bytea →
+BLOB), :money/:bit/:enum/:year-class stays NUMERIC with a README
+Known-limitations bullet + STE mirror; alias mapping + live "007"
+jsonb-vs-money boundary pinned (passthrough_affinity_test).
+F-B6-10 (S3, FIXED): verbatim passthrough rendering let
+`:"text, oops INTEGER"` splice a second column into CREATE TABLE —
+typename-grammar validation added (identifier words + optional
+(N)/(N,M)), UnsupportedTypeError otherwise; incidentally refuses
+non-ASCII spellings (closes the Run-34-critic Unicode question).
+F-B6-9 (S3, FILED): keyword-shaped spellings (:set) fit the
+grammar and die as raw SqliteFailure — structured refusal needs a
+keyword-list decision (BACKLOG). CLEAN: references(type:) 18/18
+through both DDL paths with live truncation control;
+non-constant-default boundary sharpened (11 row-count-dependent /
+9 constant / 0 unconditional, README honest, adapter JSON defaults
+constant-safe); UnsupportedDefaultError/UnsupportedTypeError
+total; values/2 $N::TYPE live standalone + joined; BLOBs immune
+across all 24 mutating spellings. DRYNESS: findings — **B6 stays
+0 of 2, NOT DRY**. Re-wet triggers GROW: the Tagged
+:decimal/:float CAST clauses + the alias clauses and
+@typename_grammar, plus the standing list.
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which

@@ -5760,3 +5760,140 @@ re-verify on the final tree before commit.
   `{:error, state}` on a NIF read failure — driver means
   read-failed, DBConnection reads transaction-aborted (no consumer
   divergence found, unpinned).
+
+## Run 43 — 2026-09-01 — lap 6, batch 3: B6 solo (translation cover over the Runs-35-42 churn)
+
+Single Opus reviewer at `32e9841`; ecto 3.14.1, ecto_sql 3.14.0,
+db_connection 2.10.2, xqlite 0.11.0 (hex) probe-verified; SQLite
+3.53.2 probe-confirmed. Toolchain note: mise had bumped to Elixir
+1.20.4/OTP 29 since the pause, orphaning hex — reinstalled, deps
+refetched, verify green pre-run. Gate: all eight probes re-driven by
+the orchestrator (p01-p08, rc 0 each, decisive outputs read
+line-by-line); fixes BY THE ORCHESTRATOR; stash-RED PREDICTED 8 —
+first run showed 9, the ninth being an orchestrator test-typo (the
+float emission control asserted alias `o0` from the probe's table
+name where the pin table gives `t0`; fixed in the pin, not the lib),
+corrected run exactly 8 by identity → 45/45 green restored.
+
+- **F-B6-7 (S1, CONFIRMED, FIXED, RED→green).** `type(expr,
+  :decimal)` emitted `CAST(… AS REAL)` — float64 — so the query side
+  forced the exact rounding Runs 31/34 eliminated from DDL: an
+  integer-exact decimal past 2^53 came back a DIFFERENT number from
+  `select: type(o.amount, :decimal)` (…567 → …568, probed live), and
+  an equality filter `where: o.amount == type(^dec, :decimal)`
+  matched NO rows for a row that exists (p07 legs A/B/D; leg E raw
+  ground truth `int = CAST(int AS REAL)` → 0). Reachability
+  ordinary: `type/2` is Ecto's sanctioned expression-typing API,
+  `type(sum(x), :decimal)` is in Ecto's own shared suite, and the
+  README recommends the construct. `Repo.aggregate/3` untagged —
+  unaffected (leg C control). FIX: split the shared clause —
+  `:decimal` now casts NUMERIC (the affinity `column_type(:decimal,
+  _)` already declares), `:float` keeps REAL (leg I proved the
+  clause was shared). Fix validated pre-implementation by the
+  reviewer (legs H/J/K: nine value shapes REAL-vs-NUMERIC, live
+  loader round-trip, Ecto's shared decimal-aggregation test
+  Decimal.equal?-green). Pins: emission both ways + live tagged
+  select round-trip + live tagged WHERE (typed_decimal_cast_test,
+  new file).
+- **F-B6-8 (S2, CONFIRMED, FIXED, RED→green).** The Run-34 affinity
+  rewrite's rule-5 residue: every text/blob-meaning DB-specific
+  spelling with no SQLite type marker — :jsonb :json :xml :inet
+  :cidr :macaddr :tsvector :bytea — landed NUMERIC affinity, which
+  rewrites numeric-looking text on write: `"007"` stored as integer
+  7, leading zeros destroyed silently, then a DELAYED ArgumentError
+  at load time (p02 30-spelling sweep + p03 live end-to-end).
+  Reachability plausible by Run 34's own F-B6-4 argument (Postgres
+  passthrough spellings carried by ported schemas); the 95% case
+  `:jsonb` + `:map` field is SAFE (JSON text always starts `{`/`[`
+  — p03 legs A/F controls) — the bite is `:string`/`:binary` fields
+  over such columns. FIX: a bounded semantic alias table ahead of
+  the unchanged TOTAL affinity rule (seven spellings → TEXT, :bytea
+  → BLOB) — NOT more affinity enumeration (the original failure
+  mode); :money/:bit/:varbit/:enum/:year/:interval/:point stay on
+  the affinity rule (genuinely ambiguous intent) with the residual
+  named in a README Known-limitations bullet + STE mirror (same
+  gate). :citext dropped from the reviewer's alias list — its TEXT
+  marker already lands TEXT affinity (p02 control). Pins: alias
+  mapping unit cases + live "007" boundary — jsonb column stores
+  text intact, money column still coerces (passthrough_affinity_
+  test, new file); the old `:jsonb == "JSONB"` passthrough pin
+  reworked (pin-of-the-bug).
+- **F-B6-10 (S3, CONFIRMED, FIXED).** The passthrough rendered
+  atoms verbatim into DDL: `:"text, oops INTEGER"` spliced a second
+  column definition into CREATE TABLE (p02 leg D — the F-B6-3
+  injection pattern in the one identifier position Run 2 never
+  covered; author-written migration code, hence S3). FIX: the
+  spelling must fit SQLite's own typename grammar — identifier
+  words + optional (N)/(N,M) suffix — else UnsupportedTypeError
+  carrying the offending atom. Incidental closure: non-ASCII
+  spellings (Run-34 critic item, String.upcase Unicode vs SQLite
+  ASCII divergence) are now refused by the same grammar. Pins:
+  splice refusal + quotes/semicolon/empty refusals + multi-word and
+  sized spellings pass (`:"native character"`, `:"varchar(255)"`,
+  `:"numeric(10,2)"`).
+- **F-B6-9 (S3, CONFIRMED, FILED).** A keyword-shaped spelling
+  (`add :x, :set` — the MySQL type) fits the typename grammar,
+  renders bare, and fails the migration as raw SqliteFailure
+  ("near SET") instead of UnsupportedTypeError (p02 leg C). Loud,
+  no data risk; a structured refusal needs a keyword-list decision
+  (SQLite accepts many non-reserved keywords in type position;
+  quoting instead would flip the loud failure into a silent
+  NUMERIC-affinity column — rejected on principle). BACKLOG entry
+  filed.
+- **Step-0 corrections on record:** the range held 28 commits (27
+  claimed in the brief); migration.ex had ZERO in-range bytes (the
+  brief listed it as a churn target — the 764cab0/059dec bytes
+  live in data_type.ex/xqlite_ecto3.ex); data_type.ex's only churn
+  was encode_default (the :json_library knob drop + the F-B6-5
+  column normalization residue 059d9ec — closed at HEAD,
+  re-anchored GREEN p06 A/B across all renderers × both reasons).
+- **Clean census (controls named):** seed 2 — references(type:
+  :float8) + the full float family: 18 FK columns across
+  create-table AND alter-add match column_type/2 exactly, live
+  truncation control exact through both paths, pragma_foreign_key_
+  list 18/18, modify-references unreachable by construction
+  (ArgumentError before rendering), Ecto default reference type
+  INTEGER (p04). Seed 3 — the F-B6-6 boundary sharpened across 20
+  fragment shapes: 11 row-count-dependent (bare/parenthesized
+  CURRENT_*, (1+1), EVERY function call incl. datetime/random/
+  unixepoch/strftime/json), 9 true constants always fine, ZERO
+  unconditional failures, CREATE TABLE never restricted; README
+  workaround re-proven live (modify on populated table rebuilds);
+  adapter JSON map/list defaults constant-safe on populated tables
+  (p05 leg G — a user-written `fragment("(json('…'))")` would NOT
+  be, the adapter's parenthesized-literal rendering is what keeps
+  it safe). Seed 4 — UnsupportedDefaultError total (4 renderers ×
+  both reasons, column always string, cause carries the encoder
+  exception on :unencodable); UnsupportedTypeError.type carries the
+  raw term on all 5 paths; Error.Constraint shapes uniform for B6's
+  purposes — two observations handed to B5's court (CHECK: table
+  nil + constraint_name carries the expression; unique: index_name
+  nil while unique_index_names populated). Seed 5 — escape_string/
+  limit/quote_entity byte-unchanged (range diff + git log -S each),
+  anchor-only held. Churn — build_explain_query catch-all
+  re-anchored through the ordinary Repo.explain door (5 unsupported
+  types ArgumentError, both supported prefixes byte-exact);
+  push/pull refusal renaming re-anchored (Ecto.QueryError both,
+  set:/inc: still emit and run; the refusal carries no structured
+  field — message-text only, noted); values/2 $N::TYPE placeholders
+  live-correct standalone AND joined (the known grammar-accident
+  naming). BLOBs immune to NUMERIC/INTEGER affinity across all 24
+  mutating spellings (p02 leg B).
+- Dryness: an S1 + an S2 + two S3 — **B6 stays 0 of 2, NOT DRY**;
+  TWENTY-THREE straight finding runs. Re-wet triggers GROW: the
+  Tagged :decimal/:float CAST clauses (connection.ex) + the
+  semantic alias clauses and @typename_grammar (data_type.ex), plus
+  the standing list. Completeness critic (next B6 pass): the rest
+  of the Tagged clause family — the :binary clause's CAST-vs-bare
+  TEXT/BLOB decision against real stored values, interacting with
+  F-B6-8's columns; type/2 in the remaining query positions
+  (having/order_by/group_by/on_conflict/insert_all placeholders/
+  select_merge — same clause, different receiving loaders, only
+  select/where proven); the CAST AS NUMERIC neighborhood post-fix
+  (TEXT/BLOB-affinity columns, sum() over mixed storage classes —
+  the fix-creates-the-next-finding pattern has fired three times);
+  values/2 aliasing under shared-type fields and missing row-map
+  keys; the json_default renderer split (escape_string vs
+  quote_string on adversarial content — byte-comparison never
+  done).
+
