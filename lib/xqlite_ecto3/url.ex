@@ -132,8 +132,6 @@ defmodule XqliteEcto3.URL do
     end
   end
 
-  # --- internals ------------------------------------------------------------
-
   defp wrap_uri(url) do
     case URI.new(url) do
       {:ok, uri} -> {:ok, uri}
@@ -153,7 +151,6 @@ defmodule XqliteEcto3.URL do
 
   # `sqlite::memory:` parses as scheme="sqlite", path=":memory:"
   # `sqlite:///path` parses as scheme="sqlite", path="/path"
-  # An empty path means no database was given.
   defp extract_database(%URI{path: nil}), do: {:error, :missing_database}
   defp extract_database(%URI{path: ""}), do: {:error, :missing_database}
   # URI.new/1 already validated every percent escape, so decode cannot raise.

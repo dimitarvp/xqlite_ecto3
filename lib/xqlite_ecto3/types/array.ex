@@ -120,8 +120,6 @@ defmodule XqliteEcto3.Types.Array do
   @impl Ecto.ParameterizedType
   def equal?(a, b, _params), do: a == b
 
-  # ---
-
   defp cast_elements([], _element, acc), do: {:ok, Enum.reverse(acc)}
 
   defp cast_elements([head | tail], element, acc) do

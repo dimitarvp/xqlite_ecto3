@@ -85,12 +85,10 @@ defmodule XqliteEcto3.Types.UUID do
   def load(nil, _loader, _params), do: {:ok, nil}
 
   def load(value, _loader, %{storage: :string}) when is_binary(value) do
-    # DB returned the 36-char string form. Re-cast validates shape.
     Ecto.UUID.cast(value)
   end
 
   def load(<<_::128>> = raw, _loader, %{storage: :binary}) do
-    # DB returned raw 16 bytes; Ecto.UUID.load/1 renders it as the string form.
     Ecto.UUID.load(raw)
   end
 
@@ -100,7 +98,6 @@ defmodule XqliteEcto3.Types.UUID do
   def dump(nil, _dumper, _params), do: {:ok, nil}
 
   def dump(value, _dumper, %{storage: :string}) do
-    # Normalize any accepted input to the 36-char string for TEXT storage.
     Ecto.UUID.cast(value)
   end
 

@@ -36,10 +36,6 @@ defmodule XqliteEcto3.Connection do
   # the keys of the `binary_ops` keyword list used for code generation.
   @binary_ops [:==, :!=, :<=, :>=, :<, :>, :+, :-, :*, :/, :and, :or, :like]
 
-  # ---------------------------------------------------------------------------
-  # Connection lifecycle — delegates to XqliteEcto3.Driver via DBConnection
-  # ---------------------------------------------------------------------------
-
   @impl true
   def child_spec(opts) do
     opts = merge_defaults(opts)
@@ -94,14 +90,9 @@ defmodule XqliteEcto3.Connection do
     DBConnection.stream(conn, query, params, opts)
   end
 
-  # ---------------------------------------------------------------------------
-  # Error → Ecto constraint mapping
-  #
   # xqlite's Rust layer parses SQLite's constraint error message text once
   # and ships structured details (table, columns, index_name, constraint_name)
   # alongside the subtype atom. We read those fields directly.
-  # ---------------------------------------------------------------------------
-
   @impl true
   def to_constraints(
         %XqliteEcto3.Error{
@@ -221,10 +212,6 @@ defmodule XqliteEcto3.Connection do
       Keyword.put_new(acc, key, val)
     end)
   end
-
-  ##
-  ## Queries
-  ##
 
   @impl true
   def all(%Ecto.Query{lock: lock}) when lock != nil do
@@ -720,10 +707,6 @@ defmodule XqliteEcto3.Connection do
     Enum.join(["QUERY PLAN" | lines], "\n")
   end
 
-  ##
-  ## DDL
-  ##
-
   @impl true
   def execute_ddl({_command, %Table{options: options}, _}) when is_list(options) do
     raise ArgumentError, "SQLite adapter does not support keyword lists in :options"
@@ -964,10 +947,6 @@ defmodule XqliteEcto3.Connection do
     {"SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", [table]}
   end
 
-  ##
-  ## Query generation
-  ##
-
   defp on_conflict({:raise, _, []}, _header), do: []
 
   defp on_conflict({:nothing, _, targets}, _header) do
@@ -1044,11 +1023,9 @@ defmodule XqliteEcto3.Connection do
         # Ecto pads unevenly-keyed rows in insert_all with nil to signal
         # "this row does not supply this column". SQLite's INSERT expr
         # grammar doesn't accept the DEFAULT keyword inside a VALUES list,
-        # so we emit NULL instead. Columns that are NULLABLE get NULL;
-        # NOT NULL columns without a default cause a constraint error at
-        # insert time. For NOT NULL columns that DO have a default
-        # declared at the schema level, Ecto's own schema-level default
-        # filling happens before the adapter runs.
+        # so NULL goes in instead — a NOT NULL column without a default
+        # then raises a constraint error, and a schema-level default was
+        # already filled in by Ecto before the adapter ran.
         {"NULL", counter}
 
       {%Ecto.Query{} = query, params_counter}, counter ->
@@ -1058,7 +1035,6 @@ defmodule XqliteEcto3.Connection do
         {[?? | placeholder_index], counter}
 
       _, counter ->
-        # Cell wise value support ex: (?1, ?2, ?3)
         {[??, Integer.to_string(counter)], counter + 1}
     end)
   end
@@ -1486,10 +1462,6 @@ defmodule XqliteEcto3.Connection do
     expr(other, sources, parent_query)
   end
 
-  ##
-  ## Expression generation
-  ##
-
   # SQLite's ?N form pins each placeholder to its absolute position in the
   # planner's parameter list, making SQL clause order irrelevant to binding —
   # a prerequisite for rewrites that reorder clauses (DISTINCT ON).
@@ -1497,8 +1469,8 @@ defmodule XqliteEcto3.Connection do
     [??, Integer.to_string(ix + 1)]
   end
 
-  # workaround for the fact that SQLite as of 3.35.4 does not support specifying table
-  # in the returning clause. when a later release adds the ability, this code can be deleted
+  # SQLite's RETURNING clause takes no table qualifier, so the field is
+  # emitted bare (both clauses below).
   defp expr({{:., _, [{:parent_as, _, [{:&, _, [_idx]}]}, field]}, _, []}, _sources, %{
          returning: true
        })
@@ -1506,8 +1478,6 @@ defmodule XqliteEcto3.Connection do
     quote_name(field)
   end
 
-  # workaround for the fact that SQLite as of 3.35.4 does not support specifying table
-  # in the returning clause. when a later release adds the ability, this code can be deleted
   defp expr({{:., _, [{:&, _, [_idx]}, field]}, _, []}, _sources, %{returning: true})
        when is_atom(field) do
     quote_name(field)
@@ -1556,7 +1526,7 @@ defmodule XqliteEcto3.Connection do
     [expr(left, sources, query), " IN ", expr(subquery, sources, query)]
   end
 
-  # Super Hack to handle arrays in json
+  # The right side is a JSON-encoded array parameter, so it is unrolled with JSON_EACH.
   defp expr({:in, _, [left, right]}, sources, query) do
     [
       expr(left, sources, query),
@@ -1969,13 +1939,9 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  # If we are adding a DATETIME column with the NOT NULL constraint, SQLite
-  # will force us to give it a DEFAULT value. The only default value
-  # that makes sense is CURRENT_TIMESTAMP, but when adding a column to a
-  # table, defaults must be constant values.
-  #
-  # Therefore the best option is just to remove the NOT NULL constraint when
-  # we add new datetime columns.
+  # ADD COLUMN ... NOT NULL needs a DEFAULT, and SQLite requires a constant
+  # one — CURRENT_TIMESTAMP, the only sensible default here, is not allowed.
+  # Dropping the NOT NULL is the way through.
   defp column_change(table, {:add, name, type, opts})
        when type in [:utc_datetime, :naive_datetime] do
     opts = Keyword.delete(opts, :null)
@@ -2167,10 +2133,6 @@ defmodule XqliteEcto3.Connection do
       " RETURNING " | quote_names(returning)
     ]
   end
-
-  ##
-  ## Helpers
-  ##
 
   defp modifiers_expr(%Table{modifiers: nil}), do: []
 

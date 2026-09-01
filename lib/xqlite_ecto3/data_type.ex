@@ -218,10 +218,9 @@ defmodule XqliteEcto3.DataType do
               __STACKTRACE__
   end
 
-  # Reads `config :xqlite_ecto3, :binary_id_storage` (default `:string`) and
-  # picks the corresponding SQLite column type for `:binary_id` / `:uuid`
-  # fields in migrations. `:string` → TEXT, `:binary` → BLOB. Governs both
-  # uniformly. `XqliteEcto3.Types.UUID` is a per-field escape hatch.
+  # `:binary_id` and `:uuid` migration columns follow
+  # `config :xqlite_ecto3, :binary_id_storage`: `:string` → TEXT,
+  # `:binary` → BLOB.
   defp binary_id_column_type do
     case Application.get_env(:xqlite_ecto3, :binary_id_storage, :string) do
       :string -> "TEXT"

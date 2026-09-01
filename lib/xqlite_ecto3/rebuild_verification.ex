@@ -640,7 +640,6 @@ defmodule XqliteEcto3.RebuildVerification do
     end)
   end
 
-  # A column declared with no type at all is rebuilt as BLOB.
   defp rebuilt_type(type) when type in [nil, ""], do: "BLOB"
   defp rebuilt_type(type), do: type
 
@@ -705,8 +704,6 @@ defmodule XqliteEcto3.RebuildVerification do
     }
   end
 
-  # A column added earlier in the same alter block has no stored declaration
-  # to merge with, so the rebuild writes it from the options alone.
   defp modified_column(%{declared: nil} = col, type, opts) do
     added_column(col.name, type, opts)
   end

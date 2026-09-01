@@ -146,10 +146,6 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp violations_total({:truncated, total}, _violations), do: total
   defp violations_total(_status, violations), do: length(violations)
 
-  # ---------------------------------------------------------------------------
-  # Replay under deferred enforcement
-  # ---------------------------------------------------------------------------
-
   defp replay(conn, sql, params) do
     result =
       with :ok <- NIF.savepoint(conn, @diag_savepoint),
@@ -173,10 +169,6 @@ defmodule XqliteEcto3.FkDiagnostics do
     _ = NIF.set_pragma(conn, "defer_foreign_keys", false)
     :ok
   end
-
-  # ---------------------------------------------------------------------------
-  # Violation collection: foreign_key_check + foreign_key_list
-  # ---------------------------------------------------------------------------
 
   @violation_cap 24
 

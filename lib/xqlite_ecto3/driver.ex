@@ -1050,11 +1050,6 @@ defmodule XqliteEcto3.Driver do
     end)
   end
 
-  # ---------------------------------------------------------------------------
-  # Telemetry classification helpers
-  # ---------------------------------------------------------------------------
-
-  # connect/1 returns {:ok, state} | {:error, reason}.
   defp classify({:ok, _state} = result, start_md) do
     {result, Map.merge(start_md, %{result_class: :ok, error_reason: nil})}
   end
@@ -1063,12 +1058,6 @@ defmodule XqliteEcto3.Driver do
     {result, Map.merge(start_md, %{result_class: :error, error_reason: reason})}
   end
 
-  # DBConnection callback returns:
-  #   {:ok, ..., state}
-  #   {:cont, ..., state}
-  #   {:halt, ..., state}
-  #   {:error, error, state}
-  #   {:disconnect, error, state}
   defp classify_dbc(result, start_md) do
     case result do
       {:ok, _, _} ->

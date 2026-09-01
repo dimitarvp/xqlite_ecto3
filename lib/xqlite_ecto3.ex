@@ -581,19 +581,10 @@ defmodule XqliteEcto3 do
   end
 
   # SQLite does not support `ADD COLUMN IF NOT EXISTS`, `DROP COLUMN IF EXISTS`,
-  # or `ALTER TABLE ... MODIFY COLUMN`. Two escape hatches:
-  #
-  # 1. Conditional column changes (:add_if_not_exists, :remove_if_exists)
-  #    get filtered via PRAGMA table_info and normalized to :add / :remove
-  #    before falling through to the standard Ecto.Adapters.SQL flow.
-  #
-  # 2. Modify column changes (:modify) trigger the full SQLite 12-step
-  #    table-rebuild dance when the repo is configured with
-  #    `support_alter_via_table_rebuild: true`. Without that flag, :modify
-  #    raises a clear error. The rebuild batches ALL changes in the alter
-  #    block (:modify + :add + :remove + :rename + conditional variants)
-  #    into a single new-table create + INSERT SELECT + drop + rename +
-  #    index/trigger recreation cycle, not N rebuilds for N columns.
+  # or `ALTER TABLE ... MODIFY COLUMN`, so both are emulated: the conditional
+  # forms resolve against PRAGMA table_info into plain :add / :remove, and
+  # :modify triggers the table-rebuild dance below. One rebuild batches every
+  # change in the alter block, not one rebuild per column.
   @impl Ecto.Adapter.Migration
   def execute_ddl(meta, {:alter, %Ecto.Migration.Table{} = table, changes}, opts) do
     cond do
@@ -707,13 +698,8 @@ defmodule XqliteEcto3 do
 
   defp resolve_change(change, current), do: {[change], current}
 
-  # ---------------------------------------------------------------------------
-  # Table-rebuild path (for ALTER ... MODIFY COLUMN support)
-  # ---------------------------------------------------------------------------
-
   # Any change that SQLite's grammar can't do as a plain ALTER requires
-  # rebuilding the whole table. Today that's :modify. Future: might expand
-  # to :alter_primary_key / :alter_foreign_key if shared tests demand.
+  # rebuilding the whole table.
   defp requires_rebuild?({:modify, _name, _type, _opts}), do: true
   defp requires_rebuild?(_), do: false
 
@@ -1913,10 +1899,8 @@ defmodule XqliteEcto3 do
     end)
   end
 
-  # Walk the changes list, producing (a) the new column list for the rebuilt
-  # table in declared order and (b) the pairs of (old_name -> new_name) to
-  # copy via INSERT SELECT. Columns added fresh have no matching old column
-  # and are omitted from the copy.
+  # Columns added fresh have no matching old column, so they are omitted
+  # from the INSERT SELECT copy.
   defp plan_new_schema(existing, changes, opts) do
     autoincrement? = Keyword.fetch!(opts, :autoincrement)
     key_sort_order = Keyword.fetch!(opts, :key_sort_order)
@@ -1949,9 +1933,8 @@ defmodule XqliteEcto3 do
         )
       end)
 
-    # Apply changes in order. Result is a list of %{name, source_name, spec}
-    # where source_name is the old column to copy FROM (nil for added cols),
-    # and spec is the CREATE TABLE column definition iodata.
+    # %{name, source_name, spec}: source_name is the old column to copy
+    # FROM (nil for a fresh add), spec the CREATE TABLE column definition.
     final =
       Enum.reduce(changes, base, fn change, cols ->
         apply_change(cols, change)
@@ -2292,8 +2275,6 @@ defmodule XqliteEcto3 do
     ]
   end
 
-  # The transient table the rebuild creates, copies into, and renames over the
-  # original.
   defp transient_name(name), do: "#{name}__xqlite_new"
 
   defp quote_name(name) when is_atom(name), do: quote_name(Atom.to_string(name))
@@ -2302,9 +2283,8 @@ defmodule XqliteEcto3 do
   defp quote_name(name) when is_binary(name),
     do: ~s|"| <> String.replace(name, ~s|"|, ~s|""|) <> ~s|"|
 
-  # Escapes a value for a single-quoted SQL string literal (doubles embedded
-  # single quotes). Used for the sqlite_sequence `name`, which is a string
-  # literal with no identifier-quoting escape hatch.
+  # For the sqlite_sequence `name`, which is a string literal with no
+  # identifier-quoting escape hatch.
   defp quote_string(value), do: ~s|'| <> String.replace(to_string(value), ~s|'|, ~s|''|) <> ~s|'|
 
   @impl Ecto.Adapter.Schema
@@ -2347,14 +2327,8 @@ defmodule XqliteEcto3 do
   defp bool_encode(true), do: {:ok, 1}
   defp bool_encode(x), do: {:ok, x}
 
-  # :binary_id storage mode, read from `config :xqlite_ecto3,
-  # :binary_id_storage`. Defaults to :string. Governs how the :binary_id
-  # dumper shapes its output, how the loader interprets rows, how the
-  # migration column type maps, and how query-param Tagged values are
-  # wrapped in CAST.
-  #
-  # Per-field overrides are available via `XqliteEcto3.Types.UUID` when
-  # different fields in the same schema need different modes.
+  # Governs the :binary_id dumper's output shape, the loader, the migration
+  # column type, and the CAST wrapping of query-param Tagged values.
   defp binary_id_storage do
     Application.get_env(:xqlite_ecto3, :binary_id_storage, :string)
   end
@@ -2373,11 +2347,9 @@ defmodule XqliteEcto3 do
   defp binary_id_dump(<<_::128>> = raw) do
     case binary_id_storage() do
       :string ->
-        # Convert raw to 36-char string so NIF binds as TEXT.
         Ecto.UUID.cast(raw)
 
       :binary ->
-        # Keep raw for BLOB binding.
         {:ok, raw}
     end
   end

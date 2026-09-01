@@ -110,11 +110,9 @@ defmodule XqliteEcto3.DecimalPrecision do
   # SQLite demotes an integral REAL within int64 range to an INTEGER, which
   # reads back with its exact digits; everything else stays REAL and reads
   # back through the same shortest-representation printing the :decimal
-  # loader uses. The old check compared against the shortest printing alone,
-  # which can echo the original digits even after the float rounded — the
-  # integer demotion then surfaced the true rounded value (a 17-digit
-  # integer stored as its float64 neighbor was accepted and came back off
-  # by two).
+  # loader uses. Comparing against the shortest printing alone is not enough:
+  # it can echo the original digits even after the float rounded, while the
+  # integer demotion surfaces the true rounded value.
   @doc false
   @spec stored_decimal(float()) :: Decimal.t()
   def stored_decimal(f) do
