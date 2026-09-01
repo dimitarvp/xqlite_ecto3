@@ -963,7 +963,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def handle_fetch(_query, cursor, _opts, state) do
+  def handle_fetch(query, cursor, _opts, state) do
     start_md = %{conn: state.conn, cursor: cursor}
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_fetch], start_md do
@@ -984,6 +984,7 @@ defmodule XqliteEcto3.Driver do
           {:error, reason} ->
             reason
             |> XqliteEcto3.Error.wrap()
+            |> put_statement(IO.iodata_to_binary(query.statement))
             |> disconnect_if_rolled_back(state)
         end
 

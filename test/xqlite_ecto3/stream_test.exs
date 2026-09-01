@@ -104,4 +104,26 @@ defmodule XqliteEcto3.StreamTest do
       assert results == [1, 2, 3]
     end
   end
+
+  describe "a failing streamed statement" do
+    test "carries its SQL on the error" do
+      TestRepo.query!("CREATE TABLE st_fail (id INTEGER PRIMARY KEY, v TEXT)")
+      TestRepo.query!("CREATE UNIQUE INDEX st_fail_uq ON st_fail (v)")
+      TestRepo.query!("INSERT INTO st_fail (id, v) VALUES (1, 'a')")
+
+      sql = "INSERT INTO st_fail (id, v) VALUES (10, 'zz'), (11, 'a') RETURNING id"
+
+      error =
+        assert_raise XqliteEcto3.Error, fn ->
+          TestRepo.transaction(fn ->
+            TestRepo
+            |> Ecto.Adapters.SQL.stream(sql, [], max_rows: 1)
+            |> Enum.to_list()
+          end)
+        end
+
+      assert error.type == :constraint_violation
+      assert error.statement == sql
+    end
+  end
 end

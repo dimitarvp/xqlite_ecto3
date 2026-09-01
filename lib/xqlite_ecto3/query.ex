@@ -27,8 +27,15 @@ defmodule XqliteEcto3.Query do
     # designator loses nothing.
     defp encode_param(%NaiveDateTime{} = dt, _index), do: sqlite_datetime(dt)
 
-    defp encode_param(%DateTime{} = dt, _index),
-      do: dt |> DateTime.to_naive() |> sqlite_datetime()
+    # to_naive/1 alone would keep a zoned value's LOCAL wall clock and
+    # silently shift the instant; shifting to UTC first needs no tz
+    # database (the offset arithmetic suffices for Etc/UTC).
+    defp encode_param(%DateTime{} = dt, _index) do
+      case DateTime.shift_zone(dt, "Etc/UTC") do
+        {:ok, utc} -> utc |> DateTime.to_naive() |> sqlite_datetime()
+        {:error, _} -> DateTime.to_iso8601(dt)
+      end
+    end
 
     defp encode_param(%Date{} = d, _index), do: Date.to_iso8601(d)
 

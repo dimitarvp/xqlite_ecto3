@@ -138,6 +138,27 @@ defmodule XqliteEcto3.StoredValueInteropTest do
     end
   end
 
+  describe "zoned datetime parameters on the raw path" do
+    test "a non-UTC parameter stores its UTC wall time" do
+      zoned = DateTime.from_naive!(~N[2026-03-01 12:00:00], "Etc/UTC")
+      zoned = %{zoned | utc_offset: 7200, time_zone: "Etc/GMT-2", zone_abbr: "+02"}
+
+      Repo.query!("INSERT INTO svi_audit (note, at) VALUES ('zoned', ?1)", [zoned])
+
+      %{rows: [[stored]]} = Repo.query!("SELECT at FROM svi_audit WHERE note = 'zoned'")
+      assert stored == "2026-03-01 10:00:00"
+    end
+
+    test "the UTC control stays byte-stable" do
+      Repo.query!("INSERT INTO svi_audit (note, at) VALUES ('utc', ?1)", [
+        ~U[2026-03-01 10:00:00Z]
+      ])
+
+      %{rows: [[stored]]} = Repo.query!("SELECT at FROM svi_audit WHERE note = 'utc'")
+      assert stored == "2026-03-01 10:00:00"
+    end
+  end
+
   describe "non-finite decimal text" do
     test "every spelling fails the load with Ecto's typed error" do
       spellings = ~w(NaN nan -NaN Inf inf Infinity -Infinity +Inf)
