@@ -109,6 +109,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Datetimes are stored in SQLite's own form.** `:utc_datetime` and
+  `:naive_datetime` values (and their `_usec` twins) are written as
+  `YYYY-MM-DD HH:MM:SS[.ffffff]` — space separator, no trailing `Z`.
+  The previous ISO-8601 `T`/`Z` form byte-sorted against SQLite-written
+  values at the separator, and the trailing `Z` made a sub-second
+  value sort BEFORE its own whole second — `ORDER BY` and range
+  filters over mixed-writer or mixed-precision columns returned
+  wrong rows. `XqliteEcto3.Types.TimestampTZ` keeps its
+  offset-carrying ISO form (offset storage is its purpose). Rows
+  written by earlier versions keep the old form and still load; to
+  restore instant ordering against them, normalize once:
+  `UPDATE t SET at = replace(replace(at, 'T', ' '), 'Z', '')`.
+
 - **A NOT NULL violation raises the structured `XqliteEcto3.Error`
   instead of `Ecto.ConstraintError`.** The old mapping emitted
   `[not_null: "table.column"]`, but Ecto has no
@@ -179,6 +192,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **A timestamp SQLite itself wrote is readable.** A `:utc_datetime`
+  value written by `CURRENT_TIMESTAMP`, `datetime()` or any other
+  tool carries no offset designator, and the loader failed it —
+  one such row crashed every read of the table. An offset-less text
+  under a UTC type now loads with `Etc/UTC` attached; `date()` and
+  `time()` output already loaded.
+
+- **Non-finite decimal text fails the load with the typed error.**
+  `Decimal.parse/1` clean-parses `NaN`/`Infinity` spellings, and
+  Ecto's `:decimal` then raises an exception naming no field, row,
+  or value. The loader refuses them now, so the typed load failure
+  names all three.
+
+- **The rebuild's affinity pre-flight uses the copy itself as its
+  oracle.** The CAST-based predicate over-refused columns holding
+  plain text (`CAST` converts junk to 0; the copy's affinity
+  coercion carries it byte-exact) — such columns now pour through a
+  NUMERIC scratch table and only values the pour actually changes
+  count as rewrites. WITHOUT ROWID tables keep the conservative
+  predicate.
 
 - **The vendored-suite exclusion artifacts are re-trued and now
   self-checking.** The README's exclusion-taxonomy sentence gains the
