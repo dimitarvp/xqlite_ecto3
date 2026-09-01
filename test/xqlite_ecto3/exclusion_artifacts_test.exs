@@ -20,9 +20,15 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
 
   @repo_root Path.expand("../..", __DIR__)
 
-  defp helper, do: File.read!(Path.join(@repo_root, "test/test_helper.exs"))
-  defp tags_doc, do: File.read!(Path.join(@repo_root, "ECTO_INTEGRATION_TAGS.md"))
-  defp all_test, do: File.read!(Path.join(@repo_root, "test/ecto3_integration/all_test.exs"))
+  defp helper, do: read_normalized("test/test_helper.exs")
+  defp tags_doc, do: read_normalized("ECTO_INTEGRATION_TAGS.md")
+  defp all_test, do: read_normalized("test/ecto3_integration/all_test.exs")
+
+  # Windows checkouts arrive with CRLF endings; the anchors here match
+  # against \n.
+  defp read_normalized(path) do
+    @repo_root |> Path.join(path) |> File.read!() |> String.replace("\r\n", "\n")
+  end
 
   defp helper_excludes_body do
     [_, body] = Regex.run(~r/excludes = \[(.*?)\n\]\n/s, helper())

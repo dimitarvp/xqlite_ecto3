@@ -6610,3 +6610,18 @@ is prose-only, not assertable. Post-fix 5/5.
   integer→numeric converts exactly); the upstream-bump watch
   stands.
 
+
+### Run 47 addendum — the push's CI red (Windows CRLF), fixed same session
+
+`24c1c96`'s CI came back RED on ALL TEN Windows jobs (every
+Elixir/OTP cell; Linux/macOS green): exclusion_artifacts_test's
+anchor regex (`excludes = \[(.*?)\n\]\n`) returned nil on CRLF
+checkouts — Git for Windows checks out with \r\n, the gotcha-15
+line-ending sibling. Red-proven locally against a CRLF copy of the
+helper (raw: no match; normalized: match), fixed by normalizing
+\r\n → \n in the test's three file readers, 5/5 locally, full
+verify green, pushed as a rider commit. The away log briefly
+recorded this push GREEN before the verdict was read — corrected
+in place; lesson: read the verdict file BEFORE writing the log
+line.
+
