@@ -6749,3 +6749,122 @@ sweep then caught query_encoding_test's three encode-form pins
   compare vs trailing-zero decimals); DECIMAL(p,s) option splice
   round-trips.
 
+
+## Run 49 — 2026-09-01 — lap 6, batch 9 (THE CLOSER): X1 + X2 paired cover
+
+Single Opus reviewer at `3e4eef6` (xqlite checkout `1f1c8de` read for
+the forward blast); deps verified; SQLite 3.53.2; the error_reason
+union = 48 members, unchanged since Run 26. Gate: ALL FOURTEEN
+probes re-driven at manifest rc (p07's rc 1 intended); the re-drive
+completed on the pre-fix tree PROVEN by p14's pre-fix output — but a
+NEAR-MISS recorded honestly: the fixes were being written while the
+re-drive was still in flight (the Run-46 rule broken a second time;
+saved by timing alone — the rule needs to be mechanical: launch
+re-drive, then ONLY reads until its notification). Fixes BY THE
+ORCHESTRATOR; post-fix probes verified the right flips (p02's fetch
+error now carries its SQL; p14's "HEAD encoder" line is that probe's
+own inline reconstruction of the old formula — the pin is the real
+proof, decisive via shift_zone spot-check). Stash-RED PREDICTED 2 —
+observed exactly 2 by identity; 15/15 restored. A stray empty file
+`dead` (a probe shell artifact) caught untracked and removed before
+commit.
+
+- **F-X1-8 (S2, CONFIRMED, FIXED, RED→green) — a REGRESSION my own
+  Run-48 gate introduced.** The datetime-form change dropped the
+  offset via DateTime.to_naive/1 (the LOCAL wall clock), so a
+  non-UTC DateTime on the raw-SQL path stored its wall time as if
+  UTC — off by its offset, silently (p05/p14: +02:00 noon stored as
+  12:00 where 10:00 is the instant; p06 route table: Ecto's typed
+  surface fully protected — dump/insert/typed pins all refuse or
+  normalize — the exposure is exactly raw Repo.query params and
+  untyped fragment pins). The Run-48 trade was wrong-ordering →
+  wrong-value on this path; now neither: shift_zone to Etc/UTC
+  (works with the UTC-only tz database — p07 proved it, and
+  DateTime.add does NOT) before dropping the designator; the
+  {:error, _} arm degrades to the offset-carrying ISO form (correct
+  instant, legacy ordering caveat). Pins: zoned raw param stores
+  the UTC wall time; the UTC control byte-stable. README's datetime
+  bullet gains the raw-path sentence + the TimestampTZ note on the
+  normalize snippet.
+- **F-X1-7 (S3, CONFIRMED, FIXED, RED→green — the standing item
+  CLOSED).** handle_fetch's error branch was the one of five error
+  sites without put_statement; an ordinary streamed RETURNING DML
+  violating UNIQUE past the first row surfaced with statement nil
+  (p02) while declare/execute stamp theirs. The fix direction was
+  TRACE-PROVEN before implementation (p03: erlang.trace_pattern on
+  handle_fetch/4 — the first argument IS a %Query{} carrying the
+  declared SQL on every call including the failing one; DBConnection
+  hands it over at db_connection.ex:1964; Run 40's cursor-carries-
+  no-SQL rationale true but irrelevant). Fixed by binding the query
+  + stamping. Pin: a failing streamed statement carries its SQL
+  (stream_test). BACKLOG entry moved to Closed.
+- **F-X2-4 (S3, CONFIRMED, FILED — xqlite court).** The staged
+  0.11.1's clippy rewrite (9f2e278, as_chunks) raises the
+  source-build Rust floor to 1.88 with nothing declaring it (no
+  rust-version, stable-only CI, no README line) while
+  XQLITE_BUILD=true is documented. Precompiled users unaffected.
+  Filed with the two-line fix for xqlite's court.
+- **Step-0 (the lap's X1 contract deltas enumerated):** the connect
+  refusal family grew 18 → 21 tags (all 21 wrap with type = tag,
+  zero nil types, all messages non-empty — p12); the details union
+  unchanged (6 members); fk_diagnostics {:truncated, pos_integer()}
+  exact; the savepoint refusal's bare DBConnection.ConnectionError
+  divergence RECORDED for the next pass's adjudication (critic 2);
+  the datetime storage form logged as an API-visible contract
+  change; the F-B1-9 {tag, binary} message collision re-verified
+  and WIDENED by one (:invalid_connection_mode accepts binaries) —
+  stays merged in the connect-error-details menu (21 sites now).
+- **Filed sweep:** [F-X2-3]/[xqlite-0.11.1-release] HOLDS —
+  unreleased; the checkout-vs-hex diff is EXACTLY two files (the
+  doc correction + the lint), diff -rq-proven; the adapter's
+  ~> 0.11.0 pin admits the patch automatically, no adapter change
+  owed. The xqlite-court queue IS REAL (constraint_parse.rs at
+  1f1c8de has no SQLITE_CONSTRAINT_ROWID arm and no bare-
+  "constraint failed" handling — neither F-B5-31's nor F-B5-26's
+  xqlite half ships in the staged 0.11.1). [F-B8-2] holds (no
+  cancellable stream fetch at 0.11.0). F-X1-1/2/5/6, F-X2-1/2 stay
+  closed; F-X1-4's pin + compat rows hold across all four doc
+  surfaces.
+- **Clean census (controls named):** the NIF call surface = 41
+  name+arity calls / 73 occurrences, ALL exported at 0.11.0
+  (AST-walk with @spec pruning; the un-pruned control explains the
+  old miscounts); the forward blast = ZERO product surface (the
+  "pending" 20-NIF DirtyIo flip ALREADY SHIPPED inside 0.11.0 — 91
+  DirtyIo attributes in BOTH trees — the standing note was stale
+  and dies with this entry); the busy-slot claims hold through a
+  REAL pooled checkout 4/4 with timing (2004 ms baseline / 0 ms
+  observer / 0 ms after unregister / 2003 ms restored — discharges
+  Run 40's critic; API note: unregister takes the returned integer
+  handle, not a pid — doc line owed xqlite-side someday); the
+  full-48 emission question ANSWERED (19/33 shapes provoked through
+  one pooled checkout, every one wraps + classifies correctly, zero
+  drift; the rest are reachable but surface as the caller's own
+  tuples with Error.wrap/1 public — the structural answer; seven
+  decode-boundary ArgumentErrors recorded as my guessed shapes, not
+  findings); census pins: :invalid_pragma_name CONFIRMED
+  (malformed-only; unknown-but-well-formed → {:ok, :no_value});
+  **Run 40's :invalid_stream_handle pin proposal REFUTED — every
+  post-close operation degrades gracefully (double close :ok, fetch
+  :done, get_columns {:ok, cols}); the shape is not constructible
+  from the adapter's surface and the proposed pin would have
+  encoded a false fact.** Doc parity: the live README absorbed all
+  five of the lap's contract changes (no stale claim by the Run-40
+  method); STE drafts in sync on content, two cosmetic drift items
+  (section order; dash style) noted for a docs pass, not mirrored
+  at this gate.
+- Dryness: an S2 (lap-introduced regression, fixed) + two S3 —
+  **X1 and X2 each stay 0 of 2, NOT DRY**; TWENTY-NINE straight
+  finding runs. **LAP 6 COMPLETE — all nine batches, tally 5 S1 +
+  16 S2 + 23 S3 = 44 findings in Runs 41-48, plus this run's 3.
+  Every axis that ran stayed 0 of 2; DRY = B10 alone (its re-cover
+  rides the bench work).** Re-wets ADD: the four temporal
+  encode_param clauses (now a storage contract), handle_fetch's
+  stamp, the next xqlite release (F-X2-3 + F-X2-4). Completeness
+  critic (next X pass): the Date/Time encoder siblings as one
+  family (+ NaiveDateTime {0,0} vs {0,6} precision vs
+  SQLite-written values); the savepoint refusal's shape
+  adjudication; the seven decode-boundary rows re-driven with real
+  @spec shapes; Xqlite.explain_analyze/3 + Telemetry.* driven at
+  0.11.0 (standing since Run 26); hexdocs read directly (standing);
+  re-cover BOTH axes immediately after the 0.11.1 release.
+

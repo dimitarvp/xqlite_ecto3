@@ -578,13 +578,6 @@ after the S0–S2 burn-down.
 - [S3] `async: false` ban is honored (0/52) but written down
   nowhere in this repo — codify in the CLAUDE.md bootstrap. (wave-1)
 
-- [F-X1-7] (S3, X1 court, from Run 41) `handle_fetch/4`'s error branch
-  wraps without `put_statement/2` while both `handle_declare/4` error
-  branches stamp the SQL — Run 40's stamping is one branch short. Run
-  40 recorded the nil as truthful because "the cursor does not carry
-  the SQL", but DBConnection passes the QUERY as `handle_fetch`'s first
-  argument and the driver ignores it (`_query`) — the statement is
-  available at the site. (Run 41, B8 → X1)
 - [F-B8-12-handoff] (S3, B1/B2 court, from Run 41) A top-level
   `Repo.transaction(fun, mode: :savepoint)` runs DEFERRED — a lone
   SAVEPOINT behaves as BEGIN DEFERRED — silently discarding the
@@ -694,6 +687,15 @@ after the S0–S2 burn-down.
   B6's next pass owns the reachability question and the
   two-refusals-one-thing cleanup. (Run 47, B2 → B6)
 
+- [F-X2-4] (S3, xqlite court, from Run 49) The staged 0.11.1's
+  clippy rewrite (`9f2e278`, as_chunks in schema.rs) raises the
+  SOURCE-BUILD Rust floor to 1.88 with nothing declaring it: no
+  rust-version in Cargo.toml, CI pins only "stable", no README
+  line — while XQLITE_BUILD=true source builds are a documented
+  path. Fix in xqlite's court: rust-version = "1.88" + one release-
+  notes line, or revert the lint rewrite. Precompiled-NIF users
+  unaffected. (Run 49, X2)
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —
@@ -702,6 +704,14 @@ after the S0–S2 burn-down.
   doc references to the new `Xqlite` wrappers (additive, optional).
 
 ## Closed
+
+- 2026-09-01 [F-X1-7] (S3, from Run 41) CLOSED at Run 49's gate:
+  `handle_fetch/4` now binds the query DBConnection passes and
+  stamps the failing SQL onto the error — a mid-stream constraint
+  violation names its statement like declare- and execute-time
+  failures (trace-proven that the query arrives; pinned in
+  stream_test). Run 40's "the cursor does not carry the SQL"
+  rationale was true and irrelevant — the query does.
 
 - 2026-09-01 [F-B1-5] (S3, from Run 33) CLOSED as
   discard-unreachable at Run 46's gate: xqlite's

@@ -2212,6 +2212,30 @@ any new wrap/1 clause. Next-pass seeds: the full-48 emission
 question; pin the census facts (:invalid_pragma_name malformed-only;
 :invalid_stream_handle via stream_close only).
 
+COVERING RE-RUN (Run 49, 2026-09-01 — lap 6 closer, paired with
+X2): the lap's contract deltas enumerated (connect refusals 18→21
+tags, all wrap-verified; details union unchanged; {:truncated,
+pos_integer()} exact; the savepoint refusal's bare
+DBConnection.ConnectionError divergence recorded for adjudication;
+the datetime storage form logged as contract). F-X1-8 (S2, FIXED):
+the Run-48 form change dropped offsets via the LOCAL wall clock —
+a zoned DateTime on the raw-SQL path silently shifted by its
+offset (typed surface protected by Ecto; the exposure = raw params
++ untyped fragment pins); shift_zone to Etc/UTC first (UTC-only tz
+db suffices, proven), error arm degrades to the ISO form; pinned.
+F-X1-7 (S3, FIXED, CLOSED): handle_fetch now stamps the failing
+SQL from the query DBConnection passes (trace-proven pre-fix);
+pinned in stream_test. F-B1-9's {tag, binary} collision re-verified
++ widened by one tag (stays in the menu, 21 sites). The full-48
+emission question ANSWERED (19/33 provoked + zero wrap drift; rest
+reachable-as-caller-tuples with Error.wrap public); busy-slot
+claims 4/4 through a real pooled checkout; :invalid_pragma_name pin
+confirmed; **Run 40's :invalid_stream_handle pin proposal REFUTED
+(graceful post-close degradation — not constructible)**. DRYNESS:
+findings — **X1 stays 0 of 2, NOT DRY**. Re-wets ADD: the four
+temporal encode_param clauses, handle_fetch's stamp, any new wrap
+clause, the next xqlite release.
+
 ### X2. Blast radius is cross-repo by default
 Any xqlite public-surface change enumerates adapter call sites
 before it lands, every time. Coverage: Run 1 enumerated the full
@@ -2319,3 +2343,22 @@ stays 0 of 2, NOT DRY**; TWENTY straight finding runs; **LAP 5
 COMPLETE**. Re-wets ALSO on: the next xqlite release. Next-pass
 seeds: hexdocs rendering read directly; the busy-slot claims
 through a pooled checkout.
+
+COVERING RE-RUN (Run 49, 2026-09-01 — lap 6 closer, paired with
+X1): the NIF call census = 41 name+arity / 73 occurrences, ALL
+exported at 0.11.0 (AST-walk, @spec-pruned; the un-pruned control
+explains historical miscounts). Forward blast vs the checkout
+(1f1c8de, the staged 0.11.1) = ZERO product surface: the hex-vs-
+checkout diff is exactly two files (a doc correction + a clippy
+lint), and the "pending" 20-NIF DirtyIo flip ALREADY SHIPPED in
+0.11.0 (91 DirtyIo in both trees — the stale standing note dies
+here). F-X2-4 (S3, FILED, xqlite court): the lint rewrite raises
+the source-build Rust floor to 1.88 undeclared (no rust-version,
+stable-only CI). The xqlite-court queue verified REAL at the
+source (no ROWID arm, no bare-"constraint failed" handling in
+constraint_parse.rs — F-B5-31/F-B5-26 halves genuinely owed). The
+~> 0.11.0 pin admits the coming patch automatically — no adapter
+change owed. [F-B8-2] holds. DRYNESS: findings — **X2 stays 0 of
+2, NOT DRY**. Re-wets: the next xqlite release (F-X2-3 + F-X2-4),
+any adapter NIF-call addition.
+
