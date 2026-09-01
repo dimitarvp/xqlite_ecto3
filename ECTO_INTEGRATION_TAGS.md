@@ -2,8 +2,8 @@
 
 Status of every exclusion from the shared ecto/ecto_sql integration test
 suite — the tag table first, then the location-scoped single-test
-exclusions. Bundled SQLite version: **3.53.2**. Shared files loaded:
-**16/18**.
+exclusions, then the two whole-file skips. Bundled SQLite version:
+**3.53.2**. Shared files loaded: **16/18** (see "Whole-file skips").
 
 | Tag | Status | Notes |
 |-----|--------|-------|
@@ -21,10 +21,10 @@ exclusions. Bundled SQLite version: **3.53.2**. Shared files loaded:
 | `:insert_select` | supported | `insert_all` emits NULL for Ecto-padded uneven rows; trivial WHERE injected to disambiguate `ON CONFLICT` |
 | `:json_extract_path` | supported (4/5, one permanent location exclusion) | untyped boolean SELECTs return 1/0 by design — no load hook exists for untyped selects, so no coercion layer is coming; `type.exs:359` is location-excluded and the sanctioned fix is explicit `type(..., :boolean)` (see json_extract_path_test.exs) |
 | `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands, so both tagged `type.exs` tests pass un-excluded. (`:binary` columns are declared BLOB — no affinity — and the storage class follows the value: text for valid UTF-8, blob otherwise; LIKE matches both) |
-| `:lock_for_migrations` | excluded | SQLite is single-writer; no advisory lock mechanism |
+| `:lock_for_migrations` | excluded | our `lock_for_migrations/3` is a deliberate no-op passthrough (single-writer SQLite needs no advisory migration lock), so Ecto never raises the pool-size-below-2 `MigrationError` that `migrator.exs:198` asserts on |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
 | `:microsecond_precision` | excluded (permanent, 4/5-justified) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. Disclosure: the tag is over-broad by exactly one — `interval.exs:194` (`datetime_add with microsecond`) passes when re-enabled; keeping the tag over four location tuples is a recorded deliberate trade. |
-| `:modify_column` | supported (opt-in) | full SQLite table-rebuild dance behind `support_alter_via_table_rebuild: true` repo config; batches all changes in one alter block into a single rebuild |
+| `:modify_column` | supported (opt-in) | full SQLite table-rebuild dance behind `support_alter_via_table_rebuild: true` repo config; batches all changes in one alter block into a single rebuild. A `modify` that would move a populated column's affinity and rewrite stored values refuses pre-flight (see the README's type-rendering details) |
 | `:multicolumn_distinct` | supported | SQLite DISTINCT applies to full rows |
 | `:on_delete_default_all` | supported | SQLite supports `ON DELETE SET DEFAULT` |
 | `:on_delete_default_column_list` | excluded | SQLite `ON DELETE SET DEFAULT` applies to all FK columns; no column-list syntax |
@@ -57,6 +57,16 @@ full rationales live next to each tuple in `test/test_helper.exs`.
 | `ecto .../cases/type.exs:234` | array literals inside a query body and `update_all` `push:`/`pull:` do not translate |
 | `ecto_sql .../sql/sql.exs:30` | raw query results carry no type information, so the JSON-stored array cannot decode back to a list (SQLite accepts the statement itself) |
 | `ecto_sql .../sql/sql.exs:38` | Postgres `array[1,2,3]` literal syntax |
+
+## Whole-file skips
+
+Two shared files are not loaded at all (`test/ecto3_integration/all_test.exs`
+carries the load list and these reasons beside it):
+
+| File | Why |
+| --- | --- |
+| `ecto_sql .../sql/lock.exs` | row-level `SELECT ... FOR UPDATE` locking: the adapter refuses a query with `lock:` set (`ArgumentError` in `all/1`), and SQLite itself rejects the `FOR UPDATE` syntax |
+| `ecto_sql .../sql/query_many.exs` | multi-statement `query_many` is an adapter decision, not a SQLite limit: one prepare call compiles one statement, and the adapter chose not to loop over the statement tail collecting result sets |
 
 Line pointers in this table and in `test_helper.exs` name the `test`
 line, never the `@tag` line: an ExUnit line filter snaps to the nearest

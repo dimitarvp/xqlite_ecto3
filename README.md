@@ -27,7 +27,7 @@ XqliteEcto3 is inspired by [ecto_sqlite3](https://github.com/elixir-sqlite/ecto_
 - **Conservative by default, opt-in where it counts.** Loose schemas stay loose. `CHECK` constraints, `MODIFY COLUMN` via table rebuild, rich FK diagnostics, and structured `DELETE … JOIN` rewrite are all off until you ask for them. Migrations that can be safely performed with plain SQL are. Anything that needs the 12-step SQLite rebuild dance is behind `support_alter_via_table_rebuild: true` in your repo config.
 - **Custom types live at the adapter layer.** `XqliteEcto3.Types.UUID`, `Instant`, `Duration`, `TimestampTZ`, `Array`. Each is an `Ecto.Type` or `Ecto.ParameterizedType` module — no magic around how SQLite stores them.
 - **Bundled SQLite 3.53.2.** Inherited from xqlite. No system install, no version drift between dev/CI/prod.
-- **Shared Ecto suite integration.** The shared `ecto` + `ecto_sql` integration suites run green; every exclusion is documented as either a permanent SQLite limitation or a tracked adapter gap.
+- **Shared Ecto suite integration.** The shared `ecto` + `ecto_sql` integration suites run green; every exclusion — tags, single tests, and two whole files — is documented with its reason: a permanent SQLite limitation, a tracked adapter gap, or a deliberate adapter/suite decision (`ECTO_INTEGRATION_TAGS.md` + `test/test_helper.exs` carry the full list).
 
 ## Installation
 

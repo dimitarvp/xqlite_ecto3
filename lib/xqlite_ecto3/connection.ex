@@ -82,7 +82,10 @@ defmodule XqliteEcto3.Connection do
 
   @impl true
   def query_many(_conn, _sql, _params, _opts) do
-    raise ArgumentError, "query_many is not supported by SQLite"
+    raise ArgumentError,
+          "query_many is not supported by this adapter (SQLite compiles one " <>
+            "statement per prepare call; the adapter chose not to loop over " <>
+            "the statement tail and collect multiple result sets)"
   end
 
   @impl true

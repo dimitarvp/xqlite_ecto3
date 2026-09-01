@@ -107,10 +107,13 @@ excludes = [
   # Ecto's :duration type dumps to a %Duration{} struct that our param
   # encoder has no clause for (query.ex encode_param/2), so it reaches
   # the JSON fallback and raises a structured
-  # UnencodableParameterError. SQLite also has no interval storage
-  # class, but the blocker here is OURS: supporting :duration means an
-  # encode clause plus a load path, and the upstream tests additionally
-  # assert Postgres fields:/precision: truncation semantics.
+  # UnencodableParameterError. The shared migration builds the
+  # durations table WITHOUT complaint (all columns plain DURATION, the
+  # default stored as literal text) — the table is missing from the
+  # suite only because this tag is excluded. The blocker is OURS:
+  # supporting :duration means an encode clause plus a load path, and
+  # the upstream tests additionally assert Postgres fields:/precision:
+  # truncation semantics.
   :duration_type,
 
   # transaction.exs:161 "transactions are not shared in repo" runs two
@@ -163,7 +166,10 @@ excludes = [
   # name, [] as a bracket-quoted alias), but a raw query result has
   # no load hook, so the JSON-stored list comes back as text — the
   # same untyped-result gap as type.exs:359; and Postgres array[...]
-  # literal syntax (sql.exs:38, a genuine grammar rejection).
+  # literal syntax (sql.exs:38 — SQLite parses `array` as a column and
+  # `[1,2,3]` as its bracket-quoted alias, the same accident as
+  # sql.exs:30, and the statement dies at the `=` that follows: an
+  # alias cannot be an operand).
   {:location, {"deps/ecto/integration_test/cases/type.exs", 234}},
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 30}},
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 38}},
@@ -216,9 +222,11 @@ _ = XqliteEcto3.storage_down(TestRepo.config())
 _ = XqliteEcto3.storage_down(PoolRepo.config())
 :ok = XqliteEcto3.storage_up(PoolRepo.config())
 
-# Pre-set WAL mode before the pool opens connections. This avoids a race where
-# pool connections try "PRAGMA journal_mode = wal" (a write operation) while a
-# migration holds a write lock, causing transient "database is locked" errors.
+# Pre-set WAL mode so pool connections never write the WAL header. Two pool
+# members racing each other's "PRAGMA journal_mode = wal" on a fresh file is
+# enough to collide (no other writer needed), and SQLite refuses the losing
+# flip without consulting the busy handler. The driver retries that flip now,
+# so this is belt-and-braces over the retry, not load-bearing.
 for db <- [test_db, pool_db] do
   {:ok, conn} = XqliteNIF.open(db)
   {:ok, _} = XqliteNIF.set_pragma(conn, "journal_mode", "wal")
