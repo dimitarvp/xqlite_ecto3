@@ -193,6 +193,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A non-UTC `DateTime` on the raw-SQL path stores the right
+  instant.** The datetime-form change dropped the offset via the
+  local wall clock, so a zoned value handed to `Repo.query` (or an
+  untyped `fragment` pin) silently shifted by its offset. The value
+  is shifted to UTC before the designator-less form is written.
+  Typed fields were never affected — Ecto normalizes them first.
+
+- **A failing streamed statement carries its SQL on the error.** The
+  cursor-fetch error path was the one of five error sites without
+  the statement stamp; a mid-stream constraint violation now names
+  the statement like declare- and execute-time failures do.
+
 - **A timestamp SQLite itself wrote is readable.** A `:utc_datetime`
   value written by `CURRENT_TIMESTAMP`, `datetime()` or any other
   tool carries no offset designator, and the loader failed it —
