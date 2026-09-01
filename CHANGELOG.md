@@ -180,6 +180,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The vendored-suite exclusion artifacts are re-trued and now
+  self-checking.** The README's exclusion-taxonomy sentence gains the
+  bucket it was missing (deliberate adapter/suite decisions, beside
+  SQLite limits and tracked gaps) and the two whole-file skips
+  (`lock.exs`, `query_many.exs`) get documented rows; four rationales
+  that blamed SQLite for adapter decisions or named refuted mechanisms
+  are rewritten; `query_many`'s refusal now says "not supported by
+  this adapter" (one prepare call compiles one statement — looping
+  the tail is implementable, the adapter chose not to). A new test
+  mechanically checks the helper↔doc bijection, the test-line pointer
+  rule, and the whole-file rows on every run.
+
 - **A misconfigured `hooks:` progress option no longer takes the repo
   supervision tree down.** `hooks: [progress: {Name, every_n: "500"}]`
   (an env-var string), `every_n: nil`, a negative, or a non-atom
