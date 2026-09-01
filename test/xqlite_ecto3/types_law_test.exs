@@ -339,13 +339,13 @@ defmodule XqliteEcto3.TypesLawTest do
       {loaded_whole, stored_whole} = written_back_with_stored(:naive_field, whole)
 
       assert loaded_whole == whole
-      assert stored_whole == NaiveDateTime.to_iso8601(whole)
+      assert stored_whole == sqlite_form(NaiveDateTime.to_iso8601(whole))
 
       {loaded_precise, stored_precise} = written_back_with_stored(:naive_usec_field, precise)
 
       assert loaded_precise == precise
       assert loaded_precise.microsecond == precise.microsecond
-      assert stored_precise == NaiveDateTime.to_iso8601(precise)
+      assert stored_precise == sqlite_form(NaiveDateTime.to_iso8601(precise))
     end
   end
 
@@ -361,13 +361,13 @@ defmodule XqliteEcto3.TypesLawTest do
 
       assert loaded_whole == whole
       assert loaded_whole.time_zone == "Etc/UTC"
-      assert stored_whole == DateTime.to_iso8601(whole)
+      assert stored_whole == sqlite_form(DateTime.to_iso8601(whole))
 
       {loaded_precise, stored_precise} = written_back_with_stored(:utc_usec_field, precise)
 
       assert loaded_precise == precise
       assert loaded_precise.microsecond == precise.microsecond
-      assert stored_precise == DateTime.to_iso8601(precise)
+      assert stored_precise == sqlite_form(DateTime.to_iso8601(precise))
     end
   end
 
@@ -854,6 +854,13 @@ defmodule XqliteEcto3.TypesLawTest do
 
   defp zone_abbr(0), do: "UTC"
   defp zone_abbr(offset), do: offset_designator(offset)
+
+  # The adapter stores SQLite's own datetime form: space separator, no
+  # trailing Z. TimestampTZ deliberately keeps the offset-carrying ISO
+  # form (its own pin above).
+  defp sqlite_form(iso8601) do
+    iso8601 |> String.replace("T", " ") |> String.replace_suffix("Z", "")
+  end
 
   defp offset_designator(0), do: "Z"
 

@@ -19,17 +19,17 @@ defmodule XqliteEcto3.QueryEncodingTest do
   describe "encode date/time types" do
     test "NaiveDateTime encodes to ISO 8601" do
       ndt = ~N[2024-06-15 14:30:45]
-      assert encode([ndt]) == ["2024-06-15T14:30:45"]
+      assert encode([ndt]) == ["2024-06-15 14:30:45"]
     end
 
     test "NaiveDateTime with microseconds preserves them" do
       ndt = ~N[2024-06-15 14:30:45.123456]
-      assert encode([ndt]) == ["2024-06-15T14:30:45.123456"]
+      assert encode([ndt]) == ["2024-06-15 14:30:45.123456"]
     end
 
     test "DateTime encodes to ISO 8601 with timezone" do
       dt = ~U[2024-06-15 14:30:45Z]
-      assert encode([dt]) == ["2024-06-15T14:30:45Z"]
+      assert encode([dt]) == ["2024-06-15 14:30:45"]
     end
 
     test "Date encodes to ISO 8601" do

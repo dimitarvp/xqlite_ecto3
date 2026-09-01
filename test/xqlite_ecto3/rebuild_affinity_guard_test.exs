@@ -114,6 +114,16 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       assert dump("ag_jsonb", ["payload"]) == rows_before
     end
 
+    test "plain text and exact-converting values pass; the copy is the oracle" do
+      GuardRepo.query!("CREATE TABLE ag_oracle (id INTEGER PRIMARY KEY, v TEXT)")
+      GuardRepo.query!("INSERT INTO ag_oracle (v) VALUES ('abc'), (''), ('42'), ('1.5')")
+
+      assert :ok = alter!("ag_oracle", [{:modify, :v, :decimal, []}])
+
+      assert dump("ag_oracle", ["v"]) ==
+               [["text", "abc"], ["text", ""], ["integer", 42], ["real", 1.5]]
+    end
+
     test "an affinity-preserving modify stays a no-op for stored values" do
       GuardRepo.query!("CREATE TABLE ag_money (id INTEGER PRIMARY KEY, fee MONEY)")
       GuardRepo.query!("INSERT INTO ag_money (fee) VALUES (7), (3.5)")

@@ -19,9 +19,19 @@ defmodule XqliteEcto3.Query do
 
     defp encode_param(true, _index), do: 1
     defp encode_param(false, _index), do: 0
-    defp encode_param(%NaiveDateTime{} = dt, _index), do: NaiveDateTime.to_iso8601(dt)
-    defp encode_param(%DateTime{} = dt, _index), do: DateTime.to_iso8601(dt)
+    # SQLite's own datetime form — "YYYY-MM-DD HH:MM:SS[.ffffff]", no T,
+    # no Z. The T/Z form byte-sorts against SQLite-written values (a
+    # CURRENT_TIMESTAMP default, datetime()) at the separator, and the
+    # trailing Z makes a sub-second value sort BEFORE its own whole
+    # second. UTC datetimes arrive normalized from Ecto, so dropping the
+    # designator loses nothing.
+    defp encode_param(%NaiveDateTime{} = dt, _index), do: sqlite_datetime(dt)
+
+    defp encode_param(%DateTime{} = dt, _index),
+      do: dt |> DateTime.to_naive() |> sqlite_datetime()
+
     defp encode_param(%Date{} = d, _index), do: Date.to_iso8601(d)
+
     defp encode_param(%Time{} = t, _index), do: Time.to_iso8601(t)
 
     # A decimal binds as a NUMBER, never as text: SQLite compares by storage
@@ -39,8 +49,13 @@ defmodule XqliteEcto3.Query do
     end
 
     defp encode_param(value, index) when is_map(value), do: encode_json(value, index)
+
     defp encode_param(value, index) when is_list(value), do: encode_json(value, index)
     defp encode_param(value, _index), do: value
+
+    defp sqlite_datetime(%NaiveDateTime{} = dt) do
+      dt |> NaiveDateTime.to_iso8601() |> String.replace("T", " ")
+    end
 
     # Ecto does not validate what a custom type's dump/1 returns, so a
     # struct can reach this boundary untouched (a :duration field's
