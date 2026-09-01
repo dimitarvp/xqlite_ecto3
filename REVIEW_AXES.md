@@ -357,6 +357,43 @@ one; refusal-message sweep vs the doc's feature claims; bare-
 `Repo.query` checks for every grammar-blaming rationale; the
 upstream-bump watch (unmoved since pre-Run-24).
 
+COVERING RE-RUN (Run 47, 2026-09-01 — lap 6, batch 7): census
+440/26 exit 0, ZERO delta across Runs 39-46; RED twin exactly 25
+failures, survivor = interval.exs:194 (F-B2-8 unchanged, the only
+over-broad exclusion); bijection + snap 9/9; upstream watch
+negative. EIGHT findings, one S2 + seven S3, ALL documentation-class
+— F-B2-28 (S2, FIXED): the hex-shipped README's exclusion taxonomy
+missed the deliberate-decision bucket AND two whole-file skips
+(lock.exs/query_many.exs had no doc rows); three-bucket rewrite +
+a "Whole-file skips" section + THE MECHANICAL PIN
+(exclusion_artifacts_test: bijection both directions, snap rule,
+whole-file rows — the p05 instrument promoted into the suite).
+F-B2-29: the lock.exs rationale described advisory locks; the file
+tests SELECT…FOR UPDATE — rewritten + the all/1 lock: refusal
+pinned. F-B2-30: "query_many is not supported by SQLite" blamed the
+engine for an adapter choice (third frame-attribution instance) —
+message + rationale own it now. F-B2-31: the :lock_for_migrations
+row blamed SQLite where the helper owns the deliberate no-op —
+mirrored + pointer added. F-B2-32: the :duration_type HELPER lagged
+its own doc row a full lap (the leak's direction REVERSED —
+doc-correct/helper-stale); fact (a) carried over + the
+durations-migration probe pinned. F-B2-33: test_helper's WAL
+comment still told the story Run 46 refuted — re-truthed
+(belt-and-braces over the driver retry). F-B2-34: sibling
+rationales three lines apart contradicted each other on square
+brackets — the :38 half dies by the SAME bracket-alias accident
+one token later, rewritten. F-B2-35: the :modify_column notes
+over-claimed post-affinity-guard — refusal clause added; the
+settled fact: no vendored test crosses the guard because
+integer→numeric converts EXACTLY (add p04 leg A to the standing
+instruments — a guard change flips alter.exs:44's mechanism
+silently). Cross-court seed [F-B2-36-seed → B6]: Connection.lock/2's
+unreachable second refusal. Flake pair tally stands at THREE.
+DRYNESS: findings — **B2 stays 0 of 2, NOT DRY**. Re-wets ADD: the
+all_test skip comments + README taxonomy sentence (newly in scope),
+the WAL block, the :modify_column row vs the affinity guard;
+exclusion_artifacts_test is the standing instrument.
+
 ### B3. Sandbox + pooling under a single writer
 The week-one adopter surface. Probes: `:memory:` pooling trap (do we
 guard pool_size > 1 like ecto_sqlite3 raises? UNKNOWN — probe);

@@ -685,6 +685,15 @@ after the S0–S2 burn-down.
   item 3 — user-deferred FKs, raw "COMMIT" via Repo.query replaying
   the string "COMMIT"); probe before designing. (Run 44, B5)
 
+- [F-B2-36-seed] (S3 seed, B6 court, from Run 47) `Connection.lock/2`
+  raises `Ecto.QueryError` "SQLite does not support locks" — a second,
+  differently-worded refusal for the thing `all/1`'s up-front
+  `lock != nil` ArgumentError already refuses, and the `all/1` guard
+  makes it unreachable through `Repo.all`. Whether `update_all`/
+  `delete_all` can reach `lock/2` was not probed (out of B2's scope) —
+  B6's next pass owns the reachability question and the
+  two-refusals-one-thing cleanup. (Run 47, B2 → B6)
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

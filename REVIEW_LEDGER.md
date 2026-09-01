@@ -6467,3 +6467,146 @@ deleted); 88/88 green.
   connection kill via DBConnection's own registry; with_xqlite
   under :shared mode at pool > 1.
 
+
+## Run 47 — 2026-09-01 — lap 6, batch 7: B2 solo (exclusion-list audit re-covered)
+
+Single Opus reviewer at `8be11ac`; deps mix.lock-verified; UPSTREAM
+WATCH NEGATIVE (mix.lock's last touch = the 2026-08-20 xqlite line;
+the ecto pair unmoved since before Run 24); SQLite 3.53.2. Gate: all
+SIX probes re-driven by the orchestrator (p00 census 440/26 rc 0;
+p01 RED twin 441/466 exactly 25 failures; p02-p05 rc 0, decisive
+lines matching); fixes BY THE ORCHESTRATOR; stash-RED: the doc-class
+precedent (Run 38) applies to the prose, recorded honestly — the ONE
+fix-coupled pin predicted and observed exactly 1 red (the
+whole-file-rows check against the stashed tags doc); the message fix
+is prose-only, not assertable. Post-fix 5/5.
+
+- **Census: 440/26 exit 0, ZERO delta across Runs 39-46's 28
+  commits**; bijection exact both ways (11 tags → 17 tests + 9
+  location tuples = 26); snap check 9/9; the RED twin's one
+  non-failing name is still interval.exs:194 (= F-B2-8, the only
+  over-broad exclusion, disclosure intact after c854993's
+  internal-reference scrub).
+- **F-B2-28 (S2, CONFIRMED, docs-FIXED).** The hex-shipped
+  README:30 claimed every exclusion is "a permanent SQLite
+  limitation or a tracked adapter gap" — missing the third and
+  largest-in-spirit bucket (deliberate adapter/suite decisions:
+  transaction.exs:161, alter.exs:44, logging.exs:74,
+  :lock_for_migrations) AND under-reporting by two whole files
+  (lock.exs, query_many.exs — skipped in all_test.exs with
+  comment-only rationales, no doc rows). FIXED: README rewritten to
+  the three buckets + pointer; the tags doc gains a "Whole-file
+  skips" section with both rows; grade held S2 (broken documented
+  promise on the public surface, the F-B2-21/22 precedent). PIN
+  (the mechanical half): exclusion_artifacts_test.exs — parses the
+  helper's excludes, the doc's tables, and all_test's skip
+  comments; asserts the bijection both directions, the test-line
+  snap rule, and the whole-file rows, on every suite run (p05
+  promoted).
+- **F-B2-29 (S3, CONFIRMED, docs-FIXED).** The lock.exs skip
+  rationale described ADVISORY locks; the file tests row-level
+  SELECT…FOR UPDATE (live: :lock_for_update unset would raise
+  first; a lock: query hits all/1's ArgumentError refusal; the
+  FOR UPDATE syntax is SQLite-rejected; the lock_counters table
+  IS built). Comment rewritten to the real feature + both
+  refusals. PIN: a lock:-set query refuses up front
+  (exclusion_artifacts_test).
+- **F-B2-30 (S3, CONFIRMED, message+docs-FIXED).** "query_many is
+  not supported by SQLite" blamed the engine for an adapter
+  decision (one prepare call hands back the statement tail —
+  looping it is exactly how sqlite3_exec works; our own
+  :multiple_statements classification fires before SQLite ever
+  sees the string). Message now says "not supported by this
+  adapter" + the why; the skip rationale drops "Permanent API
+  gap" and owns the choice. The F-B2-26 frame-attribution class,
+  third instance.
+- **F-B2-31 (S3, CONFIRMED, docs-FIXED).** The :lock_for_migrations
+  doc row blamed "no advisory lock mechanism" where the helper
+  correctly owns the deliberate no-op passthrough (live: the
+  un-excluded test fails on "Expected Ecto.MigrationError but
+  nothing was raised" — OUR decline, not SQLite). Row mirrors the
+  helper + gains the migrator.exs:198 pointer (the one row that
+  lacked one).
+- **F-B2-32 (S3, CONFIRMED, docs-FIXED).** The :duration_type
+  HELPER paragraph was a lap behind its own doc row (Run 38 fixed
+  the row; the helper never got fact (a): the durations table
+  builds WITHOUT complaint — live re-proven, default stored as
+  literal '10 MONTH', the %Duration{} insert dies at OUR encoder).
+  Third consecutive lap for the helper↔doc leak, and the direction
+  REVERSED (doc-correct/helper-stale this time). Paragraph carries
+  fact (a) now. PIN: the durations-migration probe promoted into
+  exclusion_artifacts_test (the only instrument that can catch this
+  pair drifting — the suite can never run these tests).
+- **F-B2-33 (S3, CONFIRMED, docs-FIXED).** test_helper's WAL
+  comment still told the migration-holds-the-lock story Run 46
+  refuted and deleted from the README — doubly wrong here (the
+  helper's migrations run AFTER the pools start). Re-truthed to
+  the pool-members-racing account + belt-and-braces-over-the-retry
+  status.
+- **F-B2-34 (S3, CONFIRMED, docs-FIXED).** Two sibling rationales
+  three lines apart contradicted each other about square brackets:
+  the sql.exs:38 half claimed "a genuine grammar rejection" while
+  the :30 half (F-B2-22's fix) explains the bracket-alias
+  accident — and the :38 statement dies by the SAME accident, one
+  token later (live: `SELECT array[1,2,3]` → "no such column:
+  array"; the upstream form dies at the `=` because an alias
+  cannot be an operand). Half rewritten.
+- **F-B2-35 (S3, CONFIRMED, docs-FIXED).** The :modify_column row's
+  notes over-claimed after Run 45's affinity guard (live: the
+  textbook widen-to-decimal on a populated column now refuses,
+  value intact; the vendored :modify_column tests pass because
+  integer→numeric converts EXACTLY — the reason no vendored test
+  crosses the guard, settled). Row gains the refusal clause +
+  README pointer.
+- **Cross-court seed FILED [F-B2-36-seed → B6]:**
+  Connection.lock/2's second differently-worded refusal, made
+  unreachable from Repo.all by the all/1 guard; update_all/
+  delete_all reachability unprobed — B6's next pass owns it.
+- **Filed sweep:** F-B2-8 reconfirmed the only over-broad
+  exclusion (disclosure intact); F-B2-26-menu message correction
+  verbatim at HEAD, still excluded-only upstream; F-B2-7-code
+  stays superseded (the three reference-refusal pointers live
+  through refuse_reference_changes!); the slow-macOS flake pair
+  tally STANDS AT THREE — both tests passed every run this pass,
+  disposition unchanged; F-B8-13 out of scope, class tally 1.
+- **Clean census (controls named):** every n/m count exact (incl.
+  the :values_list describetag subtlety); every grammar-blaming
+  rationale re-driven through bare Repo.query (ON DELETE column
+  lists, ADD PRIMARY KEY, schema-qualified names, isolation
+  levels — with the read_uncommitted nuance the doc's "SQL-standard"
+  wording already survives, %f milliseconds, NUMERIC coercion,
+  JSON-as-text) — one failed and was filed (F-B2-34); the eight
+  supported grammar rows accepted; :like_match_blob re-anchored
+  over 54 compile options; every excluded test's live failure
+  mechanism matched to its rationale (logging.exs:74's
+  handler-fires claim re-proven via the detach error — right
+  sentence, downstream symptom); the migration-conditional pair's
+  adapter-owned probes green (bitstring: refusal + rollback +
+  structured param error; duration: see F-B2-32); the
+  create_prefix/drop_prefix never-executed comment true (both
+  call sites excluded); alter.exs:60's savepoint-mode site
+  re-proven doubly inert (inside an enclosing transaction + the
+  test dies nine lines earlier); R42's rich:true masking
+  disclosure still truthful; R43's keyword refusal consistent
+  with F-B6-9's closure. Observed-not-proven: the ~12 structural
+  "supported" mechanism sentences, dispositioned as Run 38 did.
+- Dryness: one S2 + seven S3, all documentation-class — **B2 stays
+  0 of 2, NOT DRY**; TWENTY-SEVEN straight finding runs. Re-wets
+  ADD: the all_test.exs skip comments + the README taxonomy
+  sentence (newly in scope), test_helper's WAL block, the
+  :modify_column row vs any affinity-guard change; the new
+  exclusion_artifacts_test is the standing instrument.
+  Completeness critic (next B2 pass): read the helper+doc
+  PARAGRAPH PAIRS side by side for all 20 exclusions (the leak
+  runs both directions now — three laps, three findings);
+  enumerate ALL prose surfaces first (all_test comments, helper
+  non-exclusion comments, README suite/gaps sections,
+  test_repo.ex stubs) then audit each; run the frame-attribution
+  rule mechanically (grep "SQLite does not/has no/cannot", pair
+  each with the live refusal's stack, check who it names); audit
+  lib/'s refusal messages as claims (blame the right entity —
+  three findings in that class now); re-check alter.exs:44 on any
+  affinity-guard change (its exclusion survives only because
+  integer→numeric converts exactly); the upstream-bump watch
+  stands.
+
