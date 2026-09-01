@@ -6625,3 +6625,127 @@ recorded this push GREEN before the verdict was read — corrected
 in place; lesson: read the verdict file BEFORE writing the log
 line.
 
+
+## Run 48 — 2026-09-01 — lap 6, batch 8: B4 solo (type round-trips over the Runs-40-47 churn)
+
+Single Opus reviewer at `24c1c96` (HEAD moved mid-run to `f3f9b05` —
+md+test-only, zero lib churn, no re-review owed); deps
+mix.lock-verified; SQLite 3.53.2. Gate: ALL TEN probes re-driven at
+manifest rc (p05's rc 1 intended — its two crashes ARE the S2);
+fixes BY THE ORCHESTRATOR; the five finding probes re-run post-fix —
+loads/order/refusals flip correctly, and the two probe legs that
+stayed red were shown to be the probes' own HAND-BUILT legacy-form
+literals (the documented one-time-normalize case), settled by an
+orchestrator DECISIVE probe (p10_orch_decisive: fresh insert +
+insert_all store the space form; a bound-param range returns exactly
+the right row). Stash-RED PREDICTED 8 — first run 6: TWO pins had
+lost their teeth to my own redesigns (a far-past base pushed the
+T/Z skew off the deciding byte; routing all rows through the usec
+field erased the mixed precision) — rebuilt deterministically
+(fixed SQLite-literal instant; two schemas at different precisions
+over one column), second run exactly 8 by identity; the behavior
+sweep then caught query_encoding_test's three encode-form pins
+(flipped) before verify could. 46/46 + 86/86 green post-fix.
+
+- **F-B4-15 (S1, CONFIRMED, FIXED, RED→green).** A `:utc_datetime`
+  row written by SQLite ITSELF — a CURRENT_TIMESTAMP default,
+  datetime() — was unreadable (DateTime.from_iso8601 →
+  :missing_offset → Ecto's raise; ONE such row killed every read of
+  the table) and mis-ordered against adapter rows (space 0x20 vs T
+  0x54 at index 10: 748/2000 same-day pairs wrong, single-form
+  controls 0). TWO fixes: (a) the loader retries an offset-less
+  text as naive + Etc/UTC (`:utc_datetime` columns ARE UTC); (b)
+  the STORED FORM is now SQLite's own — space separator, no
+  designator — for :utc_datetime/:naive_datetime + _usec twins
+  (naive changed too: same separator byte-order argument).
+  TimestampTZ DELIBERATELY unchanged (offset storage is its
+  documented purpose — scope decision on record). Pre-1.0
+  stored-format break: CHANGELOG Changed + README normalize
+  snippet + STE + honesty-ledger item 17. Pins: stored form,
+  SQLite-written loads (datetime/date/time), deterministic
+  mixed-writer order+range (fixed-literal db row), types_law ×4
+  re-pinned via sqlite_form/1, query_encoding ×3 flipped.
+- **F-B4-16 (S2, CONFIRMED, FIXED, RED→green).** The trailing Z
+  made a sub-second value sort BEFORE its own whole second ('.'
+  0x2E < 'Z' 0x5A): 1009/2000 within-a-second mixed-precision pairs
+  wrong, naive-text control 0/2000. Fix (b) covers it (no
+  designator ⇒ shorter is a prefix ⇒ length decides, correctly).
+  Pin: two schemas at different precisions over one column,
+  stored-text asserted, order [1,2,3].
+- **F-B4-17 (S2, CONFIRMED, FIXED, RED→green).** Decimal.parse/1
+  clean-parses NaN/±Infinity (8 spellings), so the Run-39 gate
+  passed them to Ecto's :decimal which raises an exception naming
+  NO field/row/value — one such row killed Repo.all. Run 39's
+  ledger claim that inf/NaN "already took the typed-load-failure
+  path" is CORRECTED BY THIS ENTRY — false at that HEAD and this
+  one. FIX: finite_or_error/1 on both the parse and %Decimal{}
+  passthrough clauses. Reachable without an external writer (a
+  :string sibling schema writes the text; NUMERIC affinity keeps
+  it TEXT). Write side already refused (Ecto dump, 3/3). Pins: 8
+  spellings → typed load failure naming the field (assert_raise on
+  Ecto's "for field" phrasing — a deliberate, recorded exception
+  to the no-text rule: the distinguisher IS the message source,
+  and the exception is Ecto's, not ours to structure); finite
+  control green.
+- **F-B4-18 (S3, CONFIRMED, FIXED — B7-court fix landed at this
+  gate).** The R45 affinity pre-flight's CAST predicate over-refused
+  (CAST converts junk to 0; the copy's affinity coercion carries
+  non-literal text byte-exact): 'abc'/'' blocked a byte-exact
+  modify. No false accept found. FIX: the copy itself is the oracle
+  — pour the column through a NUMERIC scratch TEMP table (rowid-
+  paired) and count values whose RENDERED TEXT the pour changed
+  (the IS NOT first draft counted exact-converting class changes
+  and would have broken R45's green-control rule — corrected to
+  rendered-text compare, preserving the asymmetric R45 adjudication
+  exactly). WITHOUT ROWID tables keep the conservative CAST
+  predicate (no rowid to pair; over-refusal-at-worst, commented).
+  Pin: 'abc'/''/'42'/'1.5' pass with exact post-copy classes; the
+  R45 '007'/big-decimal refusals still hold (existing pins).
+- **Filed sweep:** [F-B4-10-menu] HOLDS at five doors with no sixth
+  (14 witnesses each; the same two 16-digit floats drift at every
+  door; NUMERIC control drifts on none; characterization refined:
+  the drift is SQLite RENDERING the bound float back with MORE
+  digits — ≤15 significant digits do not drift). Menu not
+  re-adjudicated.
+- **Clean census (controls named):** the CAST-AS-NUMERIC
+  neighborhood CLEAN — 12 TEXT + 5 BLOB witnesses under both casts,
+  NUMERIC exactly-or-better everywhere, the sole divergence IS the
+  R43 fix's witness; mixed-storage sum correct; tagged equality
+  past 2^53 finds the row while the float twin doesn't.
+  sqlite_affinity/1 agrees with live SQLite 35/35 spellings (12
+  two-marker cases across all three precedence rules; Ecto.Migrator
+  oracle with typeof read-back). The R43 aliases do their job
+  (nested JSON exact, inet keeps leading zeros, bytea BLOB; :money
+  control coerces). A rebuild over four exotic-spelling columns
+  preserves values, classes, AND type texts. The foreign-writer
+  matrix: 55 hostile values over 13 types → 40 typed refusals + 14
+  correct loads + the 2 that were F-B4-17; :boolean breadth fully
+  covered (2/-1/int64max/3.14/'true'/blobs all refuse typed).
+  expr(%Decimal{}) is DEAD CODE on a 20-route matrix
+  (DecimalPrecisionError.index oracle: every route parameterizes).
+  DateTime identity holds on 12 boundary instants × 7 types.
+  Observed-not-proven: ecto_sqlite3's stored form (offline —
+  CRITIC ITEM 1 for the next pass: if it stores the space form,
+  F-B4-15 widens to every migrated database and the migration
+  guide needs a hard note); p03's RED-3 true-answer was
+  probe-internal arithmetic (superseded by the decisive probe's
+  independent check).
+- Dryness: an S1 + two S2 + an S3 — **B4 stays 0 of 2, NOT DRY**;
+  TWENTY-EIGHT straight finding runs. Re-wets ADD:
+  encode_param's datetime clauses + sqlite_datetime/1,
+  utc_datetime_decode/1 + utc_from_naive/1, finite_or_error/1,
+  copy_rewritten_count!/5 + the scratch-table oracle, the
+  stored-form pins family (types_law sqlite_form, query_encoding,
+  stored_value_interop). Completeness critic (next B4 pass):
+  ecto_sqlite3's stored form (item 1 above); re-sweep the datetime
+  surface post-form-change (Instant type, comparisons of bound
+  params vs legacy stored strings, the fragment("datetime(?)")
+  composition family); :date/:time population sweeps vs SQLite's
+  writers (spot-checked only); Decimal.parse's accepted surface
+  beyond inf/NaN (underscores, unicode digits, absurd exponents);
+  sum() overflowing to infinity end-to-end; the scratch-oracle's
+  own neighborhood (huge tables' pre-flight cost, the TEMP-table
+  name under concurrent modifies on one connection, rendered-text
+  compare vs trailing-zero decimals); DECIMAL(p,s) option splice
+  round-trips.
+

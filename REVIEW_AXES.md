@@ -787,6 +787,38 @@ two-competing-markers spelling sweep; `references(type: :float8)`;
 the rebuild re-rendering exotic spellings; the full
 `expr(%Decimal{})` matrix; an external foreign writer.
 
+COVERING RE-RUN (Run 48, 2026-09-01 — lap 6, batch 8): FOUR
+findings — F-B4-15 (S1, FIXED): SQLite-written :utc_datetime rows
+(CURRENT_TIMESTAMP/datetime()) were UNREADABLE (missing_offset →
+one row killed every read) and mis-ordered vs adapter rows (space
+vs T at index 10; 748/2000 same-day pairs wrong); loader retries
+offset-less text as UTC AND the stored form is now SQLite's own
+(space, no designator; naive too; TimestampTZ deliberately keeps
+its offset form) — a pre-1.0 stored-format break with a README
+normalize snippet + honesty-ledger item 17. F-B4-16 (S2, FIXED):
+the trailing Z sorted a sub-second value before its own whole
+second (1009/2000 mixed-precision pairs) — the form change covers
+it. F-B4-17 (S2, FIXED): Decimal.parse clean-parses NaN/±Inf and
+Ecto's :decimal raises a nameless exception — finite_or_error/1 on
+both loader clauses; Run 39's already-typed claim corrected on
+record. F-B4-18 (S3, FIXED, B7-court): the affinity pre-flight's
+CAST predicate over-refused plain text — the copy is the oracle now
+(NUMERIC scratch table, rendered-text compare, preserving R45's
+asymmetric rule; WITHOUT ROWID keeps the conservative predicate).
+Gate honesty: two of my pin redesigns had lost their teeth
+(far-past base; single-precision route) — rebuilt deterministic,
+stash-RED 8/8 second run; the behavior sweep caught
+query_encoding's three encode pins. CLEAN: CAST-AS-NUMERIC
+neighborhood (17 witnesses, both casts side-by-side);
+sqlite_affinity 35/35 vs live SQLite; aliases + exotic-spelling
+rebuilds; the 55-value foreign-writer matrix (40 refusals/14
+loads); expr(%Decimal{}) dead on 20 routes; 12 boundary instants ×
+7 types. [F-B4-10-menu] holds at five doors (drift = SQLite
+re-rendering ≥16-digit floats). DRYNESS: findings — **B4 stays
+0 of 2, NOT DRY**. Re-wets ADD: the datetime encode/decode family
++ sqlite_datetime, finite_or_error, copy_rewritten_count! + its
+scratch oracle, the stored-form pin family.
+
 ### B5. Constraint mapping
 Names match what `unique_constraint/3` etc. expect; **PRAGMA
 foreign_keys is per-connection and OFF by default — prove enforced
