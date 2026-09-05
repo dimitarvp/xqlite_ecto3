@@ -196,6 +196,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The table rebuild's affinity check no longer goes blind on a table
+  with a column named `rowid`.** The check poured the column into a
+  scratch table and compared the two side by side through SQLite's row
+  id — which a user column of that name shadows, so on such a table the
+  comparison matched nothing, the check counted zero, and the rebuild
+  rewrote stored values without a word (`'007'` became the integer
+  `7`). The comparison now happens inside the scratch table alone, with
+  no row id involved. Column names spelled `ROWID` or any other casing
+  are covered too.
+
+- **The same check runs on one pinned connection and always drops its
+  scratch table.** That table is a temporary one, which in SQLite
+  belongs to the connection that created it. The four statements around
+  it took whatever connection the pool handed each of them, so with a
+  pool larger than one and no wrapping transaction — a migration marked
+  `@disable_ddl_transaction` — they could land on different
+  connections: the rebuild failed with "no such table" and left the
+  scratch table behind on whichever connection had made it.
+
 - **Rich FK diagnostics no longer report "no violations" for a
   violation they cannot tell apart from a pre-existing one.** The
   replay subtracts the violations that existed before the statement,
