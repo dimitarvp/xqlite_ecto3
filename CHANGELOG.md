@@ -196,6 +196,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`structure_dump/2` answers with a tuple when it cannot dump.**
+  `mix ecto.dump` shells out to the `sqlite3` command-line program;
+  with that program missing the callback raised a bare
+  `ErlangError :enoent` out of `System.cmd/3`, so the task died with
+  a stack trace that never named `sqlite3` instead of the "couldn't
+  be dumped" message it prints for `{:error, term}`. The executable
+  is now looked up first (`{:error, {:missing_executable, "sqlite3"}}`),
+  and a dump path that cannot be created or written is
+  `{:error, {:cannot_write_dump, path, posix_reason}}` rather than a
+  `File.Error`. The README now states the `sqlite3` requirement.
+
 - **A negative `:timeout` no longer runs the query unbounded.** A
   non-positive timeout is clamped to zero, so it cancels at once
   like `timeout: 0`. Before, a negative value crashed the canceller
