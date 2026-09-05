@@ -1141,6 +1141,56 @@ B1); unique field split is designed contract. DRYNESS: findings —
 the nil-totality contract, `collect_violations/2` baseline diff +
 `cap_rows/2`, `budgeted_match/4`'s empty-info clause, the guide's
 three-differences paragraph.
+COVERING RE-RUN (Run 53, 2026-09-05 — lap 7, solo; churn
+`d7fbf80..8a3ec75`: `unique_index_names.ex` byte-identical,
+`fk_diagnostics.ex` logic-free (+ one telemetry key), the one on-axis
+clause = the `:constraint_rowid` mapping; budget spent on Run 44's
+seven seeds under BOTH `rich_fk_diagnostics` configs): **F-B5-33
+(S2, FIXED, RED→green)** — the Run-44 baseline diff identifies a
+`foreign_key_check` row by `[child, rowid, parent, fk_id]`, so a
+WITHOUT ROWID child (every violation `rowid: nil`) with one
+pre-existing orphan masked ALL later violations of that table, and
+`INSERT OR REPLACE` at an orphan's rowid reproduced the orphan's row
+— both came back `fk_diagnostics: :ok` + `[]`, `to_constraints/2`
+emitted `[]`, a declared `foreign_key_constraint/3` raised (p02;
+single-variable controls with an empty baseline / another rowid).
+Fixed as the honest degrade: an empty diff over a non-empty check →
+`{:unavailable, :masked_by_baseline}` (a genuinely empty post-replay
+check stays `:ok`); the group-count diff filed as the fuller remedy.
+**F-B5-34 (S2, FIXED, RED→green)** — a raw `COMMIT` through
+`Repo.query` reaches `handle_execute/4`, so its deferred violation
+was REPLAYED as a statement (no names, `{:unavailable, …}`) and
+`cleanup/1` reset `defer_foreign_keys` inside the caller's still-open
+transaction (p04: `[[1]] → [[0]]` under rich diagnostics only; the
+managed path diagnoses the same violation in place, p03). Fixed:
+`wrap_execute_error/4` routes COMMIT/END/RELEASE to
+`wrap_at_commit/2`. CLEAN with controls: the rowid clause's inputs
+under the 0.11.0 dep (`named_or_empty/2` nil-total, p05);
+`insert_all` + `on_conflict` on partial/expression indexes = engine
+parity (the `{:unsafe_fragment, …}` form succeeds; raw SQL identical;
+docs candidate noted, p01); the commit path's cap + resolution (p03);
+a dangling FK definition elsewhere does not break the scan (p08);
+`Ecto.Multi` under ON CONFLICT ROLLBACK returns the changeset with
+the name, disconnects at the point of damage, repo usable (p06/p09 —
+sharpens [F-B5-17]: only the bare-function transaction body loses
+the names); the moduledoc's cost claim honest (p07). Re-wet
+observations: [F-B5-15] unchanged (the streamed error now carries
+`statement`); [F-B5-27-commit] reproduces (contamination at commit;
+`statement: nil` on the commit path — X1's court). Seed 6 delivered:
+the outer status sets are typespec-pinned, the six adapter-produced
+`{:unavailable, reason}` literals are not — a closed-set pin is now
+cheap. DRYNESS: two S2 — **B5 stays 0 of 2, NOT DRY**; re-wets ALSO
+on: `unmasked/2` + `cap_rows/2`, `diagnose_fk/4` + the
+transaction-control routing in `wrap_execute_error/4`. Next-pass
+seeds: the F-B5-33 fix's own consequences (the documented re-break
+case now degrades — any consumer of `:ok`?); the unique-index lookup
+has had no adversarial pass in two laps (connection death between
+the two pragma reads; DDL racing the candidate count on the budget
+path; WITHOUT ROWID × partial × expression crosses); WITHOUT ROWID
+as a first-class generator across every rowid assumption
+(`index_list`, `last_insert_rowid`, `child_rowid`); raw `RELEASE` /
+`ROLLBACK TO` / `END` × every enrichment path; the closed-set status
+pin; the commit path's `statement` stamping (X1/B5 ownership).
 
 ### B6. Query translation
 LIKE's ASCII-only case-insensitivity; NOCASE collation limits; NULL

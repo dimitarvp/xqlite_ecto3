@@ -916,6 +916,59 @@ after the S0–S2 burn-down.
   one-shot path. The adapter's pins on the 0.11.0 shapes are
   unaffected until the dep bump; re-pin both when it happens.
 
+- [F-B5-33] (S2, FIXED, from Run 53) Run 44's baseline diff masked
+  any violation whose `foreign_key_check` row equals a pre-existing
+  one: a WITHOUT ROWID child reports every violation with a `nil`
+  rowid (one orphan there masked all later violations of that table),
+  and `INSERT OR REPLACE` at an orphan's rowid reproduces the orphan's
+  row. The diagnosis came back `:ok` + `[]`, so `to_constraints/2`
+  emitted `[]` and a declared `foreign_key_constraint/3` raised. FIX:
+  an empty diff over a non-empty check reports `{:unavailable,
+  :masked_by_baseline}` (`unmasked/2`); a genuinely empty post-replay
+  check stays `:ok`. Pinned (fk_diagnostics_test: WITHOUT ROWID mask,
+  reused rowid). Moduledoc step 4 rewritten.
+- [F-B5-33-followup] (S3, B5 court) The fuller remedy: diff the two
+  `foreign_key_check` scans by `{child_table, fk_id}` group COUNTS
+  (post − baseline = the statement's own), which recovers the WITHOUT
+  ROWID case exactly; rowid reuse still needs the degrade underneath.
+  Probe the documented re-break case after landing either.
+- [F-B5-34] (S2, FIXED, from Run 53) A `COMMIT` issued through
+  `Repo.query` reaches `handle_execute/4`, so a deferred violation
+  surfacing there was replayed as a statement by `wrap_with_replay/4`
+  (no names, `{:unavailable, …}`) and `cleanup/1` then reset
+  `defer_foreign_keys` on the caller's still-open transaction (SQLite
+  keeps it open after a failed commit) — every later statement in it
+  enforced immediately, under the diagnostics flag only. FIX:
+  `wrap_execute_error/4` routes COMMIT/END/RELEASE to
+  `wrap_at_commit/2` (rows still present, no replay, no pragma).
+  Pinned (fk_diagnostics_test: raw BEGIN → defer → violation → COMMIT
+  → `:ok` + the child's violation + the pragma still 1).
+- [F-B5-17 addendum, Run 53] Sharpened: the recovered names DO reach
+  a changeset through `Ecto.Multi` (`{:error, step, changeset, _}`
+  with `constraint: :unique`) and outside a transaction; only the
+  bare-function `Repo.transaction(fn -> Repo.insert(cs) end)` body
+  loses them to `{:error, :rollback}` (p09).
+- [F-B5-27-commit addendum, Run 53] Reproduces exactly (an unrelated
+  pre-existing orphan appears in a committing transaction's
+  violations, p03 leg B). NEW cross-court: the commit path leaves
+  `statement: nil` on the error (`wrap_commit_error/2` never calls
+  `put_statement/2`) — X1's stamping work, not re-filed here.
+- [F-B5-7 addendum, Run 53] The closed-set pin is now cheap: outer
+  sets `unique_index_lookup :: :not_run | :ok | {:unavailable, term}`
+  and `fk_diagnostics :: :not_run | :ok | {:truncated, n} |
+  {:unavailable, term}` are typespec-pinned; the adapter-produced
+  reasons are `{:too_many_unique_indexes, n}`,
+  `{:lookup_budget_exceeded, ms}`, `{:index_vanished, name}`,
+  `{:unexpected_check_row, row}`, `:masked_by_baseline`, plus raw NIF
+  terms passed through. One pattern test per field + narrowed
+  typespecs; no new code.
+- [B6-docs-seed] (S3 docs, from Run 53) `insert_all` + `on_conflict`
+  against a partial or expression unique index fails with SQLite's
+  "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+  constraint" (engine parity — `conflict_target` renders columns
+  alone); Ecto's `conflict_target: {:unsafe_fragment, "(a) WHERE b IS
+  NULL"}` works and nothing in the README or migration guide says so.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

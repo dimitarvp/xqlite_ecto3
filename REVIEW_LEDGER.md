@@ -7408,3 +7408,123 @@ events flowing.
   dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
 
 ---
+
+## Run 53 — 2026-09-05 — lap 7, batch 4: B5 solo (constraint mapping over the Runs 45-52 churn)
+
+- Commit at scan: `8a3ec75` (HEAD, clean, verify + CI green). Scope: B5 solo.
+  Step-0 over `d7fbf80..8a3ec75` (34 commits): `unique_index_names.ex` byte-
+  identical; `fk_diagnostics.ex` +23/−12 with no logic (a moduledoc cost
+  paragraph, one telemetry key); the one on-axis clause = `25b0b0d`'s
+  `:constraint_rowid` → unique-name mapping; the Gate-3 `defp` flip and the
+  comment scrub touch nothing on the constraint path (every test-driven public
+  still exported). Composition: one Opus reviewer (9 probes, `b5_cover_r53/`,
+  every probe under BOTH `rich_fk_diagnostics` configs); the five finding and
+  control probes re-driven by the orchestrator on the untouched tree BEFORE any
+  edit (all reproduce); fixes, pins, docs, and the gate by the orchestrator.
+
+### CONFIRMED
+
+- **F-B5-33 (S2, FIXED, RED→green).** Run 44's baseline diff (`cap_rows/2`
+  rejecting post-replay `foreign_key_check` rows present before the replay)
+  identifies a row by `[child_table, child_rowid, parent_table, fk_id]`. A
+  `WITHOUT ROWID` child table reports EVERY violation with `child_rowid: nil`,
+  so one pre-existing orphan there masks all later violations of that table
+  for good; `INSERT OR REPLACE` at an orphan's rowid reproduces the orphan's
+  row exactly. Both diagnoses came back `fk_diagnostics: :ok` with
+  `fk_violations: []` — a confident empty answer for a statement that had just
+  raised `SQLITE_CONSTRAINT_FOREIGNKEY` — so `to_constraints/2` emitted `[]` and
+  a declared `foreign_key_constraint/3` raised instead of converting (p02:
+  `wr_control_n=1 wr_masked_n=0 rowid_control_n=1 rowid_reuse_n=0`, both
+  statuses `:ok`; the single-variable controls are the same statements against
+  an empty baseline / a different rowid). Reachability = F-B5-27's (orphans
+  from `foreign_keys: false`, foreign writers, a raw pragma). S2: the error is
+  still raised, but misclassified for the changeset layer and contrary to the
+  flag's documented promise — the mirror image of F-B5-27 (over-reporting),
+  which this fix created. FIX (the honest degrade): when the diff is empty but
+  the post-replay check is not, the replay reports `{:unavailable,
+  :masked_by_baseline}`; a genuinely empty post-replay check (the violation
+  fixed before the replay) stays `:ok, []`. The fuller remedy (diff by
+  `{child_table, fk_id}` group counts, which recovers the WITHOUT ROWID case
+  but not rowid reuse) is filed as the follow-up. Moduledoc step 4 rewritten.
+  PINS (fk_diagnostics_test): the WITHOUT ROWID mask and the reused rowid, both
+  asserting the structured status. Predicted RED = `:ok` on both — observed.
+- **F-B5-34 (S2, FIXED, RED→green).** A `COMMIT` issued through `Repo.query`
+  never reaches `handle_commit/2`; it goes through `handle_execute/4`, so a
+  deferred violation surfacing there was wrapped by `wrap_with_replay/4` —
+  which replayed the literal `"COMMIT"` under a savepoint (it fails again, so
+  the diagnosis is `{:unavailable, …}` with no names) and whose `cleanup/1`
+  then ran `PRAGMA defer_foreign_keys = false` on the caller's STILL-OPEN
+  transaction (SQLite keeps it open after a failed commit), changing the
+  semantics of every later statement in it (p04: `defer_before [[1]] →
+  defer_after [[0]]` under rich diagnostics; `[[1]]` under the default and
+  after a successful commit; `txn_open: true`; the caller's row intact). The
+  managed path (`Repo.transaction` → `handle_commit`) diagnoses the same
+  violation in place with the name (p03 leg A vs D). S2: doc-behaviour
+  divergence ("never masks or replaces the error it is diagnosing"; the reset
+  documented as protecting an OUTER transaction, not as overwriting the
+  caller's setting) on a path the driver deliberately supports (raw transaction
+  control has its own keyword sync). FIX: `wrap_execute_error/4` routes
+  transaction-control statements (`leading_keyword/1` ∈ COMMIT / END / RELEASE)
+  to `wrap_at_commit/2` — the violating rows are still present, no replay, no
+  pragma touched. PIN (fk_diagnostics_test): raw `BEGIN` → `PRAGMA
+  defer_foreign_keys = 1` → deferred violation → raw `COMMIT` asserts
+  `fk_diagnostics: :ok` + the child's `FkViolation` + the pragma still `1`.
+  Predicted RED = `{:unavailable, …}` and `[[0]]` — observed.
+
+### CLEAN legs (controls named)
+
+- The `:constraint_rowid` clause's inputs at HEAD under the 0.11.0 dep: an
+  explicit duplicate rowid (empty details) degrades to `[]`; IPK-named-`id`
+  and WITHOUT ROWID collisions derive their names; FTS5's bare "constraint
+  failed" still `[]` — `named_or_empty/2` nil-total (p05, both configs).
+- `insert_all` + `on_conflict` against partial and expression unique indexes:
+  SQLite's own "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE
+  constraint" — engine parity (an ordinary unique index succeeds; Ecto's
+  `{:unsafe_fragment, "(a) WHERE b IS NULL"}` succeeds; raw SQL fails and
+  succeeds identically) (p01). Docs candidate noted: nothing points partial-
+  index upserts at the fragment form.
+- The commit path's cap (30 deferred violations → 24 + `{:truncated, 30}`) and
+  name resolution (p03).
+- A dangling FK definition elsewhere does not break the diagnosis (p08 —
+  refuted as a "one broken schema disables diagnostics" candidate).
+- `Ecto.Multi` under `ON CONFLICT ROLLBACK`: the changeset with
+  `constraint: :unique` returns, the earlier step is not committed, the
+  connection disconnects at the point of damage, the repo stays usable (p06/
+  p09); sharpens [F-B5-17] (names DO reach a changeset through Multi and
+  outside a transaction; only the bare-function body loses them).
+- The moduledoc's cost claim honest: 17.6-21.2 ms vs 0.05-0.12 ms at 100k child
+  rows on the error path only, behind the opt-in flag (p07).
+
+### Handoffs
+
+- **[F-B5-33-followup] (S3):** the group-count diff as the fuller remedy;
+  probe the documented re-break case after the degrade (now `:masked_by_baseline`).
+- **[F-B5-15]** reproduces unchanged (two names for one violation across
+  execute/stream); the streamed error now carries `statement` (Run 49's
+  stamping reached it — the [F-X1-7] nil is gone for this shape).
+- **[F-B5-27-commit]** reproduces exactly (contamination at commit); NEW
+  cross-court: the commit path leaves `statement: nil` (`wrap_commit_error/2`
+  never stamps) — X1's court.
+- **[F-B5-17]** sharpened (Multi + outside-transaction carry the names).
+- `unique_index_lookup` stays `:not_run` for PK/rowid subtypes — designed.
+- Status-shape contract (seed 6): the outer sets are typespec-pinned; the six
+  adapter-produced `{:unavailable, reason}` literals are not — a closed-set pin
+  is now cheap ([F-B5-7]'s want).
+
+### Gate honesty
+
+- Stash-RED (fk_diagnostics.ex + driver.ex stashed): predicted 3 reds by
+  identity → see the line below; green after pop. Behaviour sweep over test/
+  (titles included) for the empty-diff / re-break / raw-commit shapes: none
+  pinned the old behaviour (the "violation fixed before the replay" test keeps
+  `:ok` by design). The failing-baseline-scan status is the one source-derived
+  claim in the run (the reviewer could not construct it live).
+- Dryness: two S2 — **B5 stays 0 of 2, NOT DRY**; THIRTY-THREE straight
+  finding runs; DRY = B10 alone.
+- Stash-RED result: 3/3 by identity (the two masked-baseline pins and the raw
+  COMMIT pin); green 18/18 after pop. `mix verify` GREEN (exit file 0 — format,
+  compile, deps.audit, sobelow, dialyzer, the full sequential suite;
+  `env -u XQLITE_PATH`, Hex xqlite 0.11.0). README + STE state the masked status
+  and the in-place commit diagnosis.
+
+---
