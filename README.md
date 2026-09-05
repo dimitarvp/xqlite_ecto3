@@ -270,8 +270,13 @@ structured error is raised instead.) The replay diffs
 `foreign_key_check` against a baseline taken inside the savepoint, so
 rows that already violated before the statement — orphans written
 under `foreign_keys: false` or by another tool — are not blamed on
-it; at most 24 violations are attached, more setting
-`fk_diagnostics: {:truncated, total}`. Zero cost on the happy path —
+it; when the statement's own violations cannot be told apart from
+such rows (every violation in a `WITHOUT ROWID` child table reports
+a `nil` rowid; a reused rowid reproduces the orphan's row) the
+diagnosis reports `fk_diagnostics: {:unavailable, :masked_by_baseline}`
+rather than an empty list; at most 24 violations are attached, more
+setting `fk_diagnostics: {:truncated, total}`. A deferred violation
+surfacing at a raw `COMMIT` is diagnosed in place, without a replay. Zero cost on the happy path —
 the replay runs only after a violation, and any diagnostic failure
 degrades to the original error
 (`fk_diagnostics: {:unavailable, reason}`), never masking it.

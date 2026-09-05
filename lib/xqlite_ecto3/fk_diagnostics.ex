@@ -22,9 +22,12 @@ defmodule XqliteEcto3.FkDiagnostics do
      every pre-existing orphan anywhere in the file
   4. Replay the statement, then `PRAGMA foreign_key_check` again —
      only rows absent from the baseline are the statement's own.
-     (A statement that re-breaks an already-broken row in the same
-     way is folded into the baseline — the row was broken either
-     way.) At most 24 violations are materialized; more sets
+     When every violation the replay finds is indistinguishable from
+     a pre-existing one — a `WITHOUT ROWID` child table reports a
+     `nil` rowid for all of them, and a rowid reused after its orphan
+     was replaced reproduces the orphan's row — the diagnosis is
+     `{:unavailable, :masked_by_baseline}`, never an empty result.
+     At most 24 violations are materialized; more sets
      `fk_diagnostics: {:truncated, total}` with the first 24 kept
   5. `PRAGMA foreign_key_list(child)` — resolves each FK index to
      the exact child/parent columns
@@ -175,6 +178,7 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp collect_violations(conn, baseline \\ MapSet.new()) do
     with {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
          {kept, status} = cap_rows(check_rows, baseline),
+         :ok <- unmasked(kept, check_rows),
          {:ok, fk_defs} <- fk_definitions(conn, kept) do
       violations =
         kept
@@ -184,6 +188,13 @@ defmodule XqliteEcto3.FkDiagnostics do
       {status, violations}
     end
   end
+
+  # An empty diff over a non-empty check means every violation the replay
+  # found matches a pre-existing row byte for byte (a WITHOUT ROWID child
+  # reports nil rowids; a reused rowid reproduces the orphan's row), so the
+  # statement's own violation cannot be told apart.
+  defp unmasked([], [_ | _]), do: {:error, :masked_by_baseline}
+  defp unmasked(_kept, _check_rows), do: :ok
 
   defp cap_rows(check_rows, baseline) do
     new_rows = Enum.reject(check_rows, &MapSet.member?(baseline, &1))

@@ -913,7 +913,7 @@ defmodule XqliteEcto3.Driver do
   # pragma lookups on a path that has already failed, always on.
   defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
     reason
-    |> XqliteEcto3.FkDiagnostics.wrap_with_replay(state.conn, sql, params)
+    |> diagnose_fk(sql, params, state.conn)
     |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
     |> put_statement(sql)
   end
@@ -923,6 +923,17 @@ defmodule XqliteEcto3.Driver do
     |> XqliteEcto3.Error.wrap()
     |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
     |> put_statement(sql)
+  end
+
+  # A raw COMMIT, END, or RELEASE that fails on a deferred violation leaves
+  # the transaction open with the violating rows still present: diagnose
+  # in place; replaying transaction control would only reset its pragmas.
+  defp diagnose_fk(reason, sql, params, conn) do
+    if leading_keyword(sql) in ["COMMIT", "END", "RELEASE"] do
+      XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, conn)
+    else
+      XqliteEcto3.FkDiagnostics.wrap_with_replay(reason, conn, sql, params)
+    end
   end
 
   defp put_statement(%XqliteEcto3.Error{} = err, sql), do: %{err | statement: sql}

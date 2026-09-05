@@ -57,6 +57,42 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     {:ok, pid: pid, path: path}
   end
 
+  test "a WITHOUT ROWID child's masked violation is unavailable, not nothing", %{pid: pid} do
+    exec!(pid, "CREATE TABLE wr(k TEXT PRIMARY KEY, p_id INTEGER REFERENCES p(id)) WITHOUT ROWID")
+    exec!(pid, "PRAGMA foreign_keys = 0")
+    exec!(pid, "INSERT INTO wr(k, p_id) VALUES ('orphan', 999)")
+    exec!(pid, "PRAGMA foreign_keys = 1")
+
+    assert {:error, %Error{details: %Constraint{fk_diagnostics: diagnostics}}} =
+             exec(pid, "INSERT INTO wr(k, p_id) VALUES ('victim', 998)")
+
+    assert diagnostics == {:unavailable, :masked_by_baseline}
+  end
+
+  test "a violation at a reused rowid is unavailable, not nothing", %{pid: pid} do
+    exec!(pid, "PRAGMA foreign_keys = 0")
+    exec!(pid, "INSERT INTO ch(id, p_id) VALUES (7, 999)")
+    exec!(pid, "PRAGMA foreign_keys = 1")
+
+    assert {:error, %Error{details: %Constraint{fk_diagnostics: diagnostics}}} =
+             exec(pid, "INSERT OR REPLACE INTO ch(id, p_id) VALUES (7, 998)")
+
+    assert diagnostics == {:unavailable, :masked_by_baseline}
+  end
+
+  test "a raw COMMIT's deferred violation is diagnosed in place", %{pid: pid} do
+    exec!(pid, "BEGIN")
+    exec!(pid, "PRAGMA defer_foreign_keys = 1")
+    exec!(pid, "INSERT INTO ch(id, p_id) VALUES (1, 999)")
+
+    assert {:error, %Error{details: %Constraint{} = details}} = exec(pid, "COMMIT")
+    assert details.fk_diagnostics == :ok
+    assert [%FkViolation{child_table: "ch", parent_table: "p"}] = details.fk_violations
+
+    assert %{rows: [[1]]} = exec!(pid, "PRAGMA defer_foreign_keys")
+    exec!(pid, "ROLLBACK")
+  end
+
   test "execute-path violation is enriched with the exact FK details", %{pid: pid} do
     {:error, %Error{} = err} = exec(pid, "INSERT INTO ch VALUES (1, 999)")
 
