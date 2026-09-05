@@ -1728,6 +1728,63 @@ DRY**. Re-wets ADD: the affinity guard trio, carried_type +
 @quoted_typename, DataType.bare_typename?/@sqlite_keywords/
 sqlite_affinity, the nameless blanking product, balanced?'s
 blanked counting, the README three-details paragraph.
+COVERING RE-RUN (Run 54, 2026-09-05 — lap 7, solo; churn
+`511b229..8a6a4c1`): STEP-0 CORRECTION on record — the brief claimed
+the engine byte-identical except comments; FALSE: `0c94064` (Run 48)
+rewrote the affinity pre-flight's numeric half (a rowid-paired TEMP
+"pour", a new `copy_rewritten_count!`) and three findings live there.
+**F-B7-53 (S1, FIXED, RED→green)** — the pour paired scratch rows to
+the table on `rowid`; a user column named `rowid` (any casing)
+shadows the row id, so with NULLs in it the join matched nothing,
+the count was 0, and the rebuild silently rewrote stored values
+('007' → 7) — F-B7-47's failure back through the guard that closed
+it; two other engine sites already guard that shadowing (p05, p09:
+`ROWID` too; `rid`/distinct-values controls refuse). **F-B7-55 (S2,
+FIXED, RED→green)** — the pour's four statements ran with NO
+connection hold (the pre-flight precedes `on_one_connection`); with
+pool_size > 1, no wrapping transaction (the supported
+`@disable_ddl_transaction` path) and another process holding a
+connection, the TEMP table landed on another pool member: 10/10
+rebuilds failed "no such table: xqlite_affinity_probe_…" and each
+leaked an empty scratch table (p12; pool_size 1 control clean, p13).
+**F-B7-54 (S3, FIXED)** — the `%{without_rowid: true}` clause was
+unreachable (WITHOUT ROWID refused earlier) and its comment described
+a never-exercised safety. ONE rewrite closes all three: a join-free
+scratch table `(raw, v <target type>)` — `raw` typeless (BLOB
+affinity, stores as-is), `v` declared with the exact type text the
+rebuild's CREATE will use — inside `on_one_connection`, the DROP in
+an `after`; the `storage` parameter dropped from the chain. **F-B7-56
+(S3, FILED)** — a same-block `null: false` over existing NULLs fails
+mid-dance with the structured NOT NULL error naming the transient
+`<table>__xqlite_new` (parity with SQLite's own copy; design choice:
+map transient names back vs a per-value pre-flight — the mid-dance
+failure family needs ONE decision). CLEAN with controls: the blanking
+property widened to COLLATE/DEFERRABLE/ON CONFLICT × 5 casings × 9
+placements = 180 cases, 0 false passes / 0 false refusals / 0 wrong
+reasons (p10); the F-B7-48 regression (columns named check/collate
+rebuild); datetimes byte-exact through the copy (all three text
+forms); `:binary_id` under both storages incl. a self-referencing FK
+and no phantom sequence row; a raising `column_type/2` pre-destructive;
+quoted/case-varied/spaced parent names refuse and pass correctly;
+`sqlite_sequence` beside a sibling intact (seed 7's premise void —
+SQLite forbids case-only table twins); a concurrent reader and writer
+during a 24 ms dance at pool_size 3 under WAL (reader never partial,
+writer's row survives); rebuild-batched `add` with a default =
+SQLite's own ADD COLUMN materialization; the 14 refusal flavours all
+name the right reason (two naming warts filed). DRYNESS: an S1 + an
+S2 + two S3 — **B7 stays 0 of 2, NOT DRY**. Re-wets ALSO on:
+`copy_rewritten_count!/6` + its scratch shape, the pre-flight ↔
+`on_one_connection` ordering. Next-pass seeds: a generated property
+over all five storage classes comparing the pour against a real
+rebuild (SQLite as ground truth); the other multi-statement
+pre-flights' check-then-act windows under a concurrent writer
+(`fetch_incoming_action_fks` → `table_has_rows?`, `snapshot_structure!`);
+`structure_dump`/`structure_load` round trip of a rebuilt table (needs
+the `sqlite3` program); refusal flavour 14 (TEMP trigger) reachability;
+the mid-dance failure family (UNIQUE collision, IPK non-integer
+text, a new CHECK) — one decision on transient-name mapping;
+`add` with a fragment default under the rebuild's CREATE + INSERT
+SELECT — evaluated once or per row.
 
 ### B8. Timeout→cancel divergence (flagship)
 Ecto's `:timeout` elsewhere = stop waiting (query may complete);

@@ -7528,3 +7528,123 @@ events flowing.
   and the in-place commit diagnosis.
 
 ---
+
+## Run 54 — 2026-09-05 — lap 7, batch 5: B7 solo (migration ergonomics over the Runs 46-53 + Gate-3 churn)
+
+- Commit at scan: `8a6a4c1` (HEAD, clean, verify + CI green). Scope: B7 solo.
+  **Orchestrator error on record:** the brief told the reviewer the rebuild
+  engine was "byte-identical except comments" since Run 45 — read off a per-file
+  diffstat, not the diff. `0c94064` (Run 48's datetime commit, +118 lines in
+  `lib/xqlite_ecto3.ex`) rewrote the affinity pre-flight's numeric half: a
+  rowid-paired TEMP-table "pour" replacing the CAST predicate, plus a new
+  `copy_rewritten_count!`. The reviewer caught it at step 0; three of four
+  findings live in that helper. Lesson folded into the consequence probe: a
+  fix's churn is read as a diff, never as a stat. Composition: one Opus reviewer
+  (14 probes, `b7_cover_r54/`, report also on disk); the six finding and control
+  probes re-driven by the orchestrator on the untouched tree BEFORE any edit (all
+  reproduce); fix note written before implementation; an Opus implementer with a
+  RED-first brief; the consequence probe executed (callers, hits, every rebuild
+  test file, the Sandbox-backed suites); gate by the orchestrator.
+
+### CONFIRMED
+
+- **F-B7-53 (S1, FIXED, RED→green).** The pour paired scratch rows to the source
+  table on `rowid` (`INSERT … SELECT rowid, col` / `JOIN … ON t.rowid = p.r`). A
+  user column named `rowid` shadows the row id in both statements; with NULLs in
+  it the join matched nothing, the count was 0, and the migration reported
+  success while the copy rewrote '007' → 7 and '0012' → 12 (p05; `ROWID` too,
+  p09; `_rowid_`/`oid` refuse). Controls: the same table with the column named
+  `rid`, and the same column with distinct non-NULL values, both refuse.
+  `rowid_copy_needed?/3` and `rebuild_verification.ex`'s `shadowed_rowid?/2`
+  already guarded the identical hazard. S1 by the axis's own precedent (a
+  rebuild that silently changes stored values). FIX: the join-free scratch
+  table below. PIN: rebuild_affinity_guard_test "a column named rowid does not
+  blind the guard" (rows `[["text","007"],["text","0012"]]` and declared `TEXT`
+  after the refusal; `ROWID` spelling; the `rid` control). Predicted RED = the
+  alter returns `{:ok, []}` and the rows read integers — observed.
+- **F-B7-55 (S2, FIXED, RED→green).** The pour's four statements ran as
+  separate `Ecto.Adapters.SQL.query!` calls before `on_one_connection/4`; TEMP
+  tables are per connection, so with pool_size 3, WAL, no wrapping transaction
+  and another process holding a connection, 10/10 rebuilds failed with
+  `%XqliteEcto3.Error{}` "no such table: xqlite_affinity_probe_…" and each left
+  an empty scratch table on a pool member (p12: five leaked across the pool;
+  p13: pool_size 1 clean; p03: a single process cannot force the hop — another
+  process holding a connection is what forces it). S2: the un-wrapped rebuild is
+  a documented, supported path, the failure is loud, typed, pre-destructive, and
+  blames an internal table; the leak is connection-scoped. FIX: the probe runs
+  inside `on_one_connection(meta, true, …)` (a `checkout`, re-entrant under a
+  transaction and under the Sandbox — confirmed from ecto_sql source and by the
+  Sandbox-backed suites), the DROP in an `after`. PIN: "under a pool of several
+  connections refuses on one connection and strands no scratch table" (pool 3,
+  WAL, a DEFERRED parked transaction — an immediate one would hold the write
+  lock; ArgumentError not XqliteEcto3.Error; `sqlite_temp_schema` count 0 on the
+  current connection, on both other pool members checked out concurrently, and
+  on the parked one; a clean table rebuilds `{:ok, []}`). Predicted RED = the
+  XqliteEcto3.Error — observed. Re-run at three seeds, stable.
+- **F-B7-54 (S3, FIXED).** The `%{without_rowid: true}` clause was dead
+  (`refuse_unpreservable_constraints!` refuses WITHOUT ROWID first, p08 07b) and
+  its comment documented a never-exercised safety. Deleted with the rewrite;
+  `storage` dropped from `refuse_affinity_rewrites_on_populated!`,
+  `refuse_affinity_rewrite!`, `rewritten_count` (now carries `type` +
+  `modify_opts` instead). PIN: the WITHOUT ROWID refusal ordering.
+- **The rewrite:** `CREATE TEMP TABLE <probe> (raw, v <target>)` where `target`
+  is `column_type(type, modify_opts)` — the exact type text the rebuild's CREATE
+  will use, not a fixed NUMERIC; `INSERT INTO <probe> SELECT col, col`; count the
+  pairs whose rendered text differs and that are not two numbers of equal value
+  (typeof on both sides). `raw` has no declared type, so BLOB affinity keeps
+  every value as stored. Boundary pins: an empty table passes, an all-NULL
+  column passes, a column needing quoting refuses on '007' and passes on '7'.
+- **F-B7-56 (S3, FILED).** Same-block `null: false` over existing NULLs fails
+  mid-dance naming `holes__xqlite_new` (p01; SQLite's own copy fails
+  identically; the table byte-identical after). Design choice filed (map
+  transient names back vs a per-value pre-flight — one decision for the
+  mid-dance failure family).
+
+### CLEAN legs (controls named)
+
+- The blanking property widened (seed 4): 180 generated CREATEs × COLLATE /
+  DEFERRABLE / ON CONFLICT tokens × 5 casings × 9 placements — 20 real
+  constructs refused naming their own family, 160 data-only cases rebuilt with
+  the new NOT NULL present and the row intact; 0/0/0 (p10). The F-B7-48
+  regression: columns named check/collate rebuild (p09).
+- Datetimes byte-exact through the copy on all three text forms (p07);
+  `:binary_id` under both storages incl. a self-referencing FK and no phantom
+  `sqlite_sequence` row; flipping to `:binary` re-declares BLOB without
+  transforming stored TEXT (p06); a raising `column_type/2` is pre-destructive
+  with no transient table left (p07); quoted/case-varied/spaced parent names
+  refuse with the child named and pass once emptied (p04); `sqlite_sequence`
+  beside a sibling intact — seed 7's literal premise is void, SQLite forbids
+  case-only twins (p04); a concurrent reader and writer during a 24 ms dance at
+  pool_size 3 under WAL: reader never partial, the writer's row survives (p11);
+  rebuild-batched `add` with a default = SQLite's own ADD COLUMN materialization
+  (p09); the opt-in flag refuses (p09, after a harness bug in p08's row 01 was
+  corrected); the 14 refusal flavours name the right reason (p08/p14; flavour
+  14, the TEMP-trigger branch, not reachable by ordinary input — not observed).
+
+### Handoffs
+
+- [F-B7-57-docs] (S3): two message warts (`refuse_unknown_column!` omits the
+  table; "them" without antecedent) + the guide line on `modify` restating the
+  declared width + down restoring `NUMERIC` for a raw `REAL` (F-B6-4's reach).
+- `structure_dump`/`structure_load` of a rebuilt table: not reached (needs the
+  `sqlite3` program). Next-pass seeds recorded in the axis block.
+
+### Gate honesty
+
+- Consequence probe (the new step): callers of the four changed functions — nine
+  hits, all in `lib/xqlite_ecto3.ex`, all updated, none in tests;
+  `xqlite_affinity_probe`/`without_rowid` hits enumerated and each still holds
+  (`storage` stays live for `refuse_virtual_table!` and the unpreservable
+  refusal); every test file naming the rebuild flag run individually (25 / 2 /
+  64 / 7 / 15 passed); the Sandbox-backed suites green — the pre-flight's new
+  checkout is re-entrant under the Sandbox in practice.
+- Stash-RED (lib/xqlite_ecto3.ex stashed): predicted 2 reds by identity (the
+  rowid pin, the pool pin) → 2/2; the three unchanged-behaviour pins green
+  either way; green 15/15 after pop. Docs sweep: no README or guide text
+  describes the probe mechanism. Comment lines in lib: −14/+6.
+- Dryness: an S1 + an S2 + two S3 — **B7 stays 0 of 2, NOT DRY**; THIRTY-FOUR
+  straight finding runs; DRY = B10 alone.
+- `mix verify` GREEN (exit file 0 — format, compile, deps.audit, sobelow,
+  dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
+
+---

@@ -969,6 +969,57 @@ after the S0–S2 burn-down.
   alone); Ecto's `conflict_target: {:unsafe_fragment, "(a) WHERE b IS
   NULL"}` works and nothing in the README or migration guide says so.
 
+- [F-B7-53] (S1, FIXED, from Run 54) The affinity pre-flight's
+  numeric-direction probe (Run 48's rewrite) paired its scratch rows
+  to the table on `rowid`; a user column named `rowid` (any casing)
+  shadows SQLite's row id, so with NULLs in it the join matched
+  nothing, the count was 0, and the rebuild silently rewrote stored
+  values ('007' → 7) — the exact failure the guard exists to refuse,
+  while two other engine sites already guard the same shadowing. FIX:
+  a join-free scratch table `(raw, v <target type>)` — `raw`
+  typeless keeps every value as stored, `v` carries the rebuild's own
+  declared type — compared inside the scratch table. Pinned
+  (rebuild_affinity_guard_test: `rowid` and `ROWID` columns refuse,
+  rows and declared types unchanged; the `rid` control).
+- [F-B7-55] (S2, FIXED, from Run 54) The same probe's four statements
+  ran as separate queries with no connection hold, before
+  `on_one_connection`; with pool_size > 1, no wrapping transaction
+  and another process holding a connection, the TEMP table landed on
+  another pool member — 10/10 rebuilds failed "no such table" with a
+  raw `XqliteEcto3.Error` naming an internal table, each leaking an
+  empty scratch table on a pooled connection. FIX: the probe runs
+  inside `on_one_connection(meta, true, …)` (a checkout, re-entrant
+  under a transaction and under the Sandbox) with the DROP in an
+  `after`. Pinned (a pool of 3, WAL, a deferred parked transaction:
+  ArgumentError, zero scratch tables on every pool member, a clean
+  table rebuilds).
+- [F-B7-54] (S3, FIXED, from Run 54) The probe's `%{without_rowid:
+  true}` clause was unreachable (WITHOUT ROWID is refused earlier by
+  `refuse_unpreservable_constraints!`) and its comment described a
+  safety never exercised; deleted with the rewrite, the `storage`
+  parameter dropped from the affinity chain. Pinned (the WITHOUT
+  ROWID refusal ordering).
+- [F-B7-56] (S3, from Run 54) A same-block `modify …, null: false`
+  over a column holding NULLs has no pre-flight: it fails mid-dance
+  (inside the transaction, table byte-identical after) with the
+  structured NOT NULL error whose `table:` names the transient
+  `<table>__xqlite_new`. Parity with SQLite's own hand-rolled copy.
+  Remedies: (a) map the transient name back to the real table on any
+  dance error; (b) a per-value pre-flight beside the affinity guard
+  (`count(*) WHERE col IS NULL`, the same pre-destructive
+  ArgumentError). The mid-dance failure family (UNIQUE collision on
+  a rewriting copy, an INTEGER PRIMARY KEY receiving non-integer
+  text, a new CHECK) wants ONE decision, not per-case patches.
+- [F-B7-57-docs] (S3, from Run 54) Two refusal-message warts:
+  `refuse_unknown_column!` is the only refusal that omits the table
+  name; the unpreservable-construct message says "would silently drop
+  them" with no plural antecedent for the WITHOUT ROWID / STRICT
+  flavours. Plus a guide line owed: a `modify` restates the declared
+  type, so a `DECIMAL(10,2)` width you do not repeat is not carried
+  (no stored value changes; SQLite ignores the width). Down-migrating
+  a raw `REAL` column through `from: :float` restores `NUMERIC` (the
+  adapter's rendering), F-B6-4's documented reach.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —
