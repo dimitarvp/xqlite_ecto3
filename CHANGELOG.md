@@ -196,6 +196,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A negative `:timeout` no longer runs the query unbounded.** A
+  non-positive timeout is clamped to zero, so it cancels at once
+  like `timeout: 0`. Before, a negative value crashed the canceller
+  process silently and the statement ran to completion while
+  DBConnection's already-expired deadline recycled the connection
+  underneath the next caller.
+
+- **A lock-contended `BEGIN` keeps its connection.** With the
+  default `:immediate` mode a held write lock makes transaction
+  start fail with `:database_busy_or_locked` after `busy_timeout`,
+  and the driver disconnected a healthy connection on every such
+  failure — one reconnect per contended transaction, worst under
+  the multi-writer load the README's retry advice describes. The
+  busy error now returns like a busy statement does; other begin
+  failures still disconnect. The README says that transaction start
+  waits the full `busy_timeout` and that `:timeout` does not bound
+  it.
+
+- **`handle_begin`'s two refusals carry a typed error.** A savepoint
+  begin with no enclosing transaction and an unknown transaction
+  mode raised bare `DBConnection.ConnectionError`s, the only two
+  refusals in the driver without a `:type`. They are
+  `%XqliteEcto3.Error{type: :savepoint_without_transaction |
+  :invalid_transaction_mode}` now, with the mode and transaction
+  status in `details`, and the savepoint message no longer tells
+  the caller to drop an option it may never have passed —
+  `Ecto.Adapters.SQL.Sandbox` forces `mode: :savepoint` itself.
+
+- **SQL with no statement is reported as `:cannot_execute`.**
+  Whitespace- or comment-only SQL was refused precisely at prepare
+  time and then handed to the uncached path anyway, where SQLite
+  answered `SQLITE_MISUSE` — the code that means an adapter bug.
+  The prepare-time refusal now surfaces as is. With
+  `statement_cache_size: 0` the misuse answer remains until xqlite
+  refuses no-statement SQL on its one-shot query path as well.
+
 - **A non-UTC `DateTime` on the raw-SQL path stores the right
   instant.** The datetime-form change dropped the offset via the
   local wall clock, so a zoned value handed to `Repo.query` (or an
