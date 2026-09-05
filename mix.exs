@@ -61,7 +61,8 @@ defmodule XqliteEcto3.MixProject do
         # broke on every line shift. New findings still fail the gate.
         "sobelow --skip --exit low",
         "dialyzer",
-        "xqlite_ecto3.test.seq"
+        "xqlite_ecto3.test.seq",
+        "cmd elixir scripts/tree_fingerprint.exs --stamp"
       ]
     ]
   end

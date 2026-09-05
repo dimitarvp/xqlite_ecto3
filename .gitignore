@@ -24,3 +24,6 @@ xqlite_ecto3-*.tar
 
 # Dialyzer artifacts.
 /priv/plts
+
+# local expert-tool scratch
+/.expert/
