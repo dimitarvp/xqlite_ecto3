@@ -127,7 +127,8 @@ defmodule XqliteEcto3.MixProject do
         "README.md",
         "LICENSE.md",
         "CHANGELOG.md"
-      ]
+      ],
+      exclude_patterns: [~r"^lib/mix/tasks/"]
     ]
   end
 

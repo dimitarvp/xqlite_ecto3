@@ -50,14 +50,15 @@ Then configure your repo:
 
 ```elixir
 # config/config.exs
+config :my_app, ecto_repos: [MyApp.Repo]
+
 config :my_app, MyApp.Repo,
   adapter: XqliteEcto3,
   database: "priv/repo/my_app.db",
   pool_size: 5
-
-# config/runtime.exs
-config :my_app, ecto_repos: [MyApp.Repo]
 ```
+
+Keep `ecto_repos` in `config/config.exs`: the `mix ecto.*` tasks read it at compile time, and when it only exists in `config/runtime.exs` they print a warning and silently do nothing.
 
 …or, 12-factor-style, drive it from a URL — the adapter parses `sqlite://` URLs natively, so the standard Phoenix pattern just works:
 
@@ -79,7 +80,14 @@ Every pooled connection caches prepared statements in an LRU keyed by SQL text (
 
 Repo-level observability rounds this out: `XqliteEcto3.txn_state(repo)` and `XqliteEcto3.connection_stats(repo)` observe a pooled connection's transaction state and SQLite's per-connection counters through the pool, and the `hooks:` config above streams per-connection update/WAL/commit/rollback/progress events to a named process — the building blocks for caller-side concurrency strategies.
 
-Config values the adapter forwards to PRAGMAs are validated at connect: an unrecognized value (`journal_mode: :walk`, `foreign_keys: :nonsense`) is a structured connect error, never SQLite's silent fallback to a default. One read-back caveat: `PRAGMA wal_autocheckpoint` queried through SQL always reports 0 (xqlite's WAL hook occupies SQLite's single slot and emulates the autocheckpoint) — read the effective value with `XqliteEcto3.with_xqlite(repo, &XqliteNIF.get_pragma(&1, "wal_autocheckpoint"))`. Beyond the URL-expressible parameters, repo config also accepts: `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit config always wins (deliberately config-only, not URL-exposed; these are NOT validated — SQLite silently ignores an unknown pragma name and leniently parses values, so typos are yours to catch); `mode: :readonly` — a read-only pool (write-requiring default pragmas are skipped; writes fail with structured `{:read_only_database, _}` errors; a second read-only repo pointed at the same database file is the composable read-scaling pattern); and `default_transaction_mode: :deferred | :immediate | :exclusive` — default `:immediate`, deliberately: write transactions take their lock up front instead of hitting deadlock-prone mid-transaction lock upgrades (this diverges from ecto_sqlite3's `:deferred` default on purpose). Pass `mode:` to `Repo.transaction/2` for a per-transaction override (`mode: :savepoint` only inside an enclosing transaction — at top level it is refused, because a lone SAVEPOINT would run the transaction `:deferred` and silently discard `default_transaction_mode`) — and never put a transaction mode in repo config's `mode:` key, which is only ever the connection mode: `mode: :immediate` there is refused at connect with a structured `{:transaction_mode_as_connection_mode, _}` error, and the config key for transactions stays `default_transaction_mode:`. Finally, `hooks: [update: MyListener, wal: MyListener, progress: {MyListener, every_n: 500}]` installs xqlite's connection hooks (update / wal / commit / rollback / progress) on **every pooled connection** at connect time — subscribers are registered process *names* (config survives restarts; the name must be alive when connections open, or connect fails with a structured `{:hook_subscriber_not_registered, name}`), and messages arrive in xqlite's shapes (`{:xqlite_update, action, db, table, rowid}` etc.), so one listener hears every write the pool makes.
+The adapter validates every configuration value it forwards to a PRAGMA at connect time. An unrecognized value (`journal_mode: :walk`, `foreign_keys: :nonsense`) is a structured connect error — never SQLite's silent fallback to a default. One read-back caveat: `PRAGMA wal_autocheckpoint` queried through SQL always reports 0, because xqlite's WAL hook occupies SQLite's single slot and emulates the autocheckpoint. Read the effective value with `XqliteEcto3.with_xqlite(repo, &XqliteNIF.get_pragma(&1, "wal_autocheckpoint"))`.
+
+Beyond the URL-expressible parameters, the repo configuration also accepts these options:
+
+- `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit configuration always wins. This option is deliberately configuration-only, not URL-exposed. These pragmas are NOT validated: SQLite silently ignores an unknown pragma name and leniently parses values, so typos are yours to catch.
+- `mode: :readonly` — a read-only pool. The adapter skips its default pragmas that need writes, and writes fail with structured `{:read_only_database, _}` errors. For composable read scaling, point a second read-only repo at the same database file.
+- `default_transaction_mode: :deferred | :immediate | :exclusive` — the default is `:immediate`, deliberately: write transactions take their lock up front instead of deadlock-prone mid-transaction lock upgrades. This diverges from ecto_sqlite3's `:deferred` default on purpose. Pass `mode:` to `Repo.transaction/2` for a per-transaction override. `mode: :savepoint` works only inside an open transaction. At top level the adapter refuses it: a lone SAVEPOINT runs the transaction `:deferred` and silently discards `default_transaction_mode`. Do not put a transaction mode in the repo configuration key `mode:` — that key only sets the connection mode. The adapter refuses a transaction mode there at connect, with a structured `{:transaction_mode_as_connection_mode, _}` error. The configuration key for transactions stays `default_transaction_mode:`.
+- `hooks: [update: MyListener, wal: MyListener, progress: {MyListener, every_n: 500}]` — installs xqlite's connection hooks (update, wal, commit, rollback, progress) on every pooled connection at connect time. One listener then hears every write the pool makes. Subscribers are registered process _names_, so the configuration survives restarts. If a name is not alive when a connection opens, connect fails with a structured `{:hook_subscriber_not_registered, name}` error. Messages arrive in xqlite's shapes, for example `{:xqlite_update, action, db, table, rowid}`.
 
 Define the repo:
 
@@ -88,6 +96,8 @@ defmodule MyApp.Repo do
   use Ecto.Repo, otp_app: :my_app, adapter: XqliteEcto3
 end
 ```
+
+Start it under your application's supervisor — add `MyApp.Repo` to the `children` list in `lib/my_app/application.ex`.
 
 Create the database and run migrations:
 
@@ -131,7 +141,7 @@ defmodule MyApp.User do
 end
 ```
 
-And a migration:
+And a migration (`mix ecto.gen.migration create_users` creates the file; replace its body with this):
 
 ```elixir
 defmodule MyApp.Repo.Migrations.CreateUsers do
@@ -215,9 +225,12 @@ end
 
 One exception type, a typed payload per error class in `details` —
 `Error.Constraint`, `Error.SqliteFailure` (primary + extended result
-codes preserved), `Error.Input` (offending SQL + byte offset), or
-`nil` for tag-only errors. Think Rust enum variants carrying data,
-expressed as structs.
+codes preserved), `Error.Input` (offending SQL + byte offset), `nil`
+for plain tag-and-message errors, or a small map for a few named
+tags: the extended result code for busy, read-only, schema-changed,
+and authorization errors; the column number for a UTF-8 error; the
+path and result code for a failed database open. Think Rust enum
+variants carrying data, expressed as structs.
 
 A NOT NULL violation raises this structured error too (table and
 column intact) rather than an `Ecto.ConstraintError`: Ecto has no
@@ -464,7 +477,7 @@ SQLite serializes writers per database file; a pool cannot change that — it on
 - **Batch writes.** One transaction carrying 500 inserts beats 500 transactions each holding the write lock for one insert — `Repo.insert_all/3`, or `Repo.transaction/2` around a loop. `default_transaction_mode: :immediate` (the default) takes the write lock up front, so queued batches wait cleanly instead of deadlocking on a mid-transaction lock upgrade.
 - **Retry with backoff.** For bursty writes, let `busy_timeout` absorb short waits (repo config or URL parameter), and treat `{:database_busy_or_locked, _}` errors as retryable — the shape is structured and stable, no message parsing needed.
 - **Queue writes in the caller.** Under sustained pressure, funnel writes through a single process (GenServer, queue) per database and let the pool serve reads. WAL readers are parallel, so reads scale in the pool; a second read-only repo on the same file (`mode: :readonly`) makes the read/write split explicit.
-- **Measure instead of guessing.** `Xqlite.set_busy_handler/3` forwards a `{:xqlite_busy, retries, elapsed_ms}` message per contention event; `XqliteNIF.txn_state/2` answers "does this connection hold a write transaction right now"; `Xqlite.wal_checkpoint/3` and the WAL hook expose checkpoint pressure. All of it bridges into `:telemetry` if you want dashboards.
+- **Measure instead of guessing.** `Xqlite.register_busy_observer/2` forwards a `{:xqlite_busy, retries, elapsed_ms}` message per contention event; `XqliteNIF.txn_state/2` answers "does this connection hold a write transaction right now"; `Xqlite.wal_checkpoint/3` and the WAL hook expose checkpoint pressure. All of it bridges into `:telemetry` if you want dashboards.
 
 Shutdown needs no ceremony: when the pool drains, cached statements are finalized eagerly on each disconnect, and the last connection to close checkpoints the WAL and removes the sidecar files (test-pinned behavior).
 

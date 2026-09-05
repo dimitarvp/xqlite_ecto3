@@ -218,6 +218,7 @@ defmodule XqliteEcto3.Connection do
     raise ArgumentError, "locks are not supported by SQLite"
   end
 
+  @doc false
   def all(query, as_prefix \\ []) do
     case query.distinct do
       %ByExpr{expr: exprs} when is_list(exprs) and exprs != [] ->
@@ -673,6 +674,7 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
+  @doc false
   def build_explain_query(query, :query_plan) do
     IO.iodata_to_binary(["EXPLAIN QUERY PLAN ", query])
   end
@@ -995,13 +997,7 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def insert_all(rows), do: insert_all(rows, 1)
-
-  def insert_all(%Ecto.Query{} = query, _counter) do
-    [all(query)]
-  end
-
-  def insert_all(rows, counter) do
+  defp insert_all(rows, counter) do
     [
       "VALUES ",
       intersperse_reduce(
@@ -1017,7 +1013,7 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def insert_each(values, counter) do
+  defp insert_each(values, counter) do
     intersperse_reduce(values, ?,, counter, fn
       nil, counter ->
         # Ecto pads unevenly-keyed rows in insert_all with nil to signal
@@ -1067,10 +1063,10 @@ defmodule XqliteEcto3.Connection do
   true = @binary_ops == Keyword.keys(binary_ops)
 
   Enum.map(binary_ops, fn {op, str} ->
-    def handle_call(unquote(op), 2), do: {:binary_op, unquote(str)}
+    defp handle_call(unquote(op), 2), do: {:binary_op, unquote(str)}
   end)
 
-  def handle_call(fun, _arity), do: {:fun, Atom.to_string(fun)}
+  defp handle_call(fun, _arity), do: {:fun, Atom.to_string(fun)}
 
   defp distinct(nil, _sources, _query), do: []
   defp distinct(%ByExpr{expr: true}, _sources, _query), do: "DISTINCT "
@@ -1110,7 +1106,7 @@ defmodule XqliteEcto3.Connection do
     end)
   end
 
-  def from(%{from: %{source: source, hints: hints}} = query, sources) do
+  defp from(%{from: %{source: source, hints: hints}} = query, sources) do
     {from, name} = get_source(query, sources, 0, source)
 
     [
@@ -1122,10 +1118,10 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def cte(
-        %{with_ctes: %WithExpr{recursive: recursive, queries: [_ | _] = queries}} = query,
-        sources
-      ) do
+  defp cte(
+         %{with_ctes: %WithExpr{recursive: recursive, queries: [_ | _] = queries}} = query,
+         sources
+       ) do
     recursive_opt = if recursive, do: "RECURSIVE ", else: ""
     ctes = Enum.map_intersperse(queries, ", ", &cte_expr(&1, sources, query))
 
@@ -1137,7 +1133,7 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def cte(%{with_ctes: _}, _), do: []
+  defp cte(%{with_ctes: _}, _), do: []
 
   defp cte_expr({name, _opts, cte}, sources, query) do
     cte_expr({name, cte}, sources, query)
@@ -1233,9 +1229,9 @@ defmodule XqliteEcto3.Connection do
     {[?\s, prefix, ?\s | froms], wheres}
   end
 
-  def join(%{joins: []}, _sources), do: []
+  defp join(%{joins: []}, _sources), do: []
 
-  def join(%{joins: joins} = query, sources) do
+  defp join(%{joins: joins} = query, sources) do
     Enum.map(joins, fn
       %JoinExpr{
         on: %QueryExpr{expr: expression},
@@ -1281,17 +1277,17 @@ defmodule XqliteEcto3.Connection do
       message: "join `#{inspect(mode)}` not supported by SQLite"
   end
 
-  def where(%{wheres: wheres} = query, sources) do
+  defp where(%{wheres: wheres} = query, sources) do
     boolean(" WHERE ", wheres, sources, query)
   end
 
-  def having(%{havings: havings} = query, sources) do
+  defp having(%{havings: havings} = query, sources) do
     boolean(" HAVING ", havings, sources, query)
   end
 
-  def group_by(%{group_bys: []}, _sources), do: []
+  defp group_by(%{group_bys: []}, _sources), do: []
 
-  def group_by(%{group_bys: group_bys} = query, sources) do
+  defp group_by(%{group_bys: group_bys} = query, sources) do
     [
       " GROUP BY "
       | Enum.map_intersperse(group_bys, ", ", fn %ByExpr{expr: expression} ->
@@ -1300,9 +1296,9 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  def window(%{windows: []}, _sources), do: []
+  defp window(%{windows: []}, _sources), do: []
 
-  def window(%{windows: windows} = query, sources) do
+  defp window(%{windows: windows} = query, sources) do
     [
       " WINDOW "
       | Enum.map_intersperse(windows, ", ", fn {name, %{expr: kw}} ->
@@ -1336,9 +1332,9 @@ defmodule XqliteEcto3.Connection do
       message: "window expression `#{inspect(key)}` is not supported by SQLite"
   end
 
-  def order_by(%{order_bys: []}, _sources), do: []
+  defp order_by(%{order_bys: []}, _sources), do: []
 
-  def order_by(%{order_bys: order_bys} = query, sources) do
+  defp order_by(%{order_bys: order_bys} = query, sources) do
     order_bys = Enum.flat_map(order_bys, & &1.expr)
 
     [
@@ -1364,19 +1360,19 @@ defmodule XqliteEcto3.Connection do
       message: "#{dir} is not supported in ORDER BY in SQLite"
   end
 
-  def limit(%{limit: nil, offset: nil}, _sources), do: []
+  defp limit(%{limit: nil, offset: nil}, _sources), do: []
 
   # SQLite's grammar has no bare OFFSET — a LIMIT must precede it. LIMIT -1
   # imposes no row cap, so OFFSET still skips the leading rows.
-  def limit(%{limit: nil}, _sources), do: " LIMIT -1"
+  defp limit(%{limit: nil}, _sources), do: " LIMIT -1"
 
-  def limit(%{limit: %{expr: expression}} = query, sources) do
+  defp limit(%{limit: %{expr: expression}} = query, sources) do
     [" LIMIT " | expr(expression, sources, query)]
   end
 
-  def offset(%{offset: nil}, _sources), do: []
+  defp offset(%{offset: nil}, _sources), do: []
 
-  def offset(%{offset: %QueryExpr{expr: expression}} = query, sources) do
+  defp offset(%{offset: %QueryExpr{expr: expression}} = query, sources) do
     [" OFFSET " | expr(expression, sources, query)]
   end
 
@@ -1402,12 +1398,6 @@ defmodule XqliteEcto3.Connection do
     raise Ecto.QueryError,
       query: query,
       message: "SQLite does not INTERSECT ALL"
-  end
-
-  def lock(query, _sources) do
-    raise Ecto.QueryError,
-      query: query,
-      message: "SQLite does not support locks"
   end
 
   defp boolean(_name, [], _sources, _query), do: []
@@ -1826,19 +1816,19 @@ defmodule XqliteEcto3.Connection do
   # raise. For tests comparing against microsecond-exact values the rounding
   # is visible; non-arithmetic round-trips via TEXT storage keep full
   # precision.
-  def interval(count, "microsecond", sources) do
+  defp interval(count, "microsecond", sources) do
     "(#{expr(count, sources, nil)} / 1000000.0) || ' seconds'"
   end
 
-  def interval(count, "millisecond", sources) do
+  defp interval(count, "millisecond", sources) do
     "(#{expr(count, sources, nil)} / 1000.0) || ' seconds'"
   end
 
-  def interval(count, "week", sources) do
+  defp interval(count, "week", sources) do
     "(#{expr(count, sources, nil)} * 7) || ' days'"
   end
 
-  def interval(count, interval, sources) do
+  defp interval(count, interval, sources) do
     "#{expr(count, sources, nil)} || ' #{interval}'"
   end
 
@@ -1854,22 +1844,18 @@ defmodule XqliteEcto3.Connection do
     expr(expression, sources, query)
   end
 
-  def create_names(query) do
-    create_names(query, [])
-  end
-
-  def create_names(%{sources: sources}, as_prefix) do
+  defp create_names(%{sources: sources}, as_prefix) do
     create_names(sources, 0, tuple_size(sources), as_prefix) |> List.to_tuple()
   end
 
-  def create_names(sources, pos, limit, as_prefix) when pos < limit do
+  defp create_names(sources, pos, limit, as_prefix) when pos < limit do
     [
       create_name(sources, pos, as_prefix)
       | create_names(sources, pos + 1, limit, as_prefix)
     ]
   end
 
-  def create_names(_sources, pos, pos, as_prefix) do
+  defp create_names(_sources, pos, pos, as_prefix) do
     [as_prefix]
   end
 
@@ -1877,7 +1863,7 @@ defmodule XqliteEcto3.Connection do
     [?s | :erlang.element(tuple_size(sources), sources)]
   end
 
-  def create_name(sources, pos, as_prefix) do
+  defp create_name(sources, pos, as_prefix) do
     case elem(sources, pos) do
       {:fragment, _, _} ->
         {nil, as_prefix ++ [?f, Integer.to_string(pos)], nil}
@@ -1897,11 +1883,11 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
-  def create_alias(<<first, _rest::binary>>) when first in ?a..?z when first in ?A..?Z do
+  defp create_alias(<<first, _rest::binary>>) when first in ?a..?z when first in ?A..?Z do
     first
   end
 
-  def create_alias(_) do
+  defp create_alias(_) do
     ?t
   end
 
@@ -2217,8 +2203,10 @@ defmodule XqliteEcto3.Connection do
 
   defp quote_names(names), do: Enum.map_intersperse(names, ?,, &quote_name/1)
 
+  @doc false
   def quote_name(name), do: quote_entity(name)
 
+  @doc false
   def quote_table(table), do: quote_entity(table)
 
   defp quote_table(nil, name), do: quote_entity(name)

@@ -70,6 +70,9 @@ defmodule XqliteEcto3.Types.TimestampTZ do
   def type, do: :string
 
   @impl Ecto.Type
+  def embed_as(_format), do: :self
+
+  @impl Ecto.Type
   def cast(nil), do: {:ok, nil}
   def cast(%DateTime{} = dt), do: {:ok, dt}
 

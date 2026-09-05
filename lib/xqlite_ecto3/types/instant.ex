@@ -60,6 +60,9 @@ defmodule XqliteEcto3.Types.Instant do
   def type, do: :integer
 
   @impl Ecto.Type
+  def embed_as(_format), do: :self
+
+  @impl Ecto.Type
   def cast(nil), do: {:ok, nil}
 
   def cast(%DateTime{} = dt) do

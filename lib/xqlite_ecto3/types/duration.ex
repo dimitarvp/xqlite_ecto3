@@ -61,6 +61,9 @@ defmodule XqliteEcto3.Types.Duration do
   def type, do: :integer
 
   @impl Ecto.Type
+  def embed_as(_format), do: :self
+
+  @impl Ecto.Type
   def cast(nil), do: {:ok, nil}
   def cast(ns) when is_integer(ns), do: {:ok, ns}
   def cast({n, :nanosecond}) when is_integer(n), do: {:ok, n}

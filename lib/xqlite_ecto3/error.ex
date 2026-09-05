@@ -176,6 +176,7 @@ defmodule XqliteEcto3.Error do
   @doc """
   Wraps an error reason into an `XqliteEcto3.Error` exception.
   """
+  @spec wrap(term()) :: t()
   def wrap({:constraint_violation, subtype, %{} = d}) do
     %__MODULE__{
       message: Map.get(d, :message, ""),
