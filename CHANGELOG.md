@@ -196,6 +196,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`datetime_add`, `ago`, and `from_now` compare in the stored text
+  form again.** The datetime storage form changed to SQLite's own
+  `YYYY-MM-DD HH:MM:SS[.ffffff]` earlier in this cycle, but interval
+  arithmetic still produced the old `T…Z` text, and SQLite compares
+  text byte-wise: every stored datetime sorted below any
+  `datetime_add` result on the same day, so a filter such as
+  `where: e.at > ago(1, "hour")` silently returned no rows. The
+  emitted form now matches storage (six fractional digits). The
+  undocumented `:datetime_type` application-environment key that
+  selected between two such formats is gone.
+
+- **`type(^value, :binary)` finds its row.** The tagged parameter
+  rendered as `CAST(? AS BLOB)`, but a valid-UTF-8 binary is bound
+  and stored as TEXT, and SQLite never equates TEXT with BLOB, so the
+  comparison matched nothing. The parameter is now bound bare, which
+  matches both TEXT- and BLOB-stored values.
+
+- **`values/2` quotes its column aliases.** A field named like an SQL
+  keyword (`:order`) was spliced unquoted into `column1 AS order` and
+  failed as a raw syntax error.
+
 - **`structure_dump/2` answers with a tuple when it cannot dump.**
   `mix ecto.dump` shells out to the `sqlite3` command-line program;
   with that program missing the callback raised a bare
