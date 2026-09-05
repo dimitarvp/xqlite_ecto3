@@ -145,15 +145,88 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert {:transaction, _state} = Driver.handle_status([], state)
     end
 
-    test "a status-read failure on the guard path disconnects like checkout and ping",
+    # The enrichment reads the database back through the same connection,
+    # so the disconnect verdict is taken before them — and a connection
+    # that only rolled its transaction back still reads, so the real
+    # index name comes back with the error a changeset will match on.
+    test "a violation that takes the transaction down still names its index",
+         %{state: state} do
+      {:ok, _} = NIF.query(state.conn, "CREATE TABLE rb(id INTEGER PRIMARY KEY, email TEXT)", [])
+      {:ok, _} = NIF.query(state.conn, "CREATE UNIQUE INDEX rb_email_uniq ON rb(email)", [])
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO rb(email) VALUES ('a@x')", [])
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      dup = %XqliteEcto3.Query{statement: "INSERT OR ROLLBACK INTO rb(email) VALUES ('a@x')"}
+
+      assert {:disconnect, %XqliteEcto3.Error{details: details}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+
+      assert details.unique_index_lookup == :ok
+      assert details.unique_index_names == ["rb_email_uniq"]
+    end
+
+    test "the same violation on a surviving connection is enriched", %{state: state} do
+      {:ok, _} =
+        NIF.query(
+          state.conn,
+          "CREATE TABLE enrich(id INTEGER PRIMARY KEY, email TEXT UNIQUE ON CONFLICT ROLLBACK)",
+          []
+        )
+
+      {:ok, _} = NIF.query(state.conn, "INSERT INTO enrich(email) VALUES ('a@x')", [])
+
+      dup = %XqliteEcto3.Query{statement: "INSERT INTO enrich(email) VALUES ('a@x')"}
+
+      assert {:error, %XqliteEcto3.Error{details: details}, _state} =
+               Driver.handle_execute(dup, [], [], state)
+
+      assert details.unique_index_lookup == :ok
+      assert details.unique_index_names == ["sqlite_autoindex_enrich_1"]
+    end
+  end
+
+  # A NIF call that reports the connection closed leaves nothing to run
+  # against, whoever closed it, so the caller gets DBConnection's own
+  # error for a dead connection and the connection leaves the pool
+  # instead of staying in it behind an adapter-specific error.
+  describe "a connection closed under a checked-out operation" do
+    test "a statement disconnects with DBConnection's error", %{state: state} do
+      :ok = NIF.close(state.conn)
+
+      query = %XqliteEcto3.Query{statement: "SELECT 1"}
+
+      assert {:disconnect, %DBConnection.ConnectionError{reason: :error}, _state} =
+               Driver.handle_execute(query, [], [], state)
+    end
+
+    test "an open transaction does not change what the closed connection reports",
          %{state: state} do
       {:ok, _result, state} = Driver.handle_begin([], state)
       :ok = NIF.close(state.conn)
 
       bad = %XqliteEcto3.Query{statement: "INSERT INTO missing_table(x) VALUES (1)"}
 
-      assert {:disconnect, %XqliteEcto3.Error{}, _state} =
+      assert {:disconnect, %DBConnection.ConnectionError{reason: :error}, _state} =
                Driver.handle_execute(bad, [], [], state)
+    end
+
+    test "declaring a cursor disconnects with DBConnection's error", %{state: state} do
+      :ok = NIF.close(state.conn)
+
+      query = %XqliteEcto3.Query{statement: "SELECT 1"}
+
+      assert {:disconnect, %DBConnection.ConnectionError{reason: :error}, _state} =
+               Driver.handle_declare(query, [], [], state)
+    end
+
+    test "fetching from an open cursor disconnects with DBConnection's error", %{state: state} do
+      query = %XqliteEcto3.Query{statement: "SELECT 1"}
+
+      assert {:ok, _query, cursor, state} = Driver.handle_declare(query, [], [], state)
+      :ok = NIF.close(state.conn)
+
+      assert {:disconnect, %DBConnection.ConnectionError{reason: :error}, _state} =
+               Driver.handle_fetch(query, cursor, [], state)
     end
   end
 

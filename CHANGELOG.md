@@ -210,6 +210,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A connection closed under a running operation reports
+  DBConnection's own error and leaves the pool.** A NIF call that came
+  back `:connection_closed` — a prepare, a bind or a step, and the
+  stream path's open and fetch — was wrapped as
+  `%XqliteEcto3.Error{type: :connection_closed}` and returned as an
+  ordinary statement error, which left a dead connection in the pool.
+  A pooled `:timeout` is the common way to get there: DBConnection's
+  checkout deadline starts when you call, before you hold a
+  connection, so a call that spent its whole budget queueing is
+  disconnected as its query begins. That call now returns
+  `%DBConnection.ConnectionError{message: "connection closed during
+  the operation", reason: :error}` and the connection is dropped, so
+  either order of that race wears the same exception, told apart by
+  `reason` and never by message text.
+
+- **The disconnect decision now comes before the error enrichment.**
+  The unique-index name lookup and the FK replay read the database
+  back through the same connection, and they ran before the driver
+  decided whether the failed statement had taken the whole transaction
+  with it. The driver decides first now. A rolled-back transaction
+  leaves a connection that still reads, so its error is enriched
+  exactly as before — a `unique_constraint/3` naming a custom index
+  still matches a violation that rolled the transaction back. A
+  connection whose own transaction status cannot be read is dropped
+  without those reads, its error carrying the structured details
+  SQLite gave with `unique_index_lookup: :not_run`.
+
+- **An unexpected `PRAGMA foreign_key_list` row no longer raises out
+  of the diagnosis.** Rich FK diagnostics group that pragma's rows
+  with fixed patterns, and a row carrying fewer columns than the
+  grouping reads — an empty row included — raised a
+  `FunctionClauseError` through an error path that was already
+  handling a constraint violation, so a structured error became an
+  exception. Such a row now degrades to `fk_diagnostics:
+  {:unavailable, {:unexpected_fk_row, row}}`, the way an unexpected
+  `foreign_key_check` row already did. Extra columns and `nil` values
+  were harmless before and stay harmless.
+
+- **A decimal that JSON cannot print refuses with structure.** Jason
+  renders a `%Decimal{}` in its plain form, which `Decimal` itself
+  refuses past its print limit (6178 digits by default), so a map or
+  list parameter holding a decimal that large raised a bare
+  `ArgumentError` out of the encoder instead of the
+  `XqliteEcto3.UnencodableParameterError` that boundary promises. It
+  now raises that error, carrying the parameter, its position, and the
+  `ArgumentError` as the reason. The digit limit itself is not lifted:
+  a 7000-digit JSON number is still refused, only now with structure.
+
 - **`alter table ... add` keeps `null: false` on datetime columns.**
   Adding a `:utc_datetime` or `:naive_datetime` column dropped the
   option before rendering, so `add :at, :utc_datetime, null: false` —

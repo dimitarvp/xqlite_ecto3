@@ -213,14 +213,19 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp fk_definitions(conn, check_rows) do
     with {:ok, child_tables} <- child_tables(check_rows) do
       Enum.reduce_while(child_tables, {:ok, %{}}, fn child_table, {:ok, acc} ->
-        case NIF.query(conn, "PRAGMA foreign_key_list(#{quote_ident(child_table)})", []) do
-          {:ok, %{rows: rows}} ->
-            {:cont, {:ok, Map.put(acc, child_table, group_fk_rows(rows))}}
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
+        case fk_definitions_of(conn, child_table) do
+          {:ok, grouped} -> {:cont, {:ok, Map.put(acc, child_table, grouped)}}
+          {:error, reason} -> {:halt, {:error, reason}}
         end
       end)
+    end
+  end
+
+  defp fk_definitions_of(conn, child_table) do
+    sql = "PRAGMA foreign_key_list(#{quote_ident(child_table)})"
+
+    with {:ok, %{rows: rows}} <- NIF.query(conn, sql, []) do
+      group_fk_rows(rows)
     end
   end
 
@@ -241,20 +246,51 @@ defmodule XqliteEcto3.FkDiagnostics do
   end
 
   # foreign_key_list columns: id, seq, table (parent), from, to,
-  # on_update, on_delete, match.
-  defp group_fk_rows(rows) do
-    rows
-    |> Enum.group_by(fn [id | _] -> id end)
-    |> Map.new(fn {id, fk_rows} ->
-      sorted = Enum.sort_by(fk_rows, fn [_id, seq | _] -> seq end)
-      [_, _, parent_table | _] = hd(sorted)
-      child_columns = Enum.map(sorted, fn [_, _, _, from | _] -> from end)
-      parent_columns = Enum.map(sorted, fn [_, _, _, _, to | _] -> to end)
-
-      {id,
-       %{parent_table: parent_table, child_columns: child_columns, parent_columns: parent_columns}}
-    end)
+  # on_update, on_delete, match. A row that does not carry the five this
+  # reads means the pragma is not what the code was written against —
+  # report it the way the foreign_key_check reader does, rather than
+  # raising out of an error path that is already handling a violation.
+  @doc false
+  @spec group_fk_rows([term()]) :: {:ok, map()} | {:error, {:unexpected_fk_row, term()}}
+  def group_fk_rows(rows) do
+    with {:ok, parsed} <- parse_fk_rows(rows) do
+      {:ok, group_parsed_fk_rows(parsed)}
+    end
   end
+
+  defp parse_fk_rows(rows) do
+    result =
+      Enum.reduce_while(rows, {:ok, []}, fn
+        [id, seq, parent_table, from, to | _rest], {:ok, acc} ->
+          {:cont, {:ok, [{id, seq, parent_table, from, to} | acc]}}
+
+        row, {:ok, _acc} ->
+          {:halt, {:error, {:unexpected_fk_row, row}}}
+      end)
+
+    with {:ok, parsed} <- result do
+      {:ok, Enum.reverse(parsed)}
+    end
+  end
+
+  defp group_parsed_fk_rows(parsed) do
+    parsed
+    |> Enum.group_by(fn {id, _seq, _parent_table, _from, _to} -> id end)
+    |> Map.new(fn {id, fk_rows} -> {id, fk_definition(fk_rows)} end)
+  end
+
+  # Multi-column FKs span several rows sharing an id, ordered by seq.
+  defp fk_definition(fk_rows) do
+    sorted = Enum.sort_by(fk_rows, fn {_id, seq, _parent_table, _from, _to} -> seq end)
+
+    %{
+      parent_table: parent_table(sorted),
+      child_columns: Enum.map(sorted, fn {_id, _seq, _parent_table, from, _to} -> from end),
+      parent_columns: Enum.map(sorted, fn {_id, _seq, _parent_table, _from, to} -> to end)
+    }
+  end
+
+  defp parent_table([{_id, _seq, parent_table, _from, _to} | _rest]), do: parent_table
 
   defp build_violation([child_table, child_rowid, parent_table, fk_id], fk_defs) do
     case get_in(fk_defs, [child_table, fk_id]) do

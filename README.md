@@ -194,16 +194,17 @@ MyApp.Repo.all(slow_query, timeout: 5_000)
 
 Through a pool, that same `:timeout` also trips DBConnection's own checkout deadline (the same value), which disconnects and reconnects that connection — standard DBConnection behavior for every adapter, not specific to this one. So connection-local state does not survive a pooled query timeout: temp tables, session `PRAGMA`s, and the prepared-statement cache on that connection are gone, and there is a reconnect cost. What the graceful cancel adds on top is that the blocked query *returns at the deadline* instead of running to completion first — the connection recycles promptly rather than after the runaway query finishes.
 
-`:timeout` bounds how long the **query** runs, not how long your **call** waits. Every SQLite call runs on one of the BEAM's dirty schedulers — the fixed set of OS threads reserved for long native calls — and the cancelled query's reply has to get back to you through them. When those threads are all busy, the wait can run orders of magnitude past the deadline. Raising `pool_size` does not help: the queue is on the schedulers, not on the pool.
+`:timeout` bounds how long the **query** runs, not how long your **call** waits. Every SQLite call runs on one of the BEAM's dirty schedulers — the fixed set of OS threads reserved for long native calls — and the cancelled query's reply has to get back to you through them. When those threads are all busy, the wait can run orders of magnitude past the deadline: with every dirty scheduler saturated, a measured 100 ms `:timeout` returned after 11.3 s — 113 times what it asked for. Raising `pool_size` does not help: the queue is on the schedulers, not on the pool.
 
 Pool exhaustion is a separate case, and it is the one a bigger pool does fix: every connection is busy, so the call never reaches SQLite at all. DBConnection's `:queue_target` and `:queue_interval` govern that wait. Both cases raise the same exception and are told apart by its `reason` field, no message parsing:
 
 | what happened | error |
 | --- | --- |
 | the query was cancelled at its deadline | `%DBConnection.ConnectionError{reason: :error}` |
+| the connection was closed under the query | `%DBConnection.ConnectionError{reason: :error}` |
 | no connection came free in time | `%DBConnection.ConnectionError{reason: :queue_timeout}` |
 
-Scheduler saturation shows up as the first shape, only later than you asked for.
+Scheduler saturation shows up as the first row, only later than you asked for. The second row happens when the pool's checkout deadline — which starts when you call, before you are handed a connection — is already spent by the time your query begins: the pool closes that connection while the adapter is still working on it. Each of those carries its own message (`"query timed out"`, `"connection closed during the operation"`, and a third one DBConnection writes when it retires the connection before your call reaches the adapter), but all of them carry `reason: :error` — match on `reason`, never on the text.
 
 One wait `:timeout` does not bound at all: another connection's write lock. A blocked write sits inside SQLite's busy handler, where the progress handler — the thing a cancel signals — never runs, so the call returns when `busy_timeout` expires (default 5000 ms), however small `:timeout` is, with a structured `%XqliteEcto3.Error{type: :database_busy_or_locked}`. When lock waits must respect your deadline, set `busy_timeout` at or below it. Transaction start waits the same way: with the default `:immediate` mode, `BEGIN` takes the write lock inside the busy handler, so `Repo.transaction/2` can wait a full `busy_timeout` before failing with that error — and the failure keeps the connection rather than recycling it.
 

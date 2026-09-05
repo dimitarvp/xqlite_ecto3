@@ -68,8 +68,10 @@ defmodule XqliteEcto3.Query do
     # struct can reach this boundary untouched (a :duration field's
     # %Duration{} does). Jason reports invalid input as an error tuple,
     # but a missing Jason.Encoder implementation raises through protocol
-    # dispatch instead — the rescue converts that raise into the same
-    # structured refusal, naming the parameter instead of the protocol.
+    # dispatch instead, and a %Decimal{} too long for Decimal's own plain
+    # form raises ArgumentError from inside the encoder — the rescue
+    # turns either raise into the same structured refusal, naming the
+    # parameter instead of the protocol or the print limit.
     defp encode_json(value, index) do
       case Jason.encode(value) do
         {:ok, json} ->
@@ -82,7 +84,7 @@ defmodule XqliteEcto3.Query do
             reason: reason
       end
     rescue
-      e in Protocol.UndefinedError ->
+      e in [Protocol.UndefinedError, ArgumentError] ->
         reraise XqliteEcto3.UnencodableParameterError.exception(
                   value: value,
                   index: index,
@@ -111,8 +113,10 @@ defmodule XqliteEcto3.UnencodableParameterError do
 
   Fields: `value` (the offending parameter), `index` (its 1-based
   position), `reason` (a `%Protocol.UndefinedError{}` for a missing
-  `Jason.Encoder`, or a `%Jason.EncodeError{}` for input JSON cannot
-  represent).
+  `Jason.Encoder`, a `%Jason.EncodeError{}` for input JSON cannot
+  represent, or an `%ArgumentError{}` for a `%Decimal{}` whose plain
+  form — what the JSON encoder prints — is longer than `Decimal`'s own
+  configured print limit, 6178 digits by default).
   """
 
   defexception [:value, :index, :reason]

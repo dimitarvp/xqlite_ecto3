@@ -220,6 +220,67 @@ defmodule XqliteEcto3.CancellationTest do
                pool_exec(pool, sql, timeout: 100)
     end
 
+    # DBConnection's checkout deadline is armed before the caller queues,
+    # the driver's own cancel timer only once the connection is in hand.
+    # Hold the single connection long enough and the deadline is already
+    # spent when the victim finally checks out, so the pool disconnects
+    # the connection under the victim's first call. Whichever of the two
+    # fires, the caller sees DBConnection's own error — never an adapter
+    # error about a connection somebody else closed.
+    @tag capture_log: true
+    test "a victim whose deadline expired while queueing still reports DBConnection's error",
+         %{slow_sql: sql} do
+      for _run <- 1..10 do
+        assert {:error, %DBConnection.ConnectionError{}} = forced_holder_win(sql)
+      end
+    end
+
+    defp forced_holder_win(sql) do
+      db =
+        Path.join(
+          System.tmp_dir!(),
+          "xqlite_ecto3_cancel_holder_#{:erlang.unique_integer([:positive])}.db"
+        )
+
+      # A queue that never gives up on a waiting caller, so the victim
+      # always reaches a connection and the outcome is the race this test
+      # is about, not a caller dropped before it got there.
+      {:ok, pool} =
+        DBConnection.start_link(Driver,
+          database: db,
+          pool_size: 1,
+          journal_mode: :memory,
+          busy_timeout: 1_000,
+          queue_target: 5_000,
+          queue_interval: 5_000
+        )
+
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          DBConnection.run(
+            pool,
+            fn _conn ->
+              send(parent, :holding)
+              Process.sleep(400)
+            end,
+            timeout: :infinity
+          )
+        end)
+
+      assert_receive :holding, 5_000
+      Process.sleep(20)
+
+      result = pool_exec(pool, sql, timeout: 100)
+
+      Process.exit(holder, :kill)
+      GenServer.stop(pool, :normal, 5_000)
+      File.rm(db)
+
+      result
+    end
+
     @tag capture_log: true
     test "a caller that cannot get a connection reports reason :queue_timeout" do
       db =

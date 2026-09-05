@@ -126,12 +126,27 @@ calls `sync_after_transaction_control/2` on every column-less result; a
 statement failing while a transaction is believed open goes through
 `disconnect_if_rolled_back/2` — see the state table below.
 
+Two rules sit on that error path. A NIF call inside a checked-out operation
+that answers `:connection_closed` — prepare, bind and step on the execute
+path, `stream_open`, `stream_get_columns` and `stream_fetch` on the stream
+path — disconnects, whoever closed the connection, and reports
+`%DBConnection.ConnectionError{message: "connection closed during the operation"}`:
+that struct is DBConnection's own shape for a dead connection, and
+`%XqliteEcto3.Error{type: :connection_closed}` never leaves a checked-out
+operation. And the disconnect verdict is taken before any enrichment: a
+connection that only rolled its transaction back still reads, so it
+disconnects with the reads flow 5 describes already on the error, while one
+whose own transaction status could not be read is dropped without them,
+keeping the structured details SQLite gave with
+`unique_index_lookup: :not_run`.
+
 ### 5. Errors, and the two reads on the error path
 
 `Error.wrap/1` produces `%XqliteEcto3.Error{type:, message:, details:}`;
 `Driver.wrap_execute_error/4` then runs `UniqueIndexNames.resolve/2` always and
 `FkDiagnostics` only under `rich_fk_diagnostics: true`, and stamps
-`:statement`. `Ecto.Adapters.SQL`
+`:statement`. It runs only on a connection the disconnect verdict kept (flow
+4). `Ecto.Adapters.SQL`
 (`deps/ecto_sql/lib/ecto/adapters/sql.ex:1207`) calls
 `Connection.to_constraints/2`, which matches the `Error.Constraint` subtype and
 returns `[{:unique, name}]`, `[{:foreign_key, name}, ...]`, `[{:check, name}]`

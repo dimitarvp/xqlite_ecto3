@@ -228,6 +228,47 @@ defmodule XqliteEcto3.QueryEncodingTest do
       assert encode([%{a: 1}]) == [~s({"a":1})]
     end
 
+    test "a decimal JSON cannot print refuses structurally, carrying the parameter" do
+      param = %{"amount" => Decimal.new(1, 1, 7000)}
+
+      err =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+          encode([param])
+        end
+
+      assert err.value == param
+      assert err.index == 1
+      assert %ArgumentError{} = err.reason
+    end
+
+    # Jason prints a %Decimal{} in its plain form, which Decimal itself
+    # refuses past its digit limit. Whatever the exponent, a map or list
+    # parameter either encodes or refuses with the structured error —
+    # never with another exception. (A bare %Decimal{} parameter never
+    # reaches JSON at all: it binds through the numeric guard above.)
+    property "a nested decimal encodes or refuses structurally, whatever its exponent" do
+      check all(
+              exponent <- StreamData.integer(-8_000..8_000),
+              coefficient <- StreamData.integer(1..999),
+              nesting <- StreamData.member_of([:map, :list, :deep]),
+              max_runs: 2000
+            ) do
+        param = nest(Decimal.new(1, coefficient, exponent), nesting)
+
+        case encode_outcome([param]) do
+          {:ok, [json]} ->
+            assert is_binary(json)
+
+          {:raised, %XqliteEcto3.UnencodableParameterError{} = err} ->
+            assert err.value == param
+            assert err.index == 1
+
+          other ->
+            flunk("encoding #{inspect(param)} gave #{inspect(other)}")
+        end
+      end
+    end
+
     test "the decimal refusal carries its parameter position" do
       err =
         assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
@@ -236,6 +277,16 @@ defmodule XqliteEcto3.QueryEncodingTest do
 
       assert err.index == 2
     end
+  end
+
+  defp nest(value, :map), do: %{"v" => value}
+  defp nest(value, :list), do: [value]
+  defp nest(value, :deep), do: %{"outer" => [%{"inner" => value}]}
+
+  defp encode_outcome(params) do
+    {:ok, encode(params)}
+  rescue
+    e -> {:raised, e}
   end
 
   describe "String.Chars protocol" do

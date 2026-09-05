@@ -603,10 +603,11 @@ defmodule XqliteEcto3.Driver do
               state
             )
 
+          {:error, :connection_closed} ->
+            {:disconnect, closed_connection_error(), state}
+
           {:error, reason} ->
-            reason
-            |> wrap_execute_error(sql, params, state)
-            |> disconnect_if_rolled_back(state)
+            execute_error(reason, sql, params, state)
         end
 
       classify_dbc(result, start_md)
@@ -625,15 +626,55 @@ defmodule XqliteEcto3.Driver do
   # only, only while a transaction is supposed to be open. A failed status
   # read means the connection itself is unusable — disconnect, the same
   # disposition checkout/1 and ping/1 give that error.
-  defp disconnect_if_rolled_back(wrapped, %__MODULE__{transaction_status: :transaction} = state) do
-    case NIF.transaction_status(state.conn) do
-      {:ok, true} -> {:error, wrapped, state}
-      {:ok, false} -> {:disconnect, wrapped, state}
-      {:error, _read_failed} -> {:disconnect, wrapped, state}
+  defp disconnect_if_rolled_back(wrapped, state) do
+    case transaction_verdict(state) do
+      :keep -> {:error, wrapped, state}
+      :rolled_back -> {:disconnect, wrapped, state}
+      :unusable -> {:disconnect, wrapped, state}
     end
   end
 
-  defp disconnect_if_rolled_back(wrapped, state), do: {:error, wrapped, state}
+  defp transaction_verdict(%__MODULE__{transaction_status: :transaction} = state) do
+    case NIF.transaction_status(state.conn) do
+      {:ok, true} -> :keep
+      {:ok, false} -> :rolled_back
+      {:error, _read_failed} -> :unusable
+    end
+  end
+
+  defp transaction_verdict(_state), do: :keep
+
+  # The wrapping below reads the database back through this same
+  # connection for the index names and the FK replay, so the verdict is
+  # taken before any of those reads. A connection that rolled its
+  # transaction back still reads, so it keeps the enrichment on its way
+  # out; one whose own status could not be read cannot be read at all,
+  # and its error carries what SQLite gave, unenriched.
+  defp execute_error(reason, sql, params, state) do
+    case transaction_verdict(state) do
+      :keep ->
+        {:error, wrap_execute_error(reason, sql, params, state), state}
+
+      :rolled_back ->
+        {:disconnect, wrap_execute_error(reason, sql, params, state), state}
+
+      :unusable ->
+        wrapped =
+          reason
+          |> XqliteEcto3.Error.wrap()
+          |> put_statement(sql)
+
+        {:disconnect, wrapped, state}
+    end
+  end
+
+  # DBConnection's own error for a connection that is gone, and what
+  # every closed-connection report inside a checked-out operation wears:
+  # whoever closed it, nothing more can run on it, so it leaves the pool
+  # instead of coming back as an ordinary statement error.
+  defp closed_connection_error do
+    %DBConnection.ConnectionError{message: "connection closed during the operation"}
+  end
 
   # BEGIN/COMMIT/ROLLBACK/SAVEPOINT/RELEASE run as ordinary SQL (Repo.query,
   # Ecto.Adapters.SQL.query) never reach handle_begin & friends, so without
@@ -965,18 +1006,11 @@ defmodule XqliteEcto3.Driver do
 
               {:error, reason} ->
                 NIF.stream_close(handle)
-
-                reason
-                |> XqliteEcto3.Error.wrap()
-                |> put_statement(sql)
-                |> disconnect_if_rolled_back(state)
+                stream_error(reason, sql, state)
             end
 
           {:error, reason} ->
-            reason
-            |> XqliteEcto3.Error.wrap()
-            |> put_statement(sql)
-            |> disconnect_if_rolled_back(state)
+            stream_error(reason, sql, state)
         end
 
       classify_dbc(result, start_md)
@@ -1003,14 +1037,23 @@ defmodule XqliteEcto3.Driver do
             {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
 
           {:error, reason} ->
-            reason
-            |> XqliteEcto3.Error.wrap()
-            |> put_statement(IO.iodata_to_binary(query.statement))
-            |> disconnect_if_rolled_back(state)
+            sql = IO.iodata_to_binary(query.statement)
+            stream_error(reason, sql, state)
         end
 
       classify_dbc(result, start_md)
     end
+  end
+
+  defp stream_error(:connection_closed, _sql, state) do
+    {:disconnect, closed_connection_error(), state}
+  end
+
+  defp stream_error(reason, sql, state) do
+    reason
+    |> XqliteEcto3.Error.wrap()
+    |> put_statement(sql)
+    |> disconnect_if_rolled_back(state)
   end
 
   @impl DBConnection
