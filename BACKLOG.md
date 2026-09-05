@@ -813,6 +813,17 @@ after the S0–S2 burn-down.
   unlocked by xqlite 0.9.0's busy split.
 - [A3] Optionally migrate raw `XqliteNIF.txn_state/connection_stats`
   doc references to the new `Xqlite` wrappers (additive, optional).
+- [A5] (Dimi, 2026-09-05: "why not `Repo.transact` instead? … maybe
+  for later") Adopt `Repo.transact/2` (Ecto ≥ 3.13; the `~> 3.14`
+  pin has it) as the transaction idiom in the README, the guides,
+  and the adapter's own tests where `Repo.transaction/2` is used for
+  its result — `transact` rolls back on an `{:error, _}` return
+  instead of `Repo.rollback/1`, and forwards the same `mode:` opts,
+  so it exercises the identical `handle_begin` path (the top-level
+  `mode: :savepoint` refusal and the busy-begin behavior are
+  unchanged by it). Keep `transaction/2` where its raise/rollback
+  semantics are the point. Not a driver change; do it as one docs +
+  tests pass after lap 7, never mid-run.
 
 ## Closed
 

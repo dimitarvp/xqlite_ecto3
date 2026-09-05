@@ -7166,3 +7166,25 @@ events flowing.
   and not this test's title. Recorded as a sweep miss, same class as Run 45's.
 - Rowid mapping: connection.ex stashed → constraints_test 1/1 red on the
   synthetic pin, green after pop (69 passed across the two files).
+
+### Run 50 addendum — the push went out on a RED gate (procedure error), fixed by a rider
+
+- `mix verify` for the Run 50 tree was RED (exit 1): a SEVENTH pin of the old
+  savepoint-refusal shape — `transaction_atomicity_test.exs:310`, "top-level
+  savepoint mode is refused …", `assert_raise DBConnection.ConnectionError` —
+  which the behavior sweep missed twice (its title carries neither search
+  phrase; the file's hits were comments). The orchestrator's commit command
+  guarded ONLY the ledger append with `[ "$(cat exit)" = 0 ] && cat >> … <<EOF`
+  and then ran `git add`/`git commit`/`git push` as separate, unguarded lines —
+  the fused-chain class Run 16 already recorded. Result: `25b0b0d`..`b19c04d`
+  pushed on a red gate; CI run 33939813688 red on 12 jobs (every test lane +
+  coverage + latest-ecto_sql), all on that one test; the ledger's verify line
+  was correctly blocked by the guard, so no false GREEN was recorded.
+- Rider: the pin flipped to `assert_raise XqliteEcto3.Error` +
+  `type == :savepoint_without_transaction`; re-verified (line below);
+  committed with an abort-first guard (`[ "$(cat exit)" = 0 ] || exit 1` as the
+  script's first statement — codified in the verify-gate memory).
+- Rider `mix verify` GREEN (exit file 0 — the flipped pin's file first, then
+  format, compile, deps.audit, sobelow, dialyzer, the full sequential suite).
+
+---

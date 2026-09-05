@@ -308,9 +308,12 @@ defmodule XqliteEcto3.TransactionAtomicityTest do
     # nested savepoints (an enclosing transaction open) work as before and
     # are covered by the driver-level lifecycle tests and the sandbox suite.
     test "is refused: a lone SAVEPOINT would run the transaction :deferred" do
-      assert_raise DBConnection.ConnectionError, fn ->
-        PoolRepo.transaction(fn -> :never_runs end, mode: :savepoint)
-      end
+      error =
+        assert_raise XqliteEcto3.Error, fn ->
+          PoolRepo.transaction(fn -> :never_runs end, mode: :savepoint)
+        end
+
+      assert error.type == :savepoint_without_transaction
 
       # the refusal costs that one connection; the pool serves the next call
       assert %{rows: [[1]]} = PoolRepo.query!("SELECT 1")
