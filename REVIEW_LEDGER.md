@@ -6968,3 +6968,69 @@ CI-tested), MSRV, license, CHANGELOG honesty, quickstart cold-run,
 `~>` sanity (`~> 0.11.0` since F-X1-4). Remaining before the gate
 is called green: CI on both pushes, and the maintainer's read of
 the unverifiable-claims list.
+
+### Gate 3 addendum — "guides execute", both repos (same day)
+
+Two Opus cold-runs executed every fenced snippet and every testable
+prose claim: xqlite's five guides against the Hex 0.11.0 package (31
+snippets), the adapter's two guides against the pushed main (13
+snippets plus the README scaffolding). Every runtime claim below was
+re-driven by the orchestrator before an edit was made.
+
+**xqlite (fixed in `f984414`):** the security guide and the README
+feature list still showed `{:authorization_denied, message}` — the
+real term is `{:authorization_denied, 23, "not authorized"}` (S2
+doc-behavior divergence, present since the 3-tuple change); the
+authorizer example deleted from a table it never created; the
+telemetry guide's Honeycomb section called
+`:opentelemetry_telemetry.attach/2`, which does not exist
+(opentelemetry_telemetry 1.1.2 ships `:otel_telemetry` with
+`start_telemetry_span/4`, `end_telemetry_span/2` and friends — no
+attach); the Logger sample lacked `require Logger`; the gotchas
+`:emit_error` sample piped the `{:error, reason}` that
+`Xqlite.stream/4` returns on a setup failure into `Enum`; two
+placeholders labelled. SpatiaLite's five snippets NOT RUN — the system
+library is absent here; the guide's apt line verified correct.
+
+**Adapter, product defect (S2, fixed in this commit, RED→green):**
+`config :xqlite_ecto3, :binary_id_storage, :binary` flipped the DDL to
+BLOB but a `:binary_id` field still wrote the 36-char string: Ecto's
+`:binary_id` primitive passes binaries through, so `binary_id_dump/1`
+only ever saw raw bytes from `Ecto.UUID`-typed fields — the shape the
+existing pins tested — and the documented shape
+(`@primary_key {:id, :binary_id, autogenerate: true}`) fell to the
+pass-through clause. No `:binary_id` loader existed either, so a
+correctly stored BLOB would have loaded as 16 raw bytes. Fix: the
+dumper compacts a UUID-shaped string to its 16 bytes under `:binary`
+(non-UUID strings pass through — `:binary_id` is not necessarily a
+UUID in Ecto), and a storage-aware loader expands 16 bytes to the
+string under `:binary` only (a 16-byte value under `:string` storage
+is an opaque id). Pins: the dumper and loader chains through
+`Ecto.Type.adapter_dump/3` and `adapter_load/3`, plus a schema round
+trip asserting `typeof(id) = 'blob'`, `length(id) = 16`, and
+`Repo.get!` by the string id. RED 3/3 before the fix. `Types.UUID`
+with `storage: :binary` was never affected.
+
+**Adapter, docs (fixed in this commit):** the migration guide's
+headline rescue example read `e.constraint_type` /
+`e.constraint_details` (removed in the payload restructure →
+`KeyError`); its sanity table carried the same stale shape; the
+escape-hatch example collided with the default primary key; Step 5
+sent `explain_analyze` through `Repo.checkout` (which hands the caller
+no connection) instead of `XqliteEcto3.explain_analyze/3`; four
+fragments could not compile as printed. The telemetry guide claimed
+three composing layers — the adapter drives the NIF layer directly,
+so `[:xqlite, …]` spans never fire for Repo traffic (33 attached, none
+fired; statically: the driver calls `XqliteNIF.*`, the only `Xqlite.*`
+wrapper call in lib is `explain_analyze`); its "adapter vs driver"
+sample subtracted a span that cannot exist; two samples called
+`Telemetry.Metrics.Counter.inc/1` and `Distribution.observe/2`, which
+that library does not have (its metrics are declarations consumed by
+reporters); the OpenTelemetry section was the same fabricated
+`attach/2`. Every other claim held — the four-case unique-index
+contract, FK and NOT NULL shapes, in-flight `:timeout` cancellation
+(407 ms observed against a 400 ms budget), MODIFY batching into one
+rebuild, DELETE with JOIN, every event's metadata keys,
+statement-cache counts, disconnect correlation by `conn`, the OTel
+attribute mapping, and a reader following only the guide does get
+events flowing.
