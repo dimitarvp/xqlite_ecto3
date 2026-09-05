@@ -118,4 +118,66 @@ defmodule XqliteEcto3.BinaryIdStorageTest do
       assert byte_size(stored) == 16
     end
   end
+
+  describe "the :binary_id field chain (Ecto hands the 36-char string to the adapter)" do
+    test "with :binary config, a UUID string dumps to its 16 raw bytes" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      assert Ecto.Type.adapter_dump(XqliteEcto3, :binary_id, @uuid_string) == {:ok, @uuid_raw}
+    end
+
+    test "with :binary config, a string that is not a UUID passes through" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      assert Ecto.Type.adapter_dump(XqliteEcto3, :binary_id, "not-a-uuid") == {:ok, "not-a-uuid"}
+    end
+
+    test "with :string config, a UUID string dumps unchanged" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+      assert Ecto.Type.adapter_dump(XqliteEcto3, :binary_id, @uuid_string) == {:ok, @uuid_string}
+    end
+
+    test "with :binary config, 16 raw bytes load as the 36-char string" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      assert Ecto.Type.adapter_load(XqliteEcto3, :binary_id, @uuid_raw) == {:ok, @uuid_string}
+    end
+
+    test "with :binary config, a row written as text before the flip still loads" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      assert Ecto.Type.adapter_load(XqliteEcto3, :binary_id, @uuid_string) == {:ok, @uuid_string}
+    end
+
+    test "with :string config, a 16-byte value loads unchanged" do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+
+      assert Ecto.Type.adapter_load(XqliteEcto3, :binary_id, "sixteen  bytes!!") ==
+               {:ok, "sixteen  bytes!!"}
+    end
+  end
+
+  defmodule Account do
+    use Ecto.Schema
+
+    @primary_key {:id, :binary_id, autogenerate: true}
+    schema "bid_accounts" do
+      field(:note, :string)
+    end
+  end
+
+  describe "a :binary_id schema under :binary storage" do
+    setup do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
+      TestRepo.query!("CREATE TEMP TABLE bid_accounts(id BLOB PRIMARY KEY, note TEXT)")
+      :ok
+    end
+
+    test "stores a 16-byte BLOB and reads back the 36-char string" do
+      %Account{id: id} = TestRepo.insert!(%Account{note: "first"})
+      assert byte_size(id) == 36
+
+      assert %{rows: [["blob", 16]]} =
+               TestRepo.query!("SELECT typeof(id), length(id) FROM bid_accounts")
+
+      assert %Account{id: ^id, note: "first"} = TestRepo.get!(Account, id)
+    end
+  end
 end

@@ -55,9 +55,10 @@ defmodule XqliteEcto3 do
 
   `:string` (default) stores the 36-character UUID form in a TEXT column.
   `:binary` stores the raw 16 bytes in a BLOB column — 55% smaller per
-  row, worth it at large scale. The config governs the dumper and the
-  migration column type uniformly; the Elixir-side representation is
-  always the 36-character string either way.
+  row, worth it at large scale. The config governs the dumper, the
+  loader, and the migration column type uniformly; the Elixir-side
+  representation is always the 36-character string either way, and a
+  `:binary_id` value that is not UUID-shaped passes through as-is.
 
   **Fresh databases only.** Flipping the config after rows exist in
   `:string` form is not transparent — Ecto's default UUID loader expects
@@ -2290,7 +2291,14 @@ defmodule XqliteEcto3 do
   @impl Ecto.Adapter.Schema
   def autogenerate(:id), do: nil
   def autogenerate(:embed_id), do: Ecto.UUID.generate()
-  def autogenerate(:binary_id), do: Ecto.UUID.generate()
+  # Ecto writes this value into the row as-is, without running the
+  # dumpers, so it must already be in storage form.
+  def autogenerate(:binary_id) do
+    case binary_id_storage() do
+      :string -> Ecto.UUID.generate()
+      :binary -> Ecto.UUID.bingenerate()
+    end
+  end
 
   @impl Ecto.Adapter
   def loaders(:boolean, type), do: [&bool_decode/1, type]
@@ -2303,6 +2311,7 @@ defmodule XqliteEcto3 do
   def loaders(:time_usec, type), do: [&time_decode/1, type]
   def loaders(:decimal, type), do: [&decimal_decode/1, type]
   def loaders(:uuid, type), do: [&uuid_string_load/1, type]
+  def loaders(:binary_id, type), do: [&binary_id_load/1, type]
   def loaders(:map, type), do: [&json_decode/1, type]
   def loaders({:map, _}, type), do: [&json_decode/1, type]
   def loaders({:array, _}, type), do: [&json_decode/1, type]
@@ -2333,9 +2342,9 @@ defmodule XqliteEcto3 do
     Application.get_env(:xqlite_ecto3, :binary_id_storage, :string)
   end
 
-  # :binary_id dumper runs AFTER Ecto.UUID.dump in the chain. Input is
-  # the raw 16-byte binary (from Ecto.UUID.dump) or an already-raw value
-  # that was passed through. Shape the output to match configured storage.
+  # Input is whatever the field's own type produced: raw 16 bytes when the
+  # field is Ecto.UUID, the 36-char string when it is :binary_id (Ecto's
+  # primitive passes binaries through untouched).
   #
   # CRITICAL: every arm returns `{:ok, value}`, never `:error`. Ecto's
   # process_dumpers halts the whole insert/update on `:error`; we can
@@ -2354,7 +2363,32 @@ defmodule XqliteEcto3 do
     end
   end
 
+  defp binary_id_dump(value) when is_binary(value) do
+    case binary_id_storage() do
+      :string -> {:ok, value}
+      :binary -> compact_uuid_string(value)
+    end
+  end
+
   defp binary_id_dump(value), do: {:ok, value}
+
+  defp compact_uuid_string(string) do
+    case Ecto.UUID.dump(string) do
+      {:ok, raw} -> {:ok, raw}
+      :error -> {:ok, string}
+    end
+  end
+
+  # Storage-aware on purpose: a 16-byte value under :string storage is an
+  # opaque binary_id, not a UUID to expand.
+  defp binary_id_load(<<_::128>> = raw) do
+    case binary_id_storage() do
+      :string -> {:ok, raw}
+      :binary -> Ecto.UUID.load(raw)
+    end
+  end
+
+  defp binary_id_load(value), do: {:ok, value}
 
   # SQLite stores UUIDs as TEXT. Ecto.UUID.dump/1 produces raw 16-byte binary,
   # but the xqlite NIF can't bind raw bytes as text without a utf-8 error.
