@@ -7188,3 +7188,112 @@ events flowing.
   format, compile, deps.audit, sobelow, dialyzer, the full sequential suite).
 
 ---
+
+## Run 51 — 2026-09-05 — lap 7, batch 2: B1 solo (conformance re-audit over the Runs 42-50 + Gate-3 churn)
+
+- Commit at scan: `88e6d91` (HEAD, clean, verify + CI green). Scope: B1 solo.
+  Churn attacked: `db4d860..88e6d91` (34 commits; 17 lib files, +642/−265): the
+  Run-50 `handle_begin` `{:error, exc, state}` arm + typed refusals, the Run-49
+  `handle_fetch` stamping, the Run-43/48/49 + Gate-3 loader/dumper rework
+  (datetime form, zoned params, `:binary_id` storage, decimal casts), the Gate-3
+  `defp` flip + four deletions, the Run-44..47 rebuild-engine and connect-path
+  churn. Composition: one Opus reviewer (6 probes, `b1_cover_r51/`), every probe
+  re-driven by the orchestrator on the untouched tree BEFORE any edit (all six
+  reproduce: p01-p04 verdicts identical, p05 aborts with `ErlangError :enoent`,
+  p06 `defect=true`); fix, pins, docs, and the gate by the orchestrator. Deps:
+  db_connection 2.10.2, ecto 3.14.1, ecto_sql 3.14.0, xqlite 0.11.0 (Hex —
+  `env -u XQLITE_PATH` on every command, the sibling tree was being edited).
+
+### CONFIRMED
+
+- **F-B1-12 (S2, FIXED, RED→green).** `structure_dump/2` (`lib/xqlite_ecto3.ex`)
+  called `System.cmd("sqlite3", …)` with no executable check, so on a machine
+  without the `sqlite3` command-line program — the very thing a bundled-SQLite
+  library's users do not have — the callback raised a bare `ErlangError :enoent`.
+  `Ecto.Adapter.Structure` declares `{:ok, String.t()} | {:error, term}`
+  (`deps/ecto_sql/lib/ecto/adapter/structure.ex:21-22`) and `mix ecto.dump`
+  (`ecto.dump.ex:91-107`) matches only those arms, so the task died with a
+  `System.cmd/3` stack trace that never named `sqlite3`. The reference SQLite
+  adapter guards the same shell-out with `System.find_executable/1`
+  (`ecto_sqlite3.ex:562-571`), as do ecto_sql's own adapters. Why eleven runs
+  missed it: `structure_test.exs` computes `@sqlite3_available` at compile time
+  and compiles the dump tests out where the program is absent. Graded S2
+  (doc/spec-behaviour divergence with a broken consumer; the reviewer's S1
+  argument — "public-API panic" — on record; the damage is a lost diagnosis at a
+  development-time task, no write misreported). FIX: `with` over four
+  tuple-returning helpers — create the dump directory (`{:error,
+  {:cannot_write_dump, path, posix}}`), look the executable up
+  (`{:error, {:missing_executable, "sqlite3"}}`), run the literal `sqlite3`
+  command (a non-zero exit stays `{:error, output}`), write the file (the same
+  `cannot_write_dump` shape). The directory is created before the lookup, so
+  the unwritable-path branch is deterministic on every machine. PINS
+  (structure_test, outside the CLI-gated block): the missing executable asserted
+  per machine (`{:error, {:missing_executable, "sqlite3"}}` where absent,
+  `{:ok, path}` where present) and an unwritable dump path
+  (`{:error, {:cannot_write_dump, path, :enotdir}}`). Predicted RED = both raise
+  `ErlangError :enoent` on this machine — observed exactly. DOCS: README known
+  limitations + STE draft (`mix ecto.dump` needs the program; `mix ecto.load`
+  does not); CHANGELOG Fixed.
+
+### CLEAN legs (controls named)
+
+- `handle_begin`'s `{:error, exc, state}` arm is consumed by all four consumers
+  (db_connection `run_begin` fall-through → `handle_common_result`;
+  `transaction/3` raises the exception and KEEPS the connection; the Sandbox
+  proxy's generic `{kind, err, state}` clause; `post_checkout/3` maps it to a
+  disconnect — inside the sandbox a busy BEGIN at checkout still disconnects,
+  ecto_sql's own choice). Control: the same walk found the `{:transaction, _}`
+  status form ecto_sql DOES branch on and this driver never produces.
+- `Error.wrap/1` total over the Run-46 hook tags (`{:invalid_hook_option, {k, v}}`,
+  `{:invalid_hook_config, …}` land on the 2-tuple clause with `type` kept).
+- Loaders total: 22 types × 19 hostile stored values = 418 cases, 0 contract
+  violations (p02); the two dump failures are Ecto's own usec-precision raise.
+  Control: six known-good pairs read legal.
+- The Gate-3 `defp` flip and the four deletions touch none of the 18
+  `Ecto.Adapters.SQL.Connection` callbacks ecto_sql calls by name. Control: the
+  same grep found `insert` at two arities (7 and 8), both covered.
+- Constraint names: expression index, WITHOUT ROWID composite PK, rowid PK,
+  unnamed CHECK all emit a binary (p03; `named_or_empty/2` makes nil impossible).
+  Control: a named unique index emitted its name.
+- Raw params without an Ecto type ahead: 19 terms + an `insert_all` placeholder
+  all `{:ok, _}` / `%XqliteEcto3.Error{}` / a named exception (p04). Two
+  behaviours noted, not defects: a charlist binds as JSON text (list = array);
+  a `Decimal` binds as a number under the precision guard.
+- `:binary_id` insert-vs-reload consistent under both storages (p01; the legs
+  differ in `typeof(id)`, so the probe distinguishes them).
+- `query_many/4` raising = the reference adapter's behaviour (not filed);
+  `handle_status` `{:error, state}` is inside the spec and no consumer diverges;
+  a mid-stream disconnect never reaches the driver's `handle_deallocate` on a
+  dead pool_ref (Holder source; live reproduction not reached);
+  `enum_check/3` / `array_check/2` emit NAMED constraints; the 11-command DDL
+  census returns legal `{:ok, log}` shapes (the MODIFY refusal is a designed
+  pre-flight raise naming the alternative).
+
+### Handoffs
+
+- **[B1-1] widened:** `structure_load/2`'s `{:ok, conn} = XqliteNIF.open` and
+  its prose-string errors (pinned by text in structure_test.exs:106).
+- **[F-B1-13-seed] (S3):** the Sandbox's unreachable `{:transaction, _}`
+  diagnostic — maintainer's call.
+- **[F-B1-11-docs] addendum:** the observed value `[check: "v > 0"]`.
+- **Re-wet list grows:** a db_connection bump (the begin arm rides an
+  undocumented fall-through); `structure_dump/2`/`structure_load/2`;
+  `DataType.column_type/2` (raises `UnsupportedTypeError`, reached from two
+  query sites — next-pass seed).
+- **Announcement honesty:** `mix ecto.dump` depends on the `sqlite3` program —
+  recorded in the honesty ledger; README states it.
+
+### Gate honesty
+
+- Stash-RED (lib/xqlite_ecto3.ex stashed, structure_test run): predicted 2 reds
+  by identity → 2/2 (missing executable, unwritable path); green 4/4 after pop.
+  Behaviour sweep over test/ (titles included): the only other
+  `structure_dump` sites are the CLI-gated content tests and the round-trip,
+  unchanged. sobelow: the shell-out keeps the literal command; the file
+  traversal skips moved onto the two helpers that do the file work.
+- Dryness: **B1 stays 0 of 2, NOT DRY**; THIRTY-ONE straight finding runs;
+  DRY = B10 alone.
+- `mix verify` GREEN (exit file 0 — format, compile, deps.audit, sobelow,
+  dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
+
+---

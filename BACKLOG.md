@@ -807,6 +807,55 @@ after the S0–S2 burn-down.
   pin accepts both the empty 0.11.0 shape and the parsed one, so the
   dep bump past 0.11.0 flips nothing.
 
+- [F-B1-12] (S2, FIXED, from Run 51) `structure_dump/2` raised a
+  bare `ErlangError :enoent` out of `System.cmd/3` when the `sqlite3`
+  command-line program is not installed — the bundled library never
+  ships it, and nothing documented the requirement — where
+  `Ecto.Adapter.Structure` promises `{:ok, path} | {:error, term}`
+  and `mix ecto.dump` matches only those (a raise skipped its
+  "couldn't be dumped" arms and printed a stack trace that never
+  named `sqlite3`). The CLI-dependent tests are compiled out on a
+  machine without the program (structure_test.exs), so the branch was
+  never exercised. FIX: the executable is looked up first
+  (`{:error, {:missing_executable, "sqlite3"}}`), the dump directory
+  is created and the file written through their tuple-returning
+  forms (`{:error, {:cannot_write_dump, path, posix}}`), the shell-out
+  keeps the literal command. Pinned (structure_test: the missing
+  executable asserted per machine — the tuple where the program is
+  absent, `{:ok, path}` where present — and the unwritable path,
+  deterministic everywhere). README + STE: `mix ecto.dump` needs the
+  `sqlite3` program; `mix ecto.load` does not. Residual: the
+  CLI-dependent content tests stay compiled out where the program is
+  absent (an environment dependence, not a platform skip; the
+  contract pins now run everywhere).
+- [B1-1 addendum, Run 51] Fourth member of the destructuring class:
+  `structure_load/2`'s `{:ok, conn} = XqliteNIF.open(database)`
+  (lib/xqlite_ecto3.ex, after the dump helpers); its error terms are
+  prose strings (`{:error, inspect(reason)}`, `"Could not read …"`),
+  pinned by text in structure_test.exs:106 — against doctrine, fold
+  into the B1-1 remedy as structured tuples.
+- [F-B1-13-seed] (S3 seed, B1 court, from Run 51) ecto_sql's Sandbox
+  branches on a `{:transaction, conn_state}` return from
+  `handle_begin` (sandbox.ex:661-668 — "a connection was not
+  appropriately rolled back after use"); reference adapters return
+  that 2-tuple status form, this driver never does (no such clause),
+  so that diagnostic is unreachable and the same situation ends in a
+  disconnect carrying SQLite's raw message. A lost diagnostic, not a
+  wrong outcome; maintainer's call whether to add the arm.
+- [F-B1-11-docs addendum, Run 51] Observed verbatim (b1_cover_r51/p03):
+  an unnamed column CHECK reports `constraints=[check: "v > 0"]` — the
+  "name" Ecto is handed is the expression text; `enum_check/3` and
+  `array_check/2` emit NAMED constraints (`<column>_enum_check`,
+  `<column>_array_check`) and do not inherit it.
+- [F-B3-4-xqlite addendum, 2026-09-05] FIXED in xqlite (main, after
+  0.11.0): the busy slot remembers the `busy_timeout` in effect when
+  it is taken, emulates SQLite's own retry schedule while observers
+  are installed without a policy, restores it when the slot empties,
+  and emptying an already-empty slot no longer touches the C handler
+  (`remove_busy_policy/1` on a fresh connection used to zero
+  rusqlite's 5000 ms default). Adapter follow-up [A2] is unblocked
+  once the adapter's xqlite dep moves past 0.11.0.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

@@ -161,6 +161,57 @@ dumper catch-alls reached without the Ecto type in front
 disconnect × stream_deallocate after-fun/pool_ref; handle_status
 {:error, state} read-failure semantics vs DBConnection's
 transaction-aborted reading.
+COVERING RE-RUN (Run 51, 2026-09-05 — lap 7, solo; churn
+`db4d860..88e6d91` = the Run-50 handle_begin `{:error, exc, state}`
+arm + typed refusals, the handle_fetch stamping, the reworked
+datetime/decimal/binary_id loaders and dumpers, the Gate-3 `defp`
+flip + four deletions, the rebuild-engine churn, the connect-path
+validators — each re-anchored against deps/ source): **F-B1-12 (S2,
+FIXED, RED→green)** — `structure_dump/2` raised a bare `ErlangError
+:enoent` out of `System.cmd/3` when the `sqlite3` command-line
+program is absent (the bundled library never ships it), where
+`Ecto.Adapter.Structure` promises `{:ok, path} | {:error, term}` and
+`mix ecto.dump` handles only those; the CLI-dependent tests are
+compiled out on such a machine, which is why eleven runs missed it.
+Fixed to `{:error, {:missing_executable, "sqlite3"}}` (executable
+looked up first, like ecto_sql's own adapters) and
+`{:error, {:cannot_write_dump, path, posix}}` for an uncreatable or
+unwritable dump path; README + STE document the `sqlite3`
+requirement. CLEAN with controls: the `{:error, exc, state}` begin arm
+tolerated by all four consumers (run_begin fall-through,
+transaction/3 raise-and-keep, the Sandbox proxy's generic clause,
+post_checkout's disconnect — so inside the sandbox a busy BEGIN at
+checkout still disconnects, ecto_sql's choice); `Error.wrap/1` total
+over the Run-46 hook tags; loaders total over 22 types × 19 hostile
+stored values (418 cases, 0 contract violations — the F-B1-6 class
+closed under the reworked decoders); the `defp` flip and the four
+deletions touch none of the 18 callbacks ecto_sql calls; every hard
+constraint shape (expression index, WITHOUT ROWID composite PK, rowid
+PK, unnamed CHECK) emits a binary name (`named_or_empty/2` closes the
+F-B1-7 mechanism structurally); raw params without an Ecto type ahead
+all contract-legal (19 terms + an insert_all placeholder);
+`:binary_id` insert-vs-reload consistent under both storages;
+`query_many/4` raising = the reference adapter's behaviour;
+`handle_status` `{:error, state}` inside the spec with no consumer
+divergence; mid-stream disconnect × `stream_deallocate` safe by
+Holder source (cleanup never calls the driver on a dead pool_ref;
+live reproduction not reached); `enum_check/3`/`array_check/2` emit
+NAMED constraints; the 11-command DDL census returns legal
+`{:ok, log}` shapes. DRYNESS: one S2 — **B1 stays 0 of 2, NOT DRY**;
+re-wets ALSO on: a db_connection bump (the begin arm rides an
+undocumented `handle_common_result` fall-through), `structure_dump/2`
+/ `structure_load/2`, `DataType.column_type/2` (now raises
+`UnsupportedTypeError`, reached from two query sites). Next-pass
+seeds: a LIVE mid-stream `{:disconnect, _}` (statement finalised, not
+GC-held?); `column_type/2`'s raise reached from `type(^v, T)` /
+`$N::TYPE` placeholders (Ecto.QueryError elsewhere); a live busy
+BEGIN through `Repo.transaction` (connection genuinely reusable);
+`structure_load/2`'s `{:ok, conn} = XqliteNIF.open` + prose-string
+errors ([B1-1] widened); the `use Ecto.Adapters.SQL` overrides
+(`execute/5`, `prepare/2`, `stream/5`, `insert_all/8`) uncensused;
+the non-UTC zoned-datetime fallback branch (`DateTime.to_iso8601/1`
+when the shift fails) stores a different text form than the success
+branch.
 
 ### B2. Exclusion-list audit
 Every excluded integration test is a standing "not supported" claim.
