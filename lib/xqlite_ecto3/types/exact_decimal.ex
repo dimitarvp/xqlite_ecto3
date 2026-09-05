@@ -101,7 +101,8 @@ defmodule XqliteEcto3.Types.ExactDecimal do
 
   use Ecto.Type
 
-  @parse_limits [max_digits: :infinity, max_exponent: :infinity]
+  # Decimal's default print limit stops at 6178 characters. Left in place it
+  # would let this type read values it cannot write back.
   @print_limits [max_digits: :infinity]
 
   @impl Ecto.Type
@@ -140,23 +141,9 @@ defmodule XqliteEcto3.Types.ExactDecimal do
   def equal?(nil, nil), do: true
   def equal?(_a, _b), do: false
 
-  # Decimal's defaults stop a parse at 34 significant digits and a printed
-  # value at 6178 characters. Left in place they would let this type write
-  # values it cannot read back, so both are lifted on both sides.
-  defp parse(value) do
-    case Decimal.parse(value, @parse_limits) do
-      {%Decimal{} = number, ""} -> finite(number)
-      _partial_or_error -> :error
-    end
-  end
+  # The same parse the `:decimal` loader reads stored text with, so one
+  # column of numbers means the same thing under either field type.
+  defp parse(value), do: XqliteEcto3.DecimalPrecision.parse_finite(value)
 
-  # Decimal.parse/2 accepts "NaN" and "Infinity", and Decimal arithmetic
-  # produces both. Neither is a number with digits to store.
-  defp finite(number) do
-    if Decimal.nan?(number) or Decimal.inf?(number) do
-      :error
-    else
-      {:ok, number}
-    end
-  end
+  defp finite(number), do: XqliteEcto3.DecimalPrecision.finite(number)
 end

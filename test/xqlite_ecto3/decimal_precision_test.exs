@@ -1,7 +1,12 @@
 defmodule XqliteEcto3.DecimalPrecisionTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias XqliteEcto3.DecimalPrecision
+  alias XqliteEcto3.DecimalPrecisionError
+
+  @int64_min -9_223_372_036_854_775_808
+  @int64_max 9_223_372_036_854_775_807
 
   # Values that survive a float64 round-trip and so store losslessly through
   # a NUMERIC-affinity column: typical money, small magnitudes, and large
@@ -113,6 +118,103 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
   end
 
+  # A Decimal is three words wide however many digits it stands for, so its
+  # written-out form can be gigabytes: 1E+7000 is 7001 characters, and an
+  # exponent of a billion is a billion. The guard has to answer from the
+  # struct, because building that text is neither possible nor needed.
+  describe "bind_form/1 answers without writing the value out" do
+    test "an exponent too wide to write out is refused, not rendered" do
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 7000)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -7000)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 1_000_000_000)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -1_000_000_000)) == :error
+    end
+
+    test "a coefficient of trailing zeros binds as the small number it stands for" do
+      assert DecimalPrecision.bind_form(Decimal.new(1, Integer.pow(10, 7000), -6999)) ==
+               {:float, 10.0}
+    end
+
+    test "a zero binds whatever its exponent" do
+      assert DecimalPrecision.bind_form(Decimal.new(1, 0, -100_000)) == {:float, 0.0}
+      assert DecimalPrecision.bind_form(Decimal.new(1, 0, -1_000_000_000)) == {:float, 0.0}
+      assert DecimalPrecision.bind_form(Decimal.new("0.000")) == {:float, 0.0}
+      assert DecimalPrecision.bind_form(Decimal.new("0E+3")) == {:integer, 0}
+      assert DecimalPrecision.bind_form(Decimal.new("-0")) == {:integer, 0}
+    end
+
+    property "every finite decimal gets an integer form, a float form, or a refusal that reads" do
+      check all(dec <- wide_decimal(), max_runs: 2000) do
+        oracle = int64_oracle(dec)
+
+        case DecimalPrecision.bind_form(dec) do
+          {:integer, int} ->
+            assert oracle == {:ok, int}
+
+          {:float, float} ->
+            assert oracle == :error
+
+            assert Decimal.equal?(
+                     Decimal.normalize(dec),
+                     Decimal.normalize(DecimalPrecision.stored_decimal(float))
+                   )
+
+          :error ->
+            assert oracle == :error
+            err = %DecimalPrecisionError{value: dec, index: 1}
+            assert is_binary(DecimalPrecisionError.message(err))
+        end
+      end
+    end
+  end
+
+  # The judge the integer arm must agree with: the value's own written-out
+  # form, with the print limit lifted so even the widest case renders.
+  defp int64_oracle(dec) do
+    dec
+    |> Decimal.to_string(:normal, max_digits: :infinity)
+    |> Integer.parse()
+    |> case do
+      {int, ""} when int >= @int64_min and int <= @int64_max -> {:ok, int}
+      _fractional_or_out_of_range -> :error
+    end
+  end
+
+  # sign * coefficient * 10^exponent, the coefficient up to 300 digits and the
+  # exponent landing on the interesting edges as often as anywhere else:
+  # float64's range, int64's width, and Decimal's own parse and print limits.
+  defp wide_decimal do
+    gen all(
+          sign <- StreamData.member_of([1, -1]),
+          ndigits <- StreamData.integer(1..300),
+          coefficient <-
+            StreamData.integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
+          exponent <-
+            StreamData.one_of([
+              StreamData.integer(-10_000..10_000),
+              StreamData.member_of([
+                -6178,
+                -6177,
+                -6144,
+                -324,
+                -308,
+                -1,
+                0,
+                18,
+                19,
+                308,
+                309,
+                6144,
+                6145,
+                6177,
+                6178
+              ])
+            ])
+        ) do
+      Decimal.new(sign, coefficient, exponent)
+    end
+  end
+
   describe "DecimalPrecisionError" do
     test "carries the offending decimal on the :value field" do
       dec = Decimal.new("12345678901234567890.12345")
@@ -123,6 +225,18 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     test "renders a message" do
       err = %XqliteEcto3.DecimalPrecisionError{value: Decimal.new("12345678901234567890.12345")}
       assert is_binary(Exception.message(err))
+    end
+
+    # Called through Exception.message/1 a raising message/1 comes back as
+    # Elixir's "got ArgumentError ... while retrieving" text, which is a
+    # binary too — so the refused value's own message has to be asked for
+    # directly to see whether it renders at all.
+    test "renders a message for a value too wide to write out" do
+      err = %DecimalPrecisionError{value: Decimal.new(1, 1, 7000), index: 1}
+      assert is_binary(DecimalPrecisionError.message(err))
+
+      wider = %DecimalPrecisionError{value: Decimal.new(1, 1, 1_000_000_000), index: 1}
+      assert is_binary(DecimalPrecisionError.message(wider))
     end
   end
 end

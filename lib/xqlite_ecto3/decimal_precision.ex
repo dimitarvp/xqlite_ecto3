@@ -71,24 +71,35 @@ defmodule XqliteEcto3.DecimalPrecision do
     end
   end
 
-  # Zero renders below the smallest float64 magnitude, so it is decided
-  # before the range check that would otherwise refuse it.
+  # Zero sits below the smallest float64 magnitude, so it is decided before
+  # the range check that would otherwise refuse it, and it answers with the
+  # literal: `Decimal.to_float/1` builds 10^-exp before it looks at the
+  # coefficient, a billion-digit number for a value that is 0.0.
   defp float_bind_form(d) do
     cond do
-      Decimal.equal?(d, 0) -> {:float, Decimal.to_float(d)}
+      Decimal.equal?(d, 0) -> {:float, 0.0}
       out_of_float_range?(d) -> :error
       true -> exact_float(d)
     end
   end
 
-  defp int64_literal(d) do
-    text = Decimal.to_string(d, :normal)
-
-    case Integer.parse(text) do
-      {int, ""} when int >= @int64_min and int <= @int64_max -> {:ok, int}
-      _fractional_or_out_of_range -> :error
+  # Whether the value's written-out form is a plain integer inside int64,
+  # decided from the struct: that form carries a decimal point exactly when
+  # the exponent is negative, and writing it out to find out would build 7001
+  # characters for `1E+7000` and a billion for an exponent of a billion. From
+  # exponent 19 up, a non-zero coefficient already stands for 10^19 or more,
+  # past int64's 9.22E18, so the power of ten is never built.
+  defp int64_literal(%Decimal{sign: sign, coef: coef, exp: exp}) do
+    cond do
+      exp < 0 -> :error
+      coef == 0 -> {:ok, 0}
+      exp >= 19 -> :error
+      true -> int64_or_error(sign * coef * Integer.pow(10, exp))
     end
   end
+
+  defp int64_or_error(int) when int >= @int64_min and int <= @int64_max, do: {:ok, int}
+  defp int64_or_error(_out_of_range), do: :error
 
   defp out_of_float_range?(d) do
     abs = Decimal.abs(d)
@@ -103,6 +114,30 @@ defmodule XqliteEcto3.DecimalPrecision do
       {:float, float}
     else
       :error
+    end
+  end
+
+  # Decimal's defaults stop a parse at 34 significant digits and an exponent
+  # of 6144. A number someone stored is data, so both are lifted here and a
+  # width ceiling on a load, if one is ever needed, returns to this one
+  # place. "NaN" and "Infinity" parse cleanly and are not numbers with digits
+  # to store, so they leave as `:error` like any other unreadable text.
+  @doc false
+  @spec parse_finite(binary()) :: {:ok, Decimal.t()} | :error
+  def parse_finite(text) do
+    case Decimal.parse(text, max_digits: :infinity, max_exponent: :infinity) do
+      {%Decimal{} = number, ""} -> finite(number)
+      _partial_or_error -> :error
+    end
+  end
+
+  @doc false
+  @spec finite(Decimal.t()) :: {:ok, Decimal.t()} | :error
+  def finite(%Decimal{} = number) do
+    if Decimal.nan?(number) or Decimal.inf?(number) do
+      :error
+    else
+      {:ok, number}
     end
   end
 
@@ -143,9 +178,14 @@ defmodule XqliteEcto3.DecimalPrecisionError do
 
   @type t :: %__MODULE__{value: Decimal.t(), index: pos_integer() | nil}
 
+  # The refused values include the ones no written-out form can hold — an
+  # exponent of a billion is a billion characters — so the message prints the
+  # coefficient and the exponent, which is as wide as the struct the caller
+  # already has. For an exponent of zero or below with an adjusted exponent
+  # of -6 or more, that is the same text the written-out form gives.
   @impl true
   def message(%__MODULE__{value: value}) do
-    "decimal #{Decimal.to_string(value, :normal)} exceeds SQLite's exact numeric " <>
+    "decimal #{Decimal.to_string(value, :scientific, max_digits: :infinity)} exceeds SQLite's exact numeric " <>
       "precision — a :decimal column has NUMERIC affinity and stores as float64 (REAL), " <>
       "exact only to ~15 significant digits, so storing this value would silently round " <>
       "it. To keep the exact digits, declare the field XqliteEcto3.Types.ExactDecimal " <>

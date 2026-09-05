@@ -1707,14 +1707,23 @@ defmodule XqliteEcto3.Connection do
       message: "Array literals are not supported by SQLite"
   end
 
+  # A zero is storable at every exponent, and writing one out costs a
+  # character per exponent step — 100002 of them for `0E-100000` — so the
+  # literal is the digit, not the written-out form. A non-finite decimal
+  # carries `:NaN` or `:inf` as its coefficient, so this matches true zeros
+  # only and the clause below still refuses those.
+  defp expr(%Decimal{coef: 0}, _sources, _query), do: "0"
+
   # A decimal that lands in expression position is written straight into the
   # SQL as a numeric literal, so it must clear the same precision guard the
   # parameter path uses — otherwise this is a second door into the storage
   # rounding the guard exists to refuse. There is no parameter position to
-  # report for an inlined value.
+  # report for an inlined value. The print limit is lifted because a value
+  # the guard accepts can still be wide: ten written as 10^7000 * 10^-6999 is
+  # 7002 characters.
   defp expr(%Decimal{} = decimal, _sources, _query) do
     if XqliteEcto3.DecimalPrecision.representable?(decimal) do
-      Decimal.to_string(decimal, :normal)
+      Decimal.to_string(decimal, :normal, max_digits: :infinity)
     else
       raise XqliteEcto3.DecimalPrecisionError, value: decimal, index: nil
     end

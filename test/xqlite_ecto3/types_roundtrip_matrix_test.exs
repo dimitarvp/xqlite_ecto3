@@ -261,6 +261,27 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     end
   end
 
+  # The same shape swept far past Decimal's 34-digit parse default, since the
+  # loader has to read whatever a foreign writer stored.
+  defp wide_text_decimal do
+    gen all(
+          sign <- StreamData.member_of([1, -1]),
+          ndigits <- StreamData.integer(1..120),
+          coefficient <-
+            StreamData.integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
+          exponent <- StreamData.integer(-60..60)
+        ) do
+      Decimal.new(sign, coefficient, exponent)
+    end
+  end
+
+  # Store the text through a :string field, read the same column back through
+  # a :decimal one, so only the loader is under test.
+  defp load_dec_text(text) do
+    {:ok, raw} = Repo.insert(Ecto.Changeset.change(%EdgeRaw{}, %{dec_text: text}))
+    Map.fetch!(Repo.get(EdgeRec, raw.id), :dec_text)
+  end
+
   describe "decimal edge contracts" do
     setup do
       clear_table!("roundtrip_edges")
@@ -286,6 +307,20 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
       assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
         Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_text: beyond}))
       end
+    end
+
+    # 1E+7000 is a three-word struct standing for 7001 characters. The guard
+    # refuses it for the same reason it refuses any value float64 cannot
+    # hold, and the refusal carries the value.
+    test "a decimal too wide to write out is refused with the value on :value" do
+      beyond = Decimal.new(1, 1, 7000)
+
+      err =
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_num: beyond}))
+        end
+
+      assert Decimal.equal?(err.value, beyond)
     end
 
     # The twin of the pin above, on the same column shape: the value that
@@ -335,6 +370,59 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
 
       [clean] = Repo.all(from(r in EdgeRec, where: r.dec_num == 12.34))
       assert Decimal.equal?(clean.dec_num, Decimal.new("12.34"))
+    end
+
+    # Text a foreign writer put in the column is data. Decimal's own defaults
+    # stop a parse at 34 significant digits and an exponent of 6144; the
+    # loader lifts both, so a number wider than that reads back as written
+    # instead of failing the load.
+    for {label, text, sign, coefficient, exponent} <- [
+          {"34 nines", String.duplicate("9", 34), 1, Integer.pow(10, 34) - 1, 0},
+          {"35 nines", String.duplicate("9", 35), 1, Integer.pow(10, 35) - 1, 0},
+          {"120 digits", String.duplicate("1234567890", 12), 1,
+           String.to_integer(String.duplicate("1234567890", 12)), 0},
+          {"the old exponent ceiling", "1E+6144", 1, 1, 6144},
+          {"one past the old exponent ceiling", "1E+6145", 1, 1, 6145},
+          {"negative zero", "-0", -1, 0, 0}
+        ] do
+      test "numeric text under a :decimal field loads as the number written: #{label}" do
+        {:ok, raw} =
+          Repo.insert(Ecto.Changeset.change(%EdgeRaw{}, %{dec_text: unquote(text)}))
+
+        loaded = Map.fetch!(Repo.get(EdgeRec, raw.id), :dec_text)
+
+        assert loaded ==
+                 Decimal.new(unquote(sign), unquote(coefficient), unquote(exponent))
+      end
+    end
+
+    # The other side of the same widening: text that is not a finite number
+    # still fails the load with Ecto's typed error, one stored row at a time.
+    for {label, literal} <- [
+          {"NaN", "'NaN'"},
+          {"Infinity", "'Infinity'"},
+          {"negative infinity", "'-Infinity'"},
+          {"digits with trailing junk", "'12abc'"},
+          {"the empty string", "''"},
+          {"a BLOB", "X'DEADBEEF'"}
+        ] do
+      test "a stored value that is not a finite number fails the load: #{label}" do
+        Repo.query!("INSERT INTO roundtrip_edges (dec_text) VALUES (#{unquote(literal)})")
+
+        assert_raise ArgumentError, fn -> Repo.all(EdgeRec) end
+      end
+    end
+
+    property "numeric text of any width under a :decimal field loads as the number written" do
+      check all(dec <- wide_text_decimal(), max_runs: 2000) do
+        loaded = load_dec_text(Decimal.to_string(dec, :normal, max_digits: :infinity))
+
+        assert Decimal.equal?(loaded, dec)
+        assert dec.exp > 0 or loaded == dec
+
+        scientific = load_dec_text(Decimal.to_string(dec, :scientific, max_digits: :infinity))
+        assert Decimal.equal?(scientific, dec)
+      end
     end
 
     # JSON-encoded collections carry decimals as strings, so the precision

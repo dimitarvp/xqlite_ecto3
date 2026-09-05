@@ -210,6 +210,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `Decimal` of any width or exponent gets an answer instead of a
+  `Decimal` exception.** The precision guard used to write the value
+  out as plain digits and read that text back to decide whether it was
+  a whole number inside int64. A `Decimal` is three words wide however
+  many digits it stands for, so `Decimal.new(1, 1, 7000)`, which is
+  1E+7000, asked for a 7001-character string and `Decimal` refused
+  with an `ArgumentError`
+  — on `Repo.insert`, on a decimal inlined into a query as a literal,
+  and inside `DecimalPrecisionError`'s own message, where formatting
+  the refusal produced a stack trace instead of the explanation. The
+  guard now decides from the struct and never writes the value out, so
+  every finite `Decimal` binds as an exact int64, binds as an exact
+  float64, or raises `DecimalPrecisionError` carrying the value. A
+  zero binds at any exponent (`0E-1000000000` included), a value
+  written with a wide coefficient of trailing zeros binds as the small
+  number it stands for, and the refusal's message prints the
+  coefficient and the exponent — the same text as before for typical
+  money, and `1E+3` where a value written with a positive exponent
+  used to print `1000`.
+
+- **A `:decimal` field reads back numeric text of any width.** The
+  loader parsed stored text with `Decimal`'s defaults, which stop at
+  34 significant digits and an exponent of 6144, so a number past
+  those limits sitting in a TEXT column — a foreign writer's, or one
+  written by hand back when this README suggested it — failed the load
+  with Ecto's typed error even though it was a perfectly good number,
+  while the `Types.ExactDecimal` field beside it read the same text
+  happily. The two now share one parse with both limits lifted, so 35
+  nines, 120 digits and `1E+6145` load as the numbers written. Text
+  that is not a finite number — `NaN`, `Infinity`, digits with
+  trailing junk, the empty string, a BLOB — still fails the load with
+  Ecto's typed error naming the field and value.
+
 - **A connection closed under a running operation reports
   DBConnection's own error and leaves the pool.** A NIF call that came
   back `:connection_closed` — a prepare, a bind or a step, and the

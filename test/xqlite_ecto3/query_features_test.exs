@@ -405,6 +405,30 @@ defmodule XqliteEcto3.QueryFeaturesTest do
       assert sql =~ "19.99"
     end
 
+    # The number ten written as 10^7000 * 10^-6999: within float64's range, so
+    # it is inlined, and 7002 characters long once written out. SQLite reads
+    # the literal as the number it is.
+    test "an inlined decimal with a wide written-out form is a literal SQLite reads" do
+      ten = Decimal.new(1, Integer.pow(10, 7000), -6999)
+
+      {sql, []} = Ecto.Adapters.SQL.to_sql(:all, Repo, inline_decimal_query(ten))
+
+      assert sql =~ "10."
+      assert [%QA{amount: amount}] = Repo.all(inline_decimal_query(ten))
+      assert Decimal.equal?(amount, Decimal.new("50"))
+    end
+
+    # A zero is representable at every exponent, and 0E-100000 written out is
+    # 100002 characters, so the literal is the digit rather than the form.
+    test "an inlined zero is written as one digit whatever its exponent" do
+      zero = Decimal.new(1, 0, -100_000)
+
+      {sql, []} = Ecto.Adapters.SQL.to_sql(:all, Repo, inline_decimal_query(zero))
+
+      assert sql =~ "> 0"
+      assert length(Repo.all(inline_decimal_query(zero))) == 4
+    end
+
     test "a whole number past float64's exact range compares digit for digit" do
       big = Decimal.new("9223372036854775806")
       Repo.insert_all(QA, [%{g: 3, amount: big}])

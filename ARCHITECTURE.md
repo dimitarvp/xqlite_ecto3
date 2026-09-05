@@ -99,17 +99,21 @@ changeset traverses a stream.
 booleans to `1`/`0`; `NaiveDateTime` and `DateTime` to SQLite's own datetime
 text via `sqlite_datetime/1` (a zoned value shifted to UTC first); `Date` and
 `Time` to ISO 8601; a `Decimal` through `DecimalPrecision.bind_form/1`; a map
-or list to JSON, raising `UnencodableParameterError` when Jason refuses. Coming
-back, `XqliteEcto3.loaders/2` prepends one decoder per Ecto base type;
-`decimal_decode/1` returns `:error` on a partial parse, NaN or infinity so Ecto
-raises its typed load failure, and `utc_datetime_decode/1` attaches `Etc/UTC`
-to offset-less text.
+or list to JSON, raising `UnencodableParameterError` when Jason refuses.
+`bind_form/1` decides from the `Decimal` struct and never writes the value
+out, so a value of any width or exponent gets an int64 form, a float64 form,
+or a `DecimalPrecisionError` — never a `Decimal` exception about the width of
+a string nobody needed. Coming back, `XqliteEcto3.loaders/2` prepends one
+decoder per Ecto base type; `decimal_decode/1` returns `:error` on a partial
+parse, NaN or infinity so Ecto raises its typed load failure, and
+`utc_datetime_decode/1` attaches `Etc/UTC` to offset-less text.
 
-`Types.ExactDecimal` sits outside that decimal path in both directions. Its
+`Types.ExactDecimal` sits outside that decimal path on the way in: its
 `dump/1` produces a plain string, so `DecimalPrecision.bind_form/1` never sees
-the value and no number is ever bound; its `load/1` parses that string itself,
-so `decimal_decode/1` and its 34-significant-digit parse ceiling are not on the
-way back either.
+the value and no number is ever bound. On the way back the two share one
+parse, `DecimalPrecision.parse_finite/1`, with `Decimal`'s 34-significant-digit
+and 6144-exponent defaults lifted, so numeric text of any width in a column
+reads as the number written under either field type.
 
 ### 4. Transactions, the state sync, the disconnect guard
 
@@ -321,7 +325,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | --- | --- | --- | --- |
 | `datetime-text-form` | Datetimes store as `YYYY-MM-DD HH:MM:SS[.ffffff]`: space separator, no `T`, no `Z`. | `query.ex:sqlite_datetime/1` | `datetime_add_form_test.exs: "datetime_add renders the stored text form: space separator, no designator"` |
 | `real-affinity-numeric` | A spelling SQLite would give REAL affinity renders `NUMERIC`, so an integer-exact value past 2^53 is not rounded in. | `data_type.ex:column_type/2`, `sqlite_affinity/1` | `data_type_test.exs: "any unrecognized spelling SQLite would give REAL affinity"` |
-| `decimal-numeric-bind` | A `Decimal` binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
+| `decimal-numeric-bind` | A `Decimal` of any width or exponent binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
 | `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the dumper/loader chain, the migration column type and the query-parameter `CAST` together. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"` |
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
 | `busy-timeout-is-the-lookup-budget` | The unique-index-name lookup budget is the connection's `busy_timeout`; a reported 0 becomes a fixed 500 ms. | `unique_index_names.ex:lookup_budget_ms/1` | `unique_index_names_test.exs: "a zero-reported busy timeout gets the fixed budget, not zero and not unlimited"` |
