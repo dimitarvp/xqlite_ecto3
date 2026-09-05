@@ -63,6 +63,8 @@ Most suites pass unchanged. When they don't, it's one of the following.
 If your code has anything like:
 
 ```elixir
+try do
+  Repo.insert!(changeset)
 rescue
   e in RuntimeError ->
     if String.contains?(e.message, "UNIQUE"), do: :duplicate, else: reraise(e, __STACKTRACE__)
@@ -70,15 +72,20 @@ end
 ```
 
 …remove the string match. XqliteEcto3 raises `%XqliteEcto3.Error{}` with
-typed atoms and structured details:
+a typed `:type` atom and, for a constraint violation, an
+`%XqliteEcto3.Error.Constraint{}` in `details` — its `subtype`, table,
+and columns come from SQLite's extended result code, not from the
+message:
 
 ```elixir
+try do
+  Repo.insert!(changeset)
 rescue
   e in XqliteEcto3.Error ->
-    case e.constraint_type do
-      :constraint_unique -> handle_duplicate(e.constraint_details)
-      :constraint_foreign_key -> handle_missing_parent(e.constraint_details)
-      :constraint_check -> handle_check_violation(e.constraint_details)
+    case e.details do
+      %XqliteEcto3.Error.Constraint{subtype: :constraint_unique} = d -> handle_duplicate(d)
+      %XqliteEcto3.Error.Constraint{subtype: :constraint_foreign_key} = d -> handle_missing_parent(d)
+      %XqliteEcto3.Error.Constraint{subtype: :constraint_check} = d -> handle_check_violation(d)
       _ -> reraise(e, __STACKTRACE__)
     end
 end
@@ -147,17 +154,21 @@ config :xqlite_ecto3, :binary_id_storage, :string  # default, matches ecto_sqlit
 config :xqlite_ecto3, :binary_id_storage, :binary  # 16-byte BLOB storage
 ```
 
-Flipping to `:binary` after rows exist in `:string` form is **not
-transparent** — `Ecto.UUID.load/1` raises on strings. Leave the default
-unless you're starting fresh or willing to migrate existing rows.
+Under `:binary`, a UUID-shaped value is written as its 16 raw bytes and
+read back as the usual 36-char string; a `:binary_id` value that is not
+a UUID passes through unchanged. Flipping to `:binary` after rows exist
+in `:string` form is **not transparent**: old rows stay TEXT while new
+rows are BLOBs, and a lookup by id binds the BLOB form, so it will not
+find the old rows. Leave the default unless you're starting fresh or
+willing to migrate existing rows.
 
 For per-field control (mixed storage across fields), use the escape
-hatch:
+hatch — as the primary key, or on any other field:
 
 ```elixir
+@primary_key {:id, XqliteEcto3.Types.UUID, autogenerate: true, storage: :binary}
 schema "tokens" do
-  field :id, XqliteEcto3.Types.UUID, storage: :binary
-  # ...
+  field :device_id, XqliteEcto3.Types.UUID, storage: :string
 end
 ```
 
@@ -199,11 +210,13 @@ The equivalent without the helper (identical SQL, portable across
 adapters):
 
 ```elixir
-add :status, :string,
-  check: %{
-    name: "status_enum_check",
-    expr: "status IN ('active', 'archived', 'suspended')"
-  }
+create table(:users) do
+  add :status, :string,
+    check: %{
+      name: "status_enum_check",
+      expr: "status IN ('active', 'archived', 'suspended')"
+    }
+end
 ```
 
 Same story for `array_check/2` paired with `XqliteEcto3.Types.Array`.
@@ -224,10 +237,13 @@ test time, not runtime.
 
 None of these are required; they exist if you want them:
 
-- **`Xqlite.explain_analyze/3`** via `Repo.checkout(fn -> ... end)` —
-  structured runtime stats per scan node (rows visited, loops, estimated
-  rows) plus statement-level counters (vm_step, memused, sort) plus
-  wall-clock. The closest SQLite has to Postgres's `EXPLAIN (ANALYZE)`.
+- **`XqliteEcto3.explain_analyze/3`** — runs an Ecto queryable under
+  SQLite's real execution counters: structured runtime stats per scan
+  node (rows visited, loops, estimated rows) plus statement-level
+  counters (vm_step, memused, sort) plus wall-clock. For raw SQL,
+  `XqliteEcto3.with_xqlite/3` hands you the connection for
+  `Xqlite.explain_analyze/3`. The closest SQLite has to Postgres's
+  `EXPLAIN (ANALYZE)`.
 - **Instant / Duration / TimestampTZ / Array** custom types under
   `XqliteEcto3.Types.*`.
 - **Per-query cancellation from any process** — the `:timeout` option
@@ -236,9 +252,9 @@ None of these are required; they exist if you want them:
 
 ## Step 6 — SQLite features both adapters inherit from xqlite
 
-These are xqlite-layer features. Access them by checking a connection
-out of the pool and calling xqlite's NIFs directly. Not unique to
-XqliteEcto3, but worth knowing:
+These are xqlite-layer features. Access them through
+`XqliteEcto3.with_xqlite/3`, which hands your callback the pooled
+connection's raw handle. Not unique to XqliteEcto3, but worth knowing:
 
 - Session extension (changeset capture / apply)
 - Online backup with progress + cancellation
@@ -262,12 +278,12 @@ XqliteEcto3, but worth knowing:
 | Area | ecto_sqlite3 | XqliteEcto3 |
 |---|---|---|
 | Adapter module | `Ecto.Adapters.SQLite3` | `XqliteEcto3` |
-| Constraint errors | strings in exception messages | `%XqliteEcto3.Error{type, constraint_type, constraint_details}` |
+| Constraint errors | strings in exception messages | `%XqliteEcto3.Error{type, details}` with a typed `details` struct |
 | `:timeout` semantics | DBConnection-layer only | DBConnection-layer AND in-flight SQLite cancellation |
 | `:binary_id` default storage | TEXT (36-char) | TEXT (36-char) — configurable |
 | `ALTER ... MODIFY COLUMN` | raises | opt-in table rebuild |
 | `DELETE` with `JOIN` | raises | conservative rewrite |
-| `EXPLAIN ANALYZE` | N/A | `Xqlite.explain_analyze/3` |
+| `EXPLAIN ANALYZE` | N/A | `XqliteEcto3.explain_analyze/3` |
 | Custom types | `:integer` for booleans, etc. | ditto + optional `XqliteEcto3.Types.*` |
 | Shared Ecto suite coverage | comparable | green; documented exclusions |
 | `mix ecto.*` tasks | work | work |

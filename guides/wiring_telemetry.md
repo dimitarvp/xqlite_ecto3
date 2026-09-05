@@ -2,9 +2,10 @@
 
 The xqlite_ecto3 adapter emits `:telemetry` events at the
 `DBConnection` callback layer. These complement the higher-level
-Ecto events (`[:my_app, :repo, :query]`) and the lower-level xqlite
-events (`[:xqlite, :*]`). All three layers compose: pool → adapter
-→ driver.
+Ecto events (`[:my_app, :repo, :query]`). The lower-level xqlite
+events (`[:xqlite, :*]`) fire only for calls you make through the
+`Xqlite` module yourself — the adapter drives the NIF layer directly
+(see "Composing layers" below).
 
 Like the underlying xqlite library, telemetry is **compile-time
 opt-in**. When disabled (the default), no `:telemetry` calls exist
@@ -119,29 +120,31 @@ connection is going away. Match both shapes.
 
 ## Composing layers
 
-A typical Ecto query through the Repo fires events at all three
-layers:
+Under Ecto, a query through the Repo fires events at two layers:
 
 ```
 [:my_app, :repo, :query]               (Ecto's own — high-level)
 [:xqlite_ecto3, :handle_execute, :*]   (adapter callback — DBConnection)
-[:xqlite, :query, :*]                  (xqlite NIF wrapper)
 ```
+
+The adapter drives xqlite's NIF layer directly, so the `[:xqlite, …]`
+spans do NOT fire for Repo traffic. They fire only for calls you make
+through the `Xqlite` module yourself — inside
+`XqliteEcto3.with_xqlite/3`, or via `XqliteEcto3.explain_analyze/3`,
+which calls `Xqlite.explain_analyze/3`.
 
 Pick the layer that matches your observability question:
 
 * **"Which Ecto query is slow?"** → `[:my_app, :repo, :query]`.
   Highest-level, includes Ecto-side decode/encode time.
-* **"Is the slow query the adapter or the driver?"** →
-  `[:xqlite_ecto3, :handle_execute]` vs `[:xqlite, :query]`.
-  The difference is xqlite_ecto3's own glue: timeout setup, error
-  classification, and — on failed statements only — the error-path
-  reads (the `fk_diagnostics` replay, which has its own span, and the
+* **"How long did the adapter spend on the statement?"** →
+  `[:xqlite_ecto3, :handle_execute]`. Its duration is the SQLite call
+  plus xqlite_ecto3's own glue: timeout setup, error classification,
+  and — on failed statements only — the error-path reads (the
+  `fk_diagnostics` replay, which has its own span, and the
   unique-index-name lookup, which currently does not; under write
   contention on a rollback-journal database that lookup can wait up
   to one `busy_timeout`).
-* **"How long is the actual SQLite call?"** → `[:xqlite, :query]`.
-  Closest to wall-clock SQLite time, excluding adapter glue.
 
 ## Sample handlers
 
@@ -165,6 +168,8 @@ Pick the layer that matches your observability question:
 ### Pool lifecycle alerting
 
 ```elixir
+require Logger
+
 :telemetry.attach_many(
   "pool-watchdog",
   [
@@ -175,8 +180,8 @@ Pick the layer that matches your observability question:
     [:xqlite_ecto3, :connect, :stop], _, %{result_class: :error, database: db}, _ ->
       Logger.error("xqlite_ecto3 connect failed for #{db}")
 
-    [:xqlite_ecto3, :disconnect], _, _, _ ->
-      Telemetry.Metrics.Counter.inc("xqlite_ecto3.disconnects")
+    [:xqlite_ecto3, :disconnect], _, %{reason: reason}, _ ->
+      Logger.warning("xqlite_ecto3 dropped a connection: #{inspect(reason)}")
 
     _name, _measurements, _metadata, _config ->
       :ok
@@ -190,32 +195,23 @@ successful connect (`result_class: :ok`) or an `:exception` event —
 which carries no `result_class` at all — raises inside the handler, and
 `:telemetry` responds by detaching it for good.
 
-### Detecting deadlock-like adapter behaviour
+### Catching slow statements
 
-If you suspect a query hung between adapter and driver (e.g.,
-DBConnection wrap is the culprit, not SQLite), watch the time
-difference:
+`duration` is in native time units; convert before comparing:
 
 ```elixir
-:telemetry.attach_many(
-  "adapter-vs-driver",
-  [
-    [:xqlite_ecto3, :handle_execute, :stop],
-    [:xqlite, :query, :stop]
-  ],
-  fn
-    name, %{duration: d}, _md, _ ->
-      Telemetry.Metrics.Distribution.observe("xqlite_layer.#{Enum.join(name, ".")}", d)
+require Logger
 
-    _name, _measurements, _md, _ ->
-      :ok
+:telemetry.attach(
+  "slow-statements",
+  [:xqlite_ecto3, :handle_execute, :stop],
+  fn _, %{duration: d}, %{sql: sql}, budget_ms ->
+    ms = System.convert_time_unit(d, :native, :millisecond)
+    if ms > budget_ms, do: Logger.warning("slow statement (#{ms} ms): #{sql}")
   end,
-  nil
+  250
 )
 ```
-
-The `xqlite_ecto3.handle_execute.stop` minus the inner
-`xqlite.query.stop` duration is your adapter glue overhead.
 
 ### Properly-named database attributes (semantic conventions)
 
@@ -231,24 +227,16 @@ mapped name is cited to its spec page in the module docs.
 
 ### OpenTelemetry
 
-Use `:opentelemetry_telemetry`:
-
-```elixir
-:opentelemetry_telemetry.attach(:xqlite_ecto3_otel, [
-  [:xqlite_ecto3, :connect],
-  [:xqlite_ecto3, :handle_begin],
-  [:xqlite_ecto3, :handle_commit],
-  [:xqlite_ecto3, :handle_rollback],
-  [:xqlite_ecto3, :handle_execute],
-  [:xqlite_ecto3, :handle_declare],
-  [:xqlite_ecto3, :handle_fetch],
-  [:xqlite_ecto3, :handle_deallocate]
-])
-```
-
-xqlite_ecto3 does NOT depend on `:opentelemetry` directly — that's
-a downstream concern. The OTel bridge maps each span to an OTel
-span automatically.
+xqlite_ecto3 does NOT depend on `:opentelemetry` — that's a downstream
+concern. What it ships is the mapping: `XqliteEcto3.Telemetry.OpenTelemetry`
+turns an event into the stable OpenTelemetry database attributes (the
+previous section), and every span carries a stable
+`telemetry_span_context` in its metadata. To turn those into OTel
+spans, write a handler that calls the `opentelemetry_telemetry`
+package's `:otel_telemetry.start_telemetry_span/4` on `:start` and
+`:otel_telemetry.end_telemetry_span/2` on `:stop` and `:exception`.
+That package is a toolkit for handlers you write; it has no attach
+call that subscribes on its own.
 
 ## Sandbox & test environments
 
