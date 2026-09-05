@@ -54,7 +54,7 @@ defmodule XqliteEcto3.DeleteWithJoinTest do
       assert sql ==
                ~s|DELETE FROM "comments" WHERE "id" IN | <>
                  ~s|(SELECT c0."id" FROM "comments" AS c0 | <>
-                 ~s|INNER JOIN (SELECT column1 AS visits FROM (VALUES ($1::INTEGER),($2::INTEGER))) AS v1 | <>
+                 ~s|INNER JOIN (SELECT column1 AS "visits" FROM (VALUES ($1::INTEGER),($2::INTEGER))) AS v1 | <>
                  ~s|ON v1."visits" = c0."post_id")|
     end
 

@@ -1590,19 +1590,12 @@ defmodule XqliteEcto3.Connection do
     [quote_name(name)]
   end
 
+  # The result must compare byte-wise against the stored text form
+  # (space separator, no designator, six fractional digits).
   defp expr({:datetime_add, _, [datetime, count, interval]}, sources, query) do
-    format =
-      case Application.get_env(:xqlite_ecto3, :datetime_type) do
-        :text_datetime ->
-          "%Y-%m-%d %H:%M:%f000Z"
-
-        _ ->
-          "%Y-%m-%dT%H:%M:%f000Z"
-      end
-
     [
       "CAST (",
-      "strftime('#{format}'",
+      "strftime('%Y-%m-%d %H:%M:%f000'",
       ",",
       expr(datetime, sources, query),
       ",",
@@ -1741,6 +1734,12 @@ defmodule XqliteEcto3.Connection do
     end
   end
 
+  # A bound binary already carries its storage class (TEXT when valid
+  # UTF-8, BLOB otherwise); a CAST AS BLOB would never match a TEXT row.
+  defp expr(%Ecto.Query.Tagged{value: other, type: :binary}, sources, query) do
+    expr(other, sources, query)
+  end
+
   # :binary_id and :uuid query-param Tagged values share the same storage
   # config. When :string, wrap in CAST so the inline literal matches the
   # TEXT column's type for comparisons; when :binary, emit bare.
@@ -1796,8 +1795,8 @@ defmodule XqliteEcto3.Connection do
     rows = :lists.seq(1, num_rows, 1)
 
     col_names =
-      Enum.map_join(Enum.with_index(types), ", ", fn {{k, _v}, i} ->
-        "column#{i + 1} AS #{k}"
+      Enum.map_intersperse(Enum.with_index(types), ", ", fn {{k, _v}, i} ->
+        ["column", Integer.to_string(i + 1), " AS ", quote_name(k)]
       end)
 
     [
