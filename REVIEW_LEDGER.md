@@ -7034,3 +7034,135 @@ rebuild, DELETE with JOIN, every event's metadata keys,
 statement-cache counts, disconnect correlation by `conn`, the OTel
 attribute mapping, and a reader following only the guide does get
 events flowing.
+
+## Run 50 — 2026-09-05 — lap 7, batch 1: B8 solo (timeout → cancel over the Runs 42-49 + Gate-3 churn)
+
+- Commit at scan: `35d6033` (HEAD, clean, verify + CI green). Scope: B8 solo, the
+  lap-7 opener, on Dimi's full-autonomy grant of the same day. Churn attacked:
+  `a566b54..35d6033` (34 commits; 17 lib files): the top-level `mode: :savepoint`
+  refusal + `released_savepoint_state` rewrite (R42), the FK-replay baseline
+  savepoint (R44), the bounded journal-mode retry + hook validators + vertical-tab
+  skip (R46), `handle_fetch` stamping (R49), the datetime form + zoned-param shift
+  (R48/49), the `Connection` visibility flip and the `:binary_id` storage fix
+  (Gate 3). Composition: one Opus reviewer (15 probes, `b8_cover_r50/`), every
+  probe re-driven by the orchestrator on the untouched tree BEFORE any edit
+  (all reproduce; the two non-zero exits are the reviewer's deliberately refuted
+  trigger hypothesis and a predicted shape flip); fixes, pins, docs, and the gate
+  by the orchestrator. F-B8-1 re-driven as mandated: 3006 / 3004 / 301 ms —
+  reproduces unchanged, not re-filed.
+
+### CONFIRMED
+
+- **F-B8-14 (S2, FIXED, RED→green).** `spawn_canceller/2` passed a negative
+  `:timeout` straight into `receive … after`, which raises `:timeout_value` in the
+  unlinked canceller: no cancel ever fired, the dirty NIF ran to completion
+  (3475 ms for the ~3.5 s probe query vs 301 ms at `timeout: 300`), and
+  DBConnection's already-expired deadline disconnected the connection
+  asynchronously — the NEXT caller on that pooled connection got
+  `%XqliteEcto3.Error{type: :connection_closed}` (p05: the two shapes alternate
+  run to run). Reachable via repo config and per-call opts (p04); the plausible
+  producer is a computed remaining budget going negative. FIX: `max(timeout, 0)`
+  — the semantics of `timeout: 0` (cancel at once, measured 0-1 ms). PIN:
+  cancellation_test "a negative timeout cancels at once" (`{:error,
+  %DBConnection.ConnectionError{}, _}` under 1 s). Predicted RED = the `{:ok, …}`
+  match failure after ~3.5 s — observed exactly.
+- **F-B8-15 (S2, FIXED, RED→green).** `handle_begin/2` mapped every `NIF.begin/2`
+  error to `{:disconnect, …}`. With the default `:immediate` mode a held write lock
+  makes `BEGIN` fail with `:database_busy_or_locked` after `busy_timeout`, so every
+  contended transaction start destroyed a healthy connection (p08: 502 ms then
+  `{:disconnect, …}`; the `:deferred` control: `BEGIN` 0 ms `:ok`, its contended
+  write `{:error, …}` with the connection kept; p09 through a real pool of 2 with
+  `busy_timeout: 200`: 8 contended begins = 8 disconnect events + 8 reconnects,
+  the `:deferred` control 0/0). The README's retry advice ("treat
+  `:database_busy_or_locked` as retryable") made every retry burn another
+  connection. SQLite starts no transaction when `BEGIN` loses the lock race, so the
+  busy shape now returns `{:error, wrapped, state}` and keeps the connection; every
+  other begin failure still disconnects. `{:error, exception, state}` is not in
+  DBConnection's documented `handle_begin` return union but is consumed by its
+  shared `handle_common_result/3` (db_connection 2.10.2 `db_connection.ex:1397-1416`,
+  reached from `run_begin/3`'s fall-through at :1859) — dialyzer accepted it
+  (verify below). Second half: `:timeout` does not bound `BEGIN` (no cancel token
+  on `NIF.begin/2`; 3004 ms for a 100 ms token vs `busy_timeout` 3000) — the F-B8-1
+  family, DOCS: README timeout section + retry bullet, STE draft mirrored. PIN:
+  driver_transaction_mode_test "a lock-contended BEGIN keeps the connection"
+  (holder handle in `BEGIN IMMEDIATE`, second handle's begin → `{:error,
+  %Error{type: :database_busy_or_locked}, state}`, then `SELECT 1` succeeds on
+  that state). Predicted RED = `{:disconnect, …}` — observed exactly.
+- **F-B8-16 (S3, FIXED adapter half, RED→green).** `stmt_prepare` refuses
+  whitespace/comment-only SQL precisely (`{:cannot_execute, "SQL contains no
+  statement"}`, nif.rs:744) but `prepare_and_cache/2` treated any
+  `{:cannot_execute, _}` as a fallback trigger, so the one-shot path stepped a
+  null statement into API_ARMOR and `Repo.query` returned `SQLITE_MISUSE` (21)
+  for empty / whitespace / line-comment / block-comment input (p12; the syntax
+  control gives code 1). Graded S3 (diagnostic consequence only) with the
+  reviewer's S2 argument on record (wrong classification, public API). FIX: the
+  fallback clause is deleted; the refusal surfaces as `%Error{type:
+  :cannot_execute}` (the other prepare-time `cannot_execute`, an over-`c_int`
+  SQL length, follows it — the one-shot path would fail identically). The
+  `statement_cache_size: 0` path still answers MISUSE — xqlite half filed. PIN:
+  error_paths_test "SQL with no statement is reported as such". Predicted RED =
+  `:sqlite_failure` code 21 — observed exactly.
+- **F-B8-17 (S3, FIXED, RED→green).** The two `handle_begin` refusals were bare
+  `%DBConnection.ConnectionError{}`s — the only untyped refusals in the driver,
+  unpinnable without message matching — and the savepoint text told the caller
+  to "drop the mode: option" although `Ecto.Adapters.SQL.Sandbox` forces
+  `mode: :savepoint` on every begin it forwards (sandbox.ex:360-361): after a raw
+  COMMIT inside a sandboxed connection, a plain `Repo.transaction` hit that advice
+  (p14). FIX: `%XqliteEcto3.Error{type: :savepoint_without_transaction, details:
+  %{mode, transaction_status}}` and `%XqliteEcto3.Error{type:
+  :invalid_transaction_mode, details: %{mode}}`, message reworded to the state
+  found. PINS: driver_transaction_state_test (new describe) +
+  driver_transaction_mode_test (the existing invalid-mode pin flipped to the
+  typed shape). Predicted RED = the `ConnectionError` struct — observed.
+
+### CLEAN legs (controls named)
+
+- F-B8-1 at HEAD (`:infinity` control 3004 ms; uncontended control 301 ms).
+- `stmt_prepare` inherits the busy wait: cold prepare 3004 ms vs warm 0 ms —
+  answers Run 41's open measurement; F-B8-1's family, not a new finding.
+- The `{:cannot_execute, _}` fallback half smuggles nothing: six no-statement
+  spellings identical on the cached and one-shot paths, the cached flag stays
+  `:idle`, a preceding INSERT's count does not leak (classification = F-B8-16).
+- The savepoint counter cannot go negative (commit/rollback at 0 disconnect on
+  the NIF's "no such savepoint"; F-B8-8's raw ROLLBACK zeroes 1→0; F-B8-4's guard
+  re-confirmed under the R42 rewrite).
+- G3-1's cancel side: a cancelled write inside a stream-opened transaction lands
+  on the state the stale flag already claims (`real_after={:ok, false}`);
+  control: a driver-begun cancel disconnects.
+- FK replay cannot escalate a violation into transaction loss (trigger route
+  refuted: SQLite fires the AFTER trigger before the immediate FK check, so the
+  `rich_fk_diagnostics: false` control took the identical disconnect); the
+  `defer_foreign_keys` clobber in `cleanup/1` is unreachable by construction.
+- `checkout/1`'s post-connect-only comment verified in db_connection source
+  (connection.ex:246/268).
+- The pool closing a handle under a client callback is a structured
+  `:connection_closed`, not UB (the F-B8-13 mechanism re-derived).
+- The journal-mode retry does not compound reconnects (8/8 reconnects succeeded
+  under a held write lock — `journal_mode = wal` on a WAL file needs no lock).
+
+### Handoffs
+
+- **F-B8-18 (S3, B5 court + xqlite half):** the default cached path can never
+  produce `:sql_input_error` — `stmt_prepare` builds a plain `SqliteFailure` for a
+  syntax error while the one-shot path yields `%Error.Input{sql, offset}` (p13).
+- **G3-1 → B3:** measured — a later successful INSERT inside a stream-opened
+  transaction is lost when the connection recycles (`rows_surviving_recycle = 0`).
+- **F-B8-13 tally:** stays at 1; p05's deterministic `:connection_closed` via
+  non-positive timeouts strengthens the "normalize into the ConnectionError
+  surface" option.
+- **Adapter side of F-B5-31 landed in this gate:** `to_constraints/2` maps
+  `:constraint_rowid` beside `:constraint_primary_key` (stash-RED 1/1 on the
+  synthetic pin; the live pin accepts both the empty 0.11.0 shape and the parsed
+  one, so the dep bump past 0.11.0 flips nothing).
+
+### Gate honesty
+
+- Stash-RED (driver.ex stashed, the four touched test files run): predicted 5
+  reds by identity → 5/5 (the invalid-mode flip, no-statement, contended BEGIN,
+  savepoint refusal, negative timeout). The GREEN run then caught a SIXTH flip the
+  behavior sweep missed — an existing pin of the old savepoint-refusal shape in
+  the "savepoint counter lifecycle" describe (`driver_transaction_state_test`) —
+  flipped to the typed shape; the sweep pattern matched comments in another file
+  and not this test's title. Recorded as a sweep miss, same class as Run 45's.
+- Rowid mapping: connection.ex stashed → constraints_test 1/1 red on the
+  synthetic pin, green after pop (69 passed across the two files).

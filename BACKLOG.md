@@ -727,6 +727,86 @@ after the S0–S2 burn-down.
   `stable` only — an MSRV lane was deliberately not added (maintainer
   works at latest Rust; declare, do not test-pin). CLOSED.
 
+- [F-B8-14] (S2, FIXED, from Run 50) A negative `:timeout` reached
+  `spawn_canceller/2`'s `receive … after`, which raises
+  `:timeout_value` in the spawned (unlinked) canceller: the token was
+  never fired, the statement ran to completion, and DBConnection's
+  already-expired deadline recycled the connection underneath the
+  next caller (`:connection_closed`). Reachable through repo config
+  and per-call opts; the cold-adopter route is a computed remaining
+  budget going negative. FIX: `max(timeout, 0)` — identical semantics
+  to `timeout: 0` (cancel at once). Pinned (cancellation_test).
+- [F-B8-15] (S2, FIXED, from Run 50) `handle_begin/2` mapped EVERY
+  `NIF.begin/2` error to `{:disconnect, …}`; with the default
+  `:immediate` mode a held write lock makes `BEGIN` fail with
+  `:database_busy_or_locked` after `busy_timeout`, so every contended
+  transaction start recycled a healthy connection (p09: 8 contended
+  begins = 8 disconnects + 8 reconnects on a pool of 2; the
+  `:deferred` control: 0). SQLite starts no transaction when BEGIN
+  loses the lock race, so the busy shape now returns `{:error, …}`
+  and keeps the connection; other begin failures still disconnect.
+  `{:error, exception, state}` is absent from DBConnection's
+  documented `handle_begin` return spec but handled by its shared
+  `handle_common_result/3` (db_connection 2.10.2:1397-1416, reached
+  from `run_begin/3`'s fall-through) — dialyzer accepted it at the
+  gate. The second half (`:timeout` does not bound `BEGIN`; the wait
+  is the F-B8-1 busy-handler shape, measured 3004 ms for a 100 ms
+  token) is docs: README timeout section + retry bullet, STE
+  mirrored. Pinned (driver_transaction_mode_test).
+- [F-B8-16] (S3, FIXED adapter half, from Run 50) Whitespace- or
+  comment-only SQL: `stmt_prepare` refuses it precisely
+  (`{:cannot_execute, "SQL contains no statement"}`) but
+  `prepare_and_cache/2` treated `{:cannot_execute, _}` as a fallback
+  trigger, so the one-shot path stepped a null statement into
+  API_ARMOR and the caller got `SQLITE_MISUSE` (21) — the code that
+  means an adapter bug. FIX: the fallback clause is gone; the
+  prepare refusal surfaces as `%Error{type: :cannot_execute}`.
+  Pinned (error_paths_test). XQLITE HALF (owed, xqlite court): make
+  `query`/`query_with_changes` refuse no-statement SQL like
+  `stmt_prepare` does, so the `statement_cache_size: 0` path stops
+  answering MISUSE and both paths agree.
+- [F-B8-17] (S3, FIXED, from Run 50) `handle_begin/2`'s two refusals
+  (savepoint with no enclosing transaction; unknown mode) were bare
+  `%DBConnection.ConnectionError{}`s — the only untyped refusals in
+  the driver, unpinnable without message matching, and the savepoint
+  text told the caller to "drop the mode: option" although
+  `Ecto.Adapters.SQL.Sandbox` forces `mode: :savepoint` itself
+  (p14: after a raw COMMIT inside a sandboxed connection, a plain
+  `Repo.transaction` hit that message). FIX: `%XqliteEcto3.Error{type:
+  :savepoint_without_transaction | :invalid_transaction_mode}` with
+  the mode and transaction status in `details`; message reworded.
+  Pinned (driver_transaction_state_test, driver_transaction_mode_test).
+- [F-B8-18-handoff] (S3, B5 court + xqlite half, from Run 50) The
+  default cached statement path can never produce
+  `:sql_input_error`: xqlite's `stmt_prepare` builds a plain
+  `SqliteFailure` for a syntax error (nif.rs:785-787) where the
+  one-shot path yields the documented `%Error.Input{sql, offset}`
+  (p13: `"SELCT 1"` → cached `:sqlite_failure` code 1 vs one-shot
+  `:sql_input_error` offset 0). Two paths, two classifications for
+  the same SQL. xqlite half: build `SqlInputError` in `stmt_prepare`
+  like the query path does.
+- [G3-1 addendum, Run 50] Measured consequence of the unsynced
+  stream path: after a stream-opened `BEGIN`, a later successful
+  `INSERT` lands inside the invisible transaction and recycling the
+  connection loses it (`rows_surviving_recycle = 0`). The CANCEL side
+  opens no durable-write door: a cancelled write inside that
+  transaction returns `{:error, ConnectionError}` with the real
+  status already back to autocommit, matching the stale flag.
+  Reachability unchanged (≈ nil).
+- [F-B8-13 tally, Run 50] Class tally stays at 1 (no recurrence since
+  `db4d860`; the one red in between was the CRLF artifact test). New
+  input for its menu: p05 reproduces the same caller-visible
+  `:connection_closed` DETERMINISTICALLY via a non-positive
+  `:timeout` (F-B8-14's aftermath), so the shape is not race-only —
+  strengthens "normalize the deadline-raced `:connection_closed` into
+  the ConnectionError surface" over "widen the asserts".
+- [F-B5-31 addendum, 2026-09-05] Both halves landed: xqlite
+  `019388a` adds the `SQLITE_CONSTRAINT_ROWID => parse_unique` arm
+  (ships after 0.11.0); the adapter maps `:constraint_rowid` beside
+  `:constraint_primary_key` (unique name, derived or real). The live
+  pin accepts both the empty 0.11.0 shape and the parsed one, so the
+  dep bump past 0.11.0 flips nothing.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

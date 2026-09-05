@@ -1829,6 +1829,48 @@ release_savepoint cleanup hands the guard a diagnostics-started
 transaction — the F-B8-4 shape); the negative-counter impossibility
 (belt-guarded, probe-unpinned); rebuild's in_wrapping_transaction?
 DBConnection.status half-blindness (shared with B7).
+COVERING RE-RUN (Run 50, 2026-09-05 — lap 7 opener, B8 solo over the
+Runs 42-49 + Gate-3 churn): the cancel machinery itself came through
+CLEAN on every leg (F-B8-1 reproduces unchanged at 3005/3005/301 ms;
+prepare inherits the busy wait — cold 3004 ms vs warm 0 ms; the
+`{:cannot_execute, _}` fallback half smuggles nothing; the savepoint
+counter cannot go negative; G3-1's cancel side opens no durable-write
+door; the FK replay cannot escalate a violation into transaction loss
+— trigger route refuted; `checkout/1`'s post-connect-only claim
+verified in db_connection source; the pool closing a handle under a
+client callback is a structured `:connection_closed`, not UB; the
+journal-mode retry does not compound reconnects). FOUR findings one
+layer out, all fixed in-run RED→green: F-B8-14 (S2) a negative
+`:timeout` crashed the unlinked canceller silently and ran the query
+unbounded while DBConnection's expired deadline recycled the
+connection under the next caller — clamped to 0; F-B8-15 (S2) a
+lock-contended `BEGIN` (default `:immediate`) disconnected a healthy
+connection on every busy failure — one reconnect per contended
+transaction (8/8 on a pool of 2) — the busy shape now returns
+`{:error, …}` and keeps the connection (DBConnection handles it via
+its shared common-result path; dialyzer accepted), docs state that
+transaction start waits the full `busy_timeout` and `:timeout` does
+not bound it; F-B8-16 (S3) no-statement SQL surfaced as
+`SQLITE_MISUSE` through the fallback — the prepare refusal now
+surfaces as `:cannot_execute` (xqlite half owed for the uncached
+path); F-B8-17 (S3) the two `handle_begin` refusals were bare
+`DBConnection.ConnectionError`s with advice the Sandbox made
+unactionable — typed `%XqliteEcto3.Error{}`s with `details` now.
+Handoffs: F-B8-18 (B5 + xqlite: the cached path never yields
+`:sql_input_error`); G3-1 measured (a later insert inside a
+stream-opened transaction is lost on recycle); F-B8-13 tally stays 1
+with a deterministic reproduction of its shape via non-positive
+timeouts. Re-wets ADD: `spawn_canceller/2`'s timeout handling,
+`handle_begin`'s error mapping in the non-savepoint arm,
+`prepare_and_cache/2`'s fallback clauses, the two refusal shapes.
+DRYNESS: finding run — **B8 stays 0 of 2, NOT DRY**. Completeness
+critic (next B8 pass): the `:ready`-handshake mailbox leak under a
+synthetic scheduler-starvation harness; `handle_commit`/
+`handle_rollback` duration under contention; F-B8-15's sandbox-
+checkout variant; whether `timeout: 0` deserves the negative-timeout
+treatment through a pool (a fourth caller-visible shape); the
+`with_xqlite/3` escape hatch as a route to a stale cached flag;
+re-measure F-B8-15 after the fix.
 
 ### B9. Telemetry
 Two compile configurations = two builds — CI must build AND test
