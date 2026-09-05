@@ -7297,3 +7297,114 @@ events flowing.
   dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
 
 ---
+
+## Run 52 — 2026-09-05 — lap 7, batch 3: B6 solo (translation cover over the Runs 44-51 + Gate-3 churn)
+
+- Commit at scan: `4afde08` (HEAD, clean, verify + CI green). Scope: B6 solo.
+  Churn attacked: `3bfa1c9..4afde08` (33 commits): the Run-48/49 datetime storage
+  form + zoned-param shift (query.ex), the Run-44 constraint moves, the Run-45
+  typename-gate rewrite (data_type.ex), the Run-47 refusals, the Gate-3 `defp`
+  flip + four deletions and the comment scrub (connection.ex). Composition: one
+  Opus reviewer (14 probes, `b6_cover_r52/`); every probe re-driven by the
+  orchestrator on the untouched tree BEFORE any edit (12 of 12 runnable probes
+  reproduce; p05 aborts by design on Ecto's own uneven-rows ArgumentError); fixes,
+  pins, docs, and the gate by the orchestrator. Deps: ecto 3.14.1, ecto_sql
+  3.14.0, db_connection 2.10.2, xqlite 0.11.0 (Hex).
+
+### CONFIRMED
+
+- **F-B6-11 (S1, FIXED, RED→green).** `expr({:datetime_add, …})` (connection.ex)
+  still rendered `strftime('%Y-%m-%dT%H:%M:%f000Z', …)` after `0c94064` moved
+  datetime storage to SQLite's own space-separated, designator-less text. SQLite
+  compares text byte-wise and offset 10 holds `T` (0x54) in the computed value and
+  a space (0x20) in every stored one, so every stored datetime sorted BELOW any
+  same-day interval result: `where: e.at > datetime_add(^t, -1, "hour")` returned
+  `[]` against a 12:30 row for a 12:00 bound on usec, second-precision, and utc
+  columns (p02/p03), while the plain-parameter sibling and SQLite's own
+  `datetime(?, '-1 hour')` both found it. `ago/2` and `from_now/2` share the
+  clause. The reviewer graded it S0-by-the-letter with an S1 floor; graded S1
+  here (silent wrong rows on a read path; no write misreported). Why CI was
+  green: the shared suite's `interval.exs` `datetime_add` tests sit behind the
+  over-broad `:microsecond_precision` exclusion ([F-B2-8]). FIX: the format is
+  `%Y-%m-%d %H:%M:%f000` (six fractional digits — exact for `_usec` columns and
+  for every strict comparison on second-precision columns; the exact-equality
+  boundary on a second-precision column is the documented residual
+  [F-B6-11-residual], p14's fix-shape table on record); the undocumented
+  `:datetime_type` application-environment branch (one reference, no test, no
+  doc, itself wrong post-churn) deleted. DOCS: README datetime bullet + STE
+  (interval arithmetic targets the built-in types' form; `TimestampTZ` keeps its
+  own offset-carrying form and is not targeted). PINS: datetime_add_form_test —
+  emission (`%Y-%m-%d %H:%M:%f000`, no `T%H`, no `Z'`) + rows on the three column
+  kinds + SQLite's own `datetime()` as the in-file control. Predicted RED = the
+  emission assertion and the three `[]` row results — observed exactly.
+- **F-B6-12 (S1, FIXED, RED→green).** The generic `Tagged` clause rendered
+  `type(^v, :binary)` as `CAST(?1 AS BLOB)`; xqlite binds a valid-UTF-8 binary as
+  TEXT and SQLite never equates TEXT with BLOB, so the predicate matched nothing
+  (p08: plain parameter `[1]`, tagged `[]`; raw `CAST(? AS BLOB)` `[]` vs bare
+  `[[1],[2]]`), across BLOB-declared, TEXT, and `:jsonb`-aliased columns (p06);
+  the inline-literal clause beside it casts the OTHER way on purpose. Refutation
+  ("the user asked for a BLOB cast") failed: `type/2` is Ecto's well-typing API,
+  not a storage-class request, and `insert_all` placeholders store the same value
+  as TEXT. FIX: a bare-parameter clause for tagged `:binary` (the parameter's
+  bound storage class already matches both stored forms). PINS:
+  typed_binary_param_test — emission refutes `AS BLOB`; the UTF-8 row and the
+  raw-bytes row both found. Predicted RED = the emission assertion + the UTF-8
+  `[]` — observed exactly.
+- **F-B6-13 (S3, FIXED, RED→green).** `values_list/3` spliced the field atom
+  unquoted into `column1 AS <atom>`: `:order` raised a raw `%Error{type:
+  :sqlite_failure}` ("near \"order\"") and an injection-shaped atom reached the
+  statement body (p07; the reference adapter has the identical splice; Postgres
+  emits no alias names at all). FIX: `quote_name/1` on the alias. One existing
+  emission pin flipped (delete_with_join_test: `column1 AS "visits"`). PINS:
+  values_alias_quoting_test — emission contains `AS "order"`; the row selects.
+  Predicted RED = the unquoted alias + the raised error — observed exactly.
+
+### CLEAN legs (controls named)
+
+- Storage-form census: typed path, raw path, `CURRENT_TIMESTAMP` all agree on the
+  space form (p01/p03/p13); the raw-path `Etc/UTC` shift is correct
+  (Europe/Sofia 14:30+03 → 11:30 stored, p13).
+- `type/2` in where / order_by / group_by / having / select_merge and
+  `insert_all` placeholders (p04, p08 leg E); `type(^big, :decimal)` finds the
+  2^53+1 row via `CAST(? AS NUMERIC)`.
+- The `CAST AS NUMERIC` neighbourhood matches SQLite exactly (`sum` over TEXT →
+  REAL 9.0; over the NUMERIC column integer-exact) — raw ground truth (p04).
+- json_default writer bytes = rebuild-predictor bytes on 8 adversarial shapes;
+  rebuild `:ok`, values unchanged (p11).
+- The 79edea9 typename gate vs live SQLite over 46 spellings: never accepts what
+  SQLite refuses; its 22 refusals are the closed F-B6-9 conservatism (p09). The
+  semantic alias table + `:float` NUMERIC round-trip hold (p09/p10; documented).
+- The Gate-3 deletions genuinely dead: `insert_all` from a query, upsert, CTE and
+  subquery aliases, subquery LIMIT, windows, RETURNING all translate; the `lock:`
+  refusal byte-stable since before the gate — [F-B2-36-seed] stays settled (p12).
+- Custom types (`TimestampTZ`/`Instant`/`Duration`) through `type/2` and
+  comparisons; `fragment("datetime(?)", …)` matches (p13). The comment scrub is
+  comment-only in lib/ (census).
+
+### Handoffs
+
+- **[F-B4-seed-dead-shift-fallback] (S3, B4):** the `{:error, _} ->
+  DateTime.to_iso8601(dt)` branch in `encode_param(%DateTime{})` is unreachable
+  (shifting to `Etc/UTC` needs no tz database — measured) and would store a THIRD
+  text form if it ever fired.
+- **[F-B2-8] addendum:** the over-broad tag is how an S1 shipped past CI.
+- **[F-B6-11-residual] (S3):** the second-precision equality boundary; remedy
+  candidates on record (operand-precision format; `.000000` trim).
+- Re-wet list grows: `datetime_add`/`date_add`/`interval/3`, the Tagged `:binary`
+  clauses, `values_list/3`, the storage form in query.ex.
+
+### Gate honesty
+
+- Stash-RED (connection.ex stashed; the three new files run): predicted 8 reds by
+  identity → 8/8 (4 + 2 + 2); green 10/10 after pop. Behaviour sweep over test/,
+  lib/, README, guides for the old format, `AS BLOB`, the unquoted alias, and the
+  dead env key: ONE pin flipped (delete_with_join's emission string) — predicted
+  and observed 1/1. The first emission pin needed a `select:` (the planner's
+  `select/2` has no clause for a bare struct select through the test's `to_sql`
+  helper) — a test-shape fix, not a behaviour change.
+- Dryness: two S1 + one S3 — **B6 stays 0 of 2, NOT DRY**; THIRTY-TWO straight
+  finding runs; DRY = B10 alone.
+- `mix verify` GREEN (exit file 0 — format, compile, deps.audit, sobelow,
+  dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
+
+---

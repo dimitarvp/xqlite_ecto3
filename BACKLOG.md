@@ -856,6 +856,66 @@ after the S0–S2 burn-down.
   rusqlite's 5000 ms default). Adapter follow-up [A2] is unblocked
   once the adapter's xqlite dep moves past 0.11.0.
 
+- [F-B6-11] (S1, FIXED, from Run 52) `datetime_add`/`ago`/`from_now`
+  emitted the pre-Run-48 `T…Z` text form while storage moved to
+  SQLite's space form; byte-wise text comparison put every stored
+  datetime below any same-day interval result, so "rows in the last
+  hour" filters silently returned nothing. A regression from
+  `0c94064` that CI missed because the shared suite's `datetime_add`
+  tests sit behind the over-broad `:microsecond_precision` exclusion
+  ([F-B2-8]). FIX: `%Y-%m-%d %H:%M:%f000`; the undocumented
+  `:datetime_type` env key deleted. Pinned (datetime_add_form_test:
+  emission + rows on usec, second-precision, and utc columns, raw
+  `datetime()` control). README + STE state the form.
+- [F-B6-11-residual] (S3, B6 court) With one emitted form (six
+  fractional digits) an exact-equality boundary against a
+  second-precision column misses (`>=` at the exact stored second:
+  p14 `ge_sec=[]`), because that column's text has no fractional
+  digits. Documented in the README. Remedy candidates: pick the
+  format from the operand's precision (a Tagged param's type or the
+  field's schema type — `sources` carries the schema), or trim a
+  `.000000` suffix in SQL. `datetime_add` over a `TimestampTZ`
+  column is not targeted (its own offset-carrying form; documented).
+- [F-B6-12] (S1, FIXED, from Run 52) `type(^v, :binary)` rendered
+  `CAST(?1 AS BLOB)`; a valid-UTF-8 binary is bound as TEXT and
+  SQLite never equates TEXT with BLOB, so the predicate matched no
+  row (the write side and the select position were correct). FIX: a
+  bare-parameter clause for tagged `:binary` (the inline-literal
+  clause already cast the other way on purpose). Pinned
+  (typed_binary_param_test: emission refutes `AS BLOB`; UTF-8 and
+  raw-byte rows both found).
+- [F-B6-13] (S3, FIXED, from Run 52) `values/2` spliced the field
+  atom unquoted into `column1 AS <atom>` — `:order` failed as a raw
+  `sqlite_failure`, an injection-shaped atom reached the statement
+  body; the reference adapter has the identical splice. FIX:
+  `quote_name/1` on the alias; the delete_with_join emission pin
+  flipped. Pinned (values_alias_quoting_test).
+- [F-B4-seed-dead-shift-fallback] (S3, B4 court, from Run 52)
+  `query.ex` `encode_param(%DateTime{})`'s `{:error, _} ->
+  DateTime.to_iso8601(dt)` branch is unreachable — shifting to
+  `Etc/UTC` needs no time zone database (measured under
+  `Calendar.UTCOnlyTimeZoneDatabase` with a hand-built Europe/Sofia
+  struct: `{:ok, ~U[… 11:30:00Z]}`) — and if it ever fired it would
+  store a THIRD text form (offset-carrying ISO-8601) that compares
+  against nothing. Delete it or turn it into a refusal; never a
+  silent third form.
+- [F-B2-8 addendum, Run 52] The over-broad `:microsecond_precision`
+  tag excludes the shared suite's `interval.exs` `datetime_add`
+  tests wholesale — that is how F-B6-11 (S1) shipped past CI.
+  Narrowing the tag is now worth more than the four location tuples
+  it costs.
+- [F-B8-16 / F-B8-18 xqlite halves, 2026-09-05] Both landed in xqlite
+  main (`c85d0ae`, ships after 0.11.0): `query`/`execute` (and the
+  `_with_changes`/`_cancellable` variants) refuse whitespace- or
+  comment-only SQL with `{:cannot_execute, "SQL contains no
+  statement"}` like `prepare/2`, so the `statement_cache_size: 0`
+  path stops answering SQLITE_MISUSE once the dep moves; and
+  `stmt_prepare`, `stream_open`, `explain_analyze` classify a syntax
+  error through one shared builder that applies rusqlite's byte-offset
+  rule, so the cached path yields `:sql_input_error` exactly like the
+  one-shot path. The adapter's pins on the 0.11.0 shapes are
+  unaffected until the dep bump; re-pin both when it happens.
+
 ## Feature follow-ups (owed, not review findings)
 
 - [A2] hooks config `:busy` kind + busy-aware concurrency docs —

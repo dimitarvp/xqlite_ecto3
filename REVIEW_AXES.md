@@ -1269,6 +1269,58 @@ across all 24 mutating spellings. DRYNESS: findings — **B6 stays
 0 of 2, NOT DRY**. Re-wet triggers GROW: the Tagged
 :decimal/:float CAST clauses + the alias clauses and
 @typename_grammar, plus the standing list.
+COVERING RE-RUN (Run 52, 2026-09-05 — lap 7, solo; churn
+`3bfa1c9..4afde08` = the Run-48/49 datetime form + zoned-param shift,
+the Run-44/45/47 connection.ex + data_type.ex moves, the Gate-3 `defp`
+flip + four deletions, the comment scrub — each re-anchored live):
+**F-B6-11 (S1, FIXED, RED→green)** — `datetime_add`/`ago`/`from_now`
+still emitted the pre-Run-48 `%Y-%m-%dT%H:%M:%f000Z` text while
+storage moved to the space form, and SQLite compares text byte-wise
+(offset 10: `T` > space), so every stored datetime sorted BELOW any
+same-day interval result: `where: e.at > datetime_add(^t, -1,
+"hour")` returned [] against a 12:30 row for a 12:00 bound
+(p02/p03, raw `datetime(?, '-1 hour')` ground truth [[1]]); a
+regression from `0c94064` that walked through B2's over-broad
+`:microsecond_precision` exclusion. Fixed to `%Y-%m-%d %H:%M:%f000`
+(six fractional digits: exact for `_usec` columns and for every
+strict comparison on second-precision columns; the exact-equality
+boundary on a second-precision column is the documented residual);
+the undocumented `:datetime_type` env branch deleted. **F-B6-12 (S1,
+FIXED, RED→green)** — `type(^v, :binary)` rendered `CAST(?1 AS
+BLOB)`; xqlite binds valid UTF-8 as TEXT and SQLite never equates
+TEXT with BLOB, so the predicate matched nothing (p08: plain param
+[1], tagged [], raw `CAST(? AS BLOB)` [] vs bare [[1],[2]]); the
+inline-literal clause beside it casts the OTHER way on purpose.
+Fixed: a bare-parameter clause for tagged `:binary`. **F-B6-13 (S3,
+FIXED, RED→green)** — `values/2` spliced the field atom unquoted
+into `column1 AS <atom>`; `:order` failed as a raw
+`sqlite_failure` and an injection-shaped atom reached the statement
+body (the reference adapter has the identical splice). Fixed with
+`quote_name/1`; one existing pin flipped (delete_with_join). CLEAN
+with controls: storage form census (typed, raw, CURRENT_TIMESTAMP
+agree); the `Etc/UTC` shift on the raw path (Europe/Sofia 14:30+03
+→ 11:30 stored); `type/2` in where/order_by/group_by/having/
+select_merge + insert_all placeholders; the `CAST AS NUMERIC`
+neighbourhood (sum/avg over mixed storage classes match SQLite);
+json_default writer vs rebuild predictor byte-identical on 8
+adversarial shapes; the 79edea9 typename gate vs live SQLite (46
+spellings; its 22 refusals are the closed F-B6-9 conservatism); the
+alias affinity table; `:float` NUMERIC round-trip (documented);
+the Gate-3 deletions genuinely dead (`insert_all` from a query, CTE
+and subquery aliases, `lock:` refusal byte-stable); custom types
+through `type/2`; `fragment("datetime(?)")`; the comment scrub
+comment-only. DRYNESS: two S1 + one S3 — **B6 stays 0 of 2, NOT
+DRY**; re-wets ALSO on: the `datetime_add`/`date_add`/`interval/3`
+emission, the Tagged `:binary` clauses, `values_list/3`, the
+datetime storage form in query.ex. Next-pass seeds: the rest of the
+interval family under the fix (`date_add` at the `:date` equality
+boundary; week/millisecond/microsecond arms); the Tagged family
+after F-B6-12 (`select: type(^v, :binary)` bare; `:binary_id` under
+`binary_id_storage: :binary` vs a TEXT-stored UUID); `values/2`'s
+`$N::TYPE` half against the semantic alias table; cross-form
+comparison of the three datetime text forms + the README's
+normalize snippet on `.ffffff` values; `inject_trivial_where/1`'s
+firing conditions (having without where).
 
 ### B7. Migration ergonomics (novel surface)
 No reference implementation exists = extra scrutiny. Probes: which
