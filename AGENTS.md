@@ -166,9 +166,10 @@ patched to green.
   allowlist)
 - `guides/` — hexdoc guides (telemetry wiring, migrating from
   ecto_sqlite3)
-- `REVIEW_LEDGER.md`, `REVIEW_AXES.md`, `BACKLOG.md` — the review
-  program's canonical record; its nomenclature (finding IDs, run
-  numbers, axes) lives ONLY there, never in code or public docs
+- The review program's records (ledger, axes, backlog) live outside
+  this repo in `~/kod/xqlite-review-ledgers/xqlite_ecto3/`; their
+  nomenclature (finding IDs, run numbers, axes) lives ONLY there,
+  never in code or public docs
 
 ## Style
 

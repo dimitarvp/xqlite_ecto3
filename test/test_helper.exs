@@ -79,8 +79,7 @@ excludes = [
   # The rebuild engine refuses `modify :col, references(...)` up front
   # with guidance (refuse_reference_changes!): it reconstructs foreign
   # keys from the existing schema and cannot merge a new or repointed
-  # one into that list. An ADAPTER gap, not a SQLite limit — making
-  # `modify references` work is filed as F-B7-25-feature in BACKLOG.
+  # one into that list. An ADAPTER gap, not a SQLite limit.
   # The two :alter_primary_key tests fail for two separate reasons:
   # migration.exs:640 hits the reference refusal above;
   # migration.exs:705 adds a PRIMARY KEY column to an existing table,
@@ -188,8 +187,8 @@ excludes = [
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
   # :assigns_id_type but really fails on `modify` with a `references(...)`
-  # type — the same up-front reference refusal as :alter_foreign_key
-  # (F-B7-25-feature in BACKLOG), not a SQLite limit. The 3 other
+  # type — the same up-front reference refusal as :alter_foreign_key,
+  # not a SQLite limit. The 3 other
   # :assigns_id_type tests pass, so the exclusion stays narrowed to this
   # line.
   {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}}
