@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`XqliteEcto3.Types.ExactDecimal`.** An opt-in `Ecto.Type` that
+  stores a decimal as canonical text over a `:string`/TEXT column,
+  keeping every digit and the scale you wrote. It binds text rather
+  than a number, so neither the ~15-significant-digit float64 ceiling
+  that makes `:decimal` raise `DecimalPrecisionError` nor the silent
+  float-to-text drift a `:decimal` field suffers over a TEXT column
+  applies, and both of `Decimal`'s own limits (a 34-digit parse, a
+  6178-character print) are lifted on the way in and out. `cast/1` is
+  deliberately wider than Ecto's `:decimal` — any number of digits —
+  and returns `:error` where Ecto's raises for a non-finite value.
+  The trade is that SQL ordering, ranges and equality on the column
+  are textual, not numeric: `9.5` and `9.50` are one value to Ecto and
+  two rows to SQLite.
+
 - **Real unique index names in constraint errors.** On a UNIQUE
   violation the adapter reads the table's unique index names back
   (`PRAGMA index_list` + `index_info`) and reports the real name when

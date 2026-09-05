@@ -45,7 +45,8 @@ read out of the file it names. Paths are relative to `lib/xqlite_ecto3/`.
   names with no OpenTelemetry dependency. `migration.ex` — the opt-in
   `enum_check/3` and `array_check/2`; `uuid_v7.ex` — `generate/0`; `types/` —
   `UUID` (parameterized `:storage`), `Instant`, `Duration`, `TimestampTZ`,
-  `Array`; `lib/mix/tasks/test_seq.ex` — one OS process per test file.
+  `Array`, `ExactDecimal` (a decimal as canonical text over a TEXT column);
+  `lib/mix/tasks/test_seq.ex` — one OS process per test file.
 
 ## Data flows
 
@@ -103,6 +104,12 @@ back, `XqliteEcto3.loaders/2` prepends one decoder per Ecto base type;
 `decimal_decode/1` returns `:error` on a partial parse, NaN or infinity so Ecto
 raises its typed load failure, and `utc_datetime_decode/1` attaches `Etc/UTC`
 to offset-less text.
+
+`Types.ExactDecimal` sits outside that decimal path in both directions. Its
+`dump/1` produces a plain string, so `DecimalPrecision.bind_form/1` never sees
+the value and no number is ever bound; its `load/1` parses that string itself,
+so `decimal_decode/1` and its 34-significant-digit parse ceiling are not on the
+way back either.
 
 ### 4. Transactions, the state sync, the disconnect guard
 

@@ -165,7 +165,8 @@ defmodule XqliteEcto3.MixProject do
           XqliteEcto3.Types.TimestampTZ,
           XqliteEcto3.Types.Instant,
           XqliteEcto3.Types.Duration,
-          XqliteEcto3.Types.Array
+          XqliteEcto3.Types.Array,
+          XqliteEcto3.Types.ExactDecimal
         ],
         Generators: [
           XqliteEcto3.UUIDv7

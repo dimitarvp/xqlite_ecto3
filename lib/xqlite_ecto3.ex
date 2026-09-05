@@ -164,6 +164,12 @@ defmodule XqliteEcto3 do
   more than 15 significant digits (large sums, 18-decimal crypto amounts,
   scientific data), pick an exact representation up front:
 
+    * declare the field `XqliteEcto3.Types.ExactDecimal` over a `:string`
+      column — the recommended option. It writes the number as plain digits
+      and reads it back as a `Decimal`, keeping every digit and the scale
+      you wrote, and it binds text so no float is ever on the path. SQL
+      ordering, ranges and equality on that column are textual, not
+      numeric, so store one scale if you compare it in SQL, or
     * store an **integer count of the smallest unit** (e.g. cents, wei) in
       an `:integer` / `:id` column and scale in your domain code, or
     * store the canonical string in a `:string` column yourself — exact,

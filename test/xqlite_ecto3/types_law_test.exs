@@ -4,9 +4,10 @@ defmodule XqliteEcto3.TypesLawTest do
   real table through a real schema and reading them back.
 
   Everything here goes through `Repo.insert/1` and `Repo.get/2`, so the
-  adapter's own dumper and loader chain runs on every case. Nothing calls
-  `dump/1` or `load/1` directly — a type can only pass by surviving the trip
-  through SQLite.
+  adapter's own dumper and loader chain runs on every case — a type can only
+  pass by surviving the trip through SQLite. The one type that also gets its
+  `dump/1` and `load/1` called head-on is `Types.ExactDecimal`, whose promise
+  is a specific text form and not only a value that comes back equal.
 
   Two shapes of law appear:
 
@@ -38,6 +39,7 @@ defmodule XqliteEcto3.TypesLawTest do
   use ExUnitProperties
 
   alias XqliteEcto3.DecimalPrecision
+  alias XqliteEcto3.Types.ExactDecimal
 
   defmodule LawRepo do
     use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
@@ -54,6 +56,7 @@ defmodule XqliteEcto3.TypesLawTest do
       field(:bin_field, :binary)
       field(:bool_field, :boolean)
       field(:dec_field, :decimal)
+      field(:xdec_field, XqliteEcto3.Types.ExactDecimal)
       field(:date_field, :date)
       field(:time_field, :time)
       field(:time_usec_field, :time_usec)
@@ -115,6 +118,7 @@ defmodule XqliteEcto3.TypesLawTest do
         bin_field BLOB,
         bool_field INTEGER,
         dec_field DECIMAL,
+        xdec_field TEXT,
         date_field TEXT,
         time_field TEXT,
         time_usec_field TEXT,
@@ -174,6 +178,22 @@ defmodule XqliteEcto3.TypesLawTest do
       LawRepo.query!("SELECT #{field} FROM law_types WHERE id = ?", [inserted.id])
 
     {Map.fetch!(fetched, field), stored}
+  end
+
+  # Same again, with SQLite's own opinion of the storage class alongside the
+  # stored value: a type that promises text has to be checked against what
+  # SQLite thinks it is holding, not only against the bytes.
+  defp written_back_with_typeof(field, value) do
+    {:ok, inserted} = LawRepo.insert(Ecto.Changeset.change(%Rec{}, %{field => value}))
+    fetched = LawRepo.get(Rec, inserted.id)
+
+    %{rows: [[type, stored]]} =
+      LawRepo.query!(
+        "SELECT typeof(#{field}), #{field} FROM law_types WHERE id = ?",
+        [inserted.id]
+      )
+
+    {Map.fetch!(fetched, field), type, stored}
   end
 
   # --- 1. integers -----------------------------------------------------------
@@ -293,6 +313,42 @@ defmodule XqliteEcto3.TypesLawTest do
 
   defp decimal_of(stored) when is_float(stored), do: Decimal.from_float(stored)
   defp decimal_of(stored) when is_integer(stored), do: Decimal.new(stored)
+
+  # `Types.ExactDecimal` writes the number as text and never binds it as a
+  # number, so nothing on the way in or out is a float and no digit is lost.
+  # Three claims at once: `dump/1` produces the plain-digit canonical form,
+  # `load/1` reads that form back as the same number, and the column really is
+  # holding that text — SQLite's own `typeof` is the oracle for the last one.
+  #
+  # The structural half is exact only for an exponent of zero or below. A
+  # positive exponent is expanded into digits on the way out (`1.5E+3` writes
+  # as `1500`), so what comes back is the same number with the trailing zeros
+  # folded into its coefficient.
+  property "an exact decimal keeps every digit and is stored as canonical text" do
+    check all(value <- exact_decimal(), max_runs: @runs) do
+      canonical = Decimal.to_string(value, :normal, max_digits: :infinity)
+
+      assert ExactDecimal.dump(value) == {:ok, canonical}
+      assert {:ok, reloaded} = ExactDecimal.load(canonical)
+      assert Decimal.equal?(reloaded, value)
+
+      {loaded, type, stored} = written_back_with_typeof(:xdec_field, value)
+
+      assert type == "text"
+      assert stored == canonical
+      assert Decimal.equal?(loaded, value)
+
+      case value do
+        %Decimal{exp: exp} when exp <= 0 ->
+          assert reloaded == value
+          assert loaded == value
+
+        _above_zero ->
+          assert Decimal.normalize(reloaded) == Decimal.normalize(value)
+          assert Decimal.normalize(loaded) == Decimal.normalize(value)
+      end
+    end
+  end
 
   # --- 6. dates and times ----------------------------------------------------
 
@@ -742,6 +798,25 @@ defmodule XqliteEcto3.TypesLawTest do
         ) do
       dec
     end
+  end
+
+  # The exact-decimal domain, built fresh rather than borrowed: the guard-
+  # filtered generator above only ever yields values a float64 can hold, which
+  # is the opposite of what this type is for. 1 to 120 significant digits
+  # straddles the 34-digit ceiling `Decimal`'s default parse limit imposes, and
+  # the exponent range puts values on both sides of the decimal point.
+  defp exact_decimal do
+    raw =
+      gen all(
+            sign <- member_of([1, -1]),
+            ndigits <- integer(1..120),
+            coefficient <- integer(Integer.pow(10, ndigits - 1)..(Integer.pow(10, ndigits) - 1)),
+            exponent <- integer(-60..60)
+          ) do
+        Decimal.new(sign, coefficient, exponent)
+      end
+
+    scale(raw, fn size -> min(size, 120) end)
   end
 
   defp date_value do

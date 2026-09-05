@@ -54,6 +54,15 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     end
   end
 
+  defmodule EdgeExact do
+    use Ecto.Schema
+
+    @primary_key {:id, :id, autogenerate: true}
+    schema "roundtrip_edges" do
+      field(:dec_exact, XqliteEcto3.Types.ExactDecimal)
+    end
+  end
+
   setup_all do
     create_table!(
       "roundtrip_matrix",
@@ -64,7 +73,7 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
     create_table!(
       "roundtrip_edges",
       "id INTEGER PRIMARY KEY AUTOINCREMENT, dec_text TEXT, dec_num DECIMAL, " <>
-        "dec_arr TEXT, dec_map TEXT"
+        "dec_arr TEXT, dec_map TEXT, dec_exact TEXT"
     )
   end
 
@@ -276,6 +285,39 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
 
       assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
         Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_text: beyond}))
+      end
+    end
+
+    # The twin of the pin above, on the same column shape: the value that
+    # drifts under a `:decimal` field and the value the precision guard
+    # refuses outright are both exact under `Types.ExactDecimal`, because it
+    # binds text instead of a number and SQLite never renders a float.
+    test "the same TEXT column is exact under Types.ExactDecimal" do
+      drifter = Decimal.new("9999999999999.99")
+
+      {:ok, rec} = Repo.insert(Ecto.Changeset.change(%EdgeExact{}, %{dec_exact: drifter}))
+      assert Map.fetch!(Repo.get(EdgeExact, rec.id), :dec_exact) == drifter
+
+      beyond = Decimal.new("12345678901234567890.12345")
+
+      {:ok, wide} = Repo.insert(Ecto.Changeset.change(%EdgeExact{}, %{dec_exact: beyond}))
+      assert Map.fetch!(Repo.get(EdgeExact, wide.id), :dec_exact) == beyond
+
+      %{rows: rows} =
+        Repo.query!("SELECT dec_exact FROM roundtrip_edges ORDER BY id", [])
+
+      assert rows == [["9999999999999.99"], ["12345678901234567890.12345"]]
+    end
+
+    property "every value the :decimal path drifts or refuses is exact under Types.ExactDecimal" do
+      check all(dec <- finite_decimal(), max_runs: 2000) do
+        {:ok, rec} = Repo.insert(Ecto.Changeset.change(%EdgeExact{}, %{dec_exact: dec}))
+        loaded = Map.fetch!(Repo.get(EdgeExact, rec.id), :dec_exact)
+
+        assert Decimal.equal?(loaded, dec),
+               "exact decimal did not round-trip: " <>
+                 "#{Decimal.to_string(dec, :normal, max_digits: :infinity)} " <>
+                 "stored as #{inspect(loaded)}"
       end
     end
 

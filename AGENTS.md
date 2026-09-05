@@ -97,7 +97,9 @@ structs in `data_type.ex`, `decimal_precision.ex`, `rebuild_verification.ex`.
   union `sqlite_schema` with `sqlite_temp_schema` so TEMP objects survive
   it; every other catalog read is `sqlite_schema` alone, on purpose.
 - Types live at the adapter layer: `Types.UUID`, `Instant`, `Duration`,
-  `TimestampTZ`, `Array` (JSON TEXT, membership via `JSON_EACH`).
+  `TimestampTZ`, `Array` (JSON TEXT, membership via `JSON_EACH`),
+  `ExactDecimal` (canonical decimal text over a TEXT column, binding text
+  rather than a number, with `Decimal`'s parse and print limits lifted).
 - `DataType.column_type/2` renders `:decimal` as `DECIMAL` or
   `DECIMAL(p,s)`, and the float family (`:float`, `:real`, `:double`,
   `:double_precision`) as the keyword `NUMERIC` — a REAL-affinity column
