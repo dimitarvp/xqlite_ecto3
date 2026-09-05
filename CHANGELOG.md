@@ -196,6 +196,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Rich FK diagnostics no longer report "no violations" for a
+  violation they cannot tell apart from a pre-existing one.** The
+  replay subtracts the violations that existed before the statement,
+  row by row; a `WITHOUT ROWID` child table reports every violation
+  with a `nil` rowid, and `INSERT OR REPLACE` at an orphan's rowid
+  reproduces the orphan's row exactly, so in both cases the statement's
+  own violation vanished from the diagnosis and `fk_diagnostics: :ok`
+  came back with an empty list, which left a declared
+  `foreign_key_constraint` unmatched. Such a diagnosis now reports
+  `{:unavailable, :masked_by_baseline}`.
+
+- **A raw `COMMIT` under rich FK diagnostics is diagnosed in place.**
+  A deferred violation that surfaces at a `COMMIT` issued through
+  `Repo.query` was replayed as if it were a statement: the replay
+  could not name anything, and its cleanup reset `defer_foreign_keys`
+  inside the caller's still-open transaction. Transaction-control
+  statements now take the commit-time diagnosis, which reads the
+  violating rows that are still present and touches no pragma.
+
 - **`datetime_add`, `ago`, and `from_now` compare in the stored text
   form again.** The datetime storage form changed to SQLite's own
   `YYYY-MM-DD HH:MM:SS[.ffffff]` earlier in this cycle, but interval
