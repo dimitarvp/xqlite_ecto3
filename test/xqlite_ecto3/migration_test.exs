@@ -331,6 +331,94 @@ defmodule XqliteEcto3.MigrationTest do
     end
   end
 
+  defmodule EmptyDatetimeMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:mig_dt_empty) do
+        add(:at, :utc_datetime, null: false)
+        timestamps()
+      end
+    end
+  end
+
+  defmodule PopulatedDatetimeMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:mig_dt_populated) do
+        add(:at, :utc_datetime, null: false)
+        timestamps()
+      end
+    end
+  end
+
+  defmodule PopulatedDefaultDatetimeMigration do
+    use Ecto.Migration
+
+    def up do
+      alter table(:mig_dt_default) do
+        add(:at, :utc_datetime, null: false, default: "2000-01-01 00:00:00")
+      end
+    end
+  end
+
+  # SQLite decides whether a NOT NULL column may join a table that already
+  # exists: always on an empty one, and only with a non-NULL constant
+  # default once it holds rows. The adapter renders what was asked for.
+  describe "adding a NOT NULL datetime column" do
+    test "an empty table takes every column with its NOT NULL intact" do
+      TestRepo.query!("CREATE TABLE mig_dt_empty (id INTEGER PRIMARY KEY)")
+
+      assert :ok = Ecto.Migrator.up(TestRepo, 20_260_905_001, EmptyDatetimeMigration, log: false)
+
+      assert notnull_flags("mig_dt_empty") == %{
+               "id" => 0,
+               "at" => 1,
+               "inserted_at" => 1,
+               "updated_at" => 1
+             }
+    end
+
+    test "a populated table refuses the add and keeps the columns it had" do
+      TestRepo.query!("CREATE TABLE mig_dt_populated (id INTEGER PRIMARY KEY)")
+      TestRepo.query!("INSERT INTO mig_dt_populated(id) VALUES (1)")
+
+      error =
+        assert_raise XqliteEcto3.Error, fn ->
+          Ecto.Migrator.up(TestRepo, 20_260_905_002, PopulatedDatetimeMigration, log: false)
+        end
+
+      assert error.type == :sqlite_failure
+      assert %XqliteEcto3.Error.SqliteFailure{code: 1} = error.details
+
+      survivors = notnull_flags("mig_dt_populated")
+      assert Map.keys(survivors) == ["id"]
+    end
+
+    test "a constant default carries the column onto a populated table" do
+      TestRepo.query!("CREATE TABLE mig_dt_default (id INTEGER PRIMARY KEY)")
+      TestRepo.query!("INSERT INTO mig_dt_default(id) VALUES (1)")
+
+      assert :ok =
+               Ecto.Migrator.up(
+                 TestRepo,
+                 20_260_905_003,
+                 PopulatedDefaultDatetimeMigration,
+                 log: false
+               )
+
+      assert notnull_flags("mig_dt_default")["at"] == 1
+    end
+  end
+
+  defp notnull_flags(table) do
+    %{rows: rows} =
+      TestRepo.query!(~s|SELECT name, "notnull" FROM pragma_table_info(?1)|, [table])
+
+    Map.new(rows, fn [name, flag] -> {name, flag} end)
+  end
+
   defp default_ddl(value) do
     {:create, %Ecto.Migration.Table{name: :mig_defaults}, [{:add, :c, :string, [default: value]}]}
     |> Connection.execute_ddl()

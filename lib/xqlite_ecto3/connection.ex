@@ -1933,22 +1933,6 @@ defmodule XqliteEcto3.Connection do
     ]
   end
 
-  # ADD COLUMN ... NOT NULL needs a DEFAULT, and SQLite requires a constant
-  # one — CURRENT_TIMESTAMP, the only sensible default here, is not allowed.
-  # Dropping the NOT NULL is the way through.
-  defp column_change(table, {:add, name, type, opts})
-       when type in [:utc_datetime, :naive_datetime] do
-    opts = Keyword.delete(opts, :null)
-
-    [
-      "ADD COLUMN ",
-      quote_name(name),
-      ?\s,
-      column_type(type, opts),
-      column_options(table, name, type, opts)
-    ]
-  end
-
   defp column_change(table, {:add, name, type, opts}) do
     [
       "ADD COLUMN ",

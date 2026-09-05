@@ -190,6 +190,49 @@ large tables is a full rewrite + re-index.
 All changes in one `alter` block batch into a single rebuild — not N
 rebuilds for N columns.
 
+### `timestamps()` and other `NOT NULL` adds in `alter table`
+
+ecto_sqlite3 drops `null: false` when an `alter table` block adds a
+`:utc_datetime` or `:naive_datetime` column: the migration runs and you
+get a nullable column, with nothing said about it. XqliteEcto3 keeps the
+constraint and lets SQLite answer, and SQLite answers by row count. On
+an empty table the column is added `NOT NULL`. On a table that already
+holds rows the add is refused with "Cannot add a NOT NULL column with
+default value NULL", raised as `%XqliteEcto3.Error{type:
+:sqlite_failure}`. A `CURRENT_TIMESTAMP` default does not help — SQLite
+wants a constant one, and that is not constant.
+
+`timestamps()` inside an `alter` block is where this shows up, because
+it asks for `type: :naive_datetime, null: false` with no default. Two
+things to plan for:
+
+- A migration that ran green under ecto_sqlite3 against a populated
+  table now fails. What it used to produce was a nullable column, not
+  the one the migration asked for.
+- The failure depends on whether the table has rows, so it can pass in
+  dev/CI against a fresh database and fail in production.
+
+Split it in three when the table may hold rows — add nullable, backfill,
+then tighten under the rebuild flag:
+
+```elixir
+alter table(:posts) do
+  add :inserted_at, :naive_datetime
+  add :updated_at, :naive_datetime
+end
+
+execute "UPDATE posts SET inserted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP"
+
+alter table(:posts) do
+  modify :inserted_at, :naive_datetime, null: false
+  modify :updated_at, :naive_datetime, null: false
+end
+```
+
+A constant default is the shorter way when one fits: `add :at,
+:utc_datetime, null: false, default: "2000-01-01 00:00:00"` is accepted
+on a populated table and backfills the existing rows with that value.
+
 ### `CHECK` constraints via migration helpers
 
 The rebuild-vs-CHECK story around `Ecto.Enum`: if you want the DB to
@@ -282,6 +325,7 @@ connection's raw handle. Not unique to XqliteEcto3, but worth knowing:
 | `:timeout` semantics | DBConnection-layer only | DBConnection-layer AND in-flight SQLite cancellation |
 | `:binary_id` default storage | TEXT (36-char) | TEXT (36-char) — configurable |
 | `ALTER ... MODIFY COLUMN` | raises | opt-in table rebuild |
+| `alter table` + `timestamps()` | drops `NOT NULL`, column ends up nullable | keeps `NOT NULL`; SQLite refuses the add on a populated table |
 | `DELETE` with `JOIN` | raises | conservative rewrite |
 | `EXPLAIN ANALYZE` | N/A | `XqliteEcto3.explain_analyze/3` |
 | Custom types | `:integer` for booleans, etc. | ditto + optional `XqliteEcto3.Types.*` |

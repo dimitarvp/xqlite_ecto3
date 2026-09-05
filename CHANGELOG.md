@@ -196,6 +196,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`alter table ... add` keeps `null: false` on datetime columns.**
+  Adding a `:utc_datetime` or `:naive_datetime` column dropped the
+  option before rendering, so `add :at, :utc_datetime, null: false` —
+  and `timestamps()` inside an `alter` block, which asks for exactly
+  that — produced a nullable column and said nothing. Every type now
+  renders the constraint the migration asked for, matching what the
+  table rebuild and `create table` already did. SQLite decides whether
+  the add goes through: always on an empty table, and on a populated
+  one only with a non-NULL constant default, otherwise it raises
+  `%XqliteEcto3.Error{type: :sqlite_failure}`. A migration that
+  silently produced a nullable column before will now either produce
+  the column it asked for or fail; the README's known limitations and
+  the ecto_sqlite3 migration guide cover the way through.
+
 - **The table rebuild's affinity check no longer goes blind on a table
   with a column named `rowid`.** The check poured the column into a
   scratch table and compared the two side by side through SQLite's row
