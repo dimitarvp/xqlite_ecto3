@@ -771,7 +771,7 @@ defmodule XqliteEcto3 do
     existing_columns = fetch_full_column_info!(meta, table, opts)
     refuse_removed_primary_key!(table, existing_columns, changes)
     refuse_key_grant_beside_kept_key!(table, existing_columns, changes)
-    refuse_affinity_rewrites_on_populated!(meta, table, existing_columns, changes, storage, opts)
+    refuse_affinity_rewrites_on_populated!(meta, table, existing_columns, changes, opts)
 
     triggers = fetch_table_triggers!(meta, table, opts)
     refuse_triggers_reading_removed_columns!(table, existing_columns, triggers, changes)
@@ -1376,14 +1376,7 @@ defmodule XqliteEcto3 do
   # storage classes, silently changing ORDER BY and range comparisons.
   # Either way the refusal is per-value: stored values the conversion
   # carries exactly pass, so an all-clean column migrates freely.
-  defp refuse_affinity_rewrites_on_populated!(
-         meta,
-         table,
-         existing_columns,
-         changes,
-         storage,
-         opts
-       ) do
+  defp refuse_affinity_rewrites_on_populated!(meta, table, existing_columns, changes, opts) do
     Enum.each(changes, fn
       {:modify, name, type, modify_opts} ->
         case Enum.find(existing_columns, &same_column?(&1.name, name)) do
@@ -1391,7 +1384,7 @@ defmodule XqliteEcto3 do
             :ok
 
           column ->
-            refuse_affinity_rewrite!(meta, table, column, type, modify_opts, storage, opts)
+            refuse_affinity_rewrite!(meta, table, column, type, modify_opts, opts)
         end
 
       _other ->
@@ -1399,7 +1392,7 @@ defmodule XqliteEcto3 do
     end)
   end
 
-  defp refuse_affinity_rewrite!(meta, table, column, type, modify_opts, storage, opts) do
+  defp refuse_affinity_rewrite!(meta, table, column, type, modify_opts, opts) do
     old_affinity = XqliteEcto3.DataType.sqlite_affinity(column.type || "")
 
     new_affinity =
@@ -1407,7 +1400,8 @@ defmodule XqliteEcto3 do
       |> XqliteEcto3.DataType.column_type(modify_opts)
       |> XqliteEcto3.DataType.sqlite_affinity()
 
-    rewritten = rewritten_count(meta, table, column, old_affinity, new_affinity, storage, opts)
+    rewritten =
+      rewritten_count(meta, table, column, old_affinity, new_affinity, type, modify_opts, opts)
 
     if rewritten > 0 do
       raise ArgumentError,
@@ -1420,9 +1414,10 @@ defmodule XqliteEcto3 do
     end
   end
 
-  defp rewritten_count(_meta, _table, _column, affinity, affinity, _storage, _opts), do: 0
+  defp rewritten_count(_meta, _table, _column, affinity, affinity, _type, _modify_opts, _opts),
+    do: 0
 
-  defp rewritten_count(meta, table, column, _old, new_affinity, storage, opts) do
+  defp rewritten_count(meta, table, column, _old, new_affinity, type, modify_opts, opts) do
     col = quote_name(column.name)
 
     case new_affinity do
@@ -1433,64 +1428,50 @@ defmodule XqliteEcto3 do
         count_rows!(meta, table, "typeof(#{col}) IN ('integer', 'real')", opts)
 
       _numeric_family ->
-        copy_rewritten_count!(meta, table, column, storage, opts)
+        copy_rewritten_count!(meta, table, column, type, modify_opts, opts)
     end
   end
 
-  # CAST is not affinity: CAST converts ANY text to a number (junk to 0)
-  # while the copy's affinity coercion converts only well-formed numeric
-  # literals — a CAST predicate over-refused columns holding plain text
-  # the copy would carry byte-exact. The faithful oracle is the coercion
-  # itself: pour the column through a NUMERIC-affinity scratch table and
-  # count values the pour changed — where "changed" means the rendered
-  # text differs AND the values are not two numbers of equal value
-  # (NUMERIC storing an integral real as an integer, 2.0 as 2, is the
-  # float family's documented value-preserving behavior, not a rewrite).
-  # The number-equality tolerance requires BOTH sides already numeric by
-  # typeof: a bare `=` would let comparison affinity coerce the text
-  # side and wave byte loss like '007' -> 7 through. A WITHOUT ROWID table has no rowid
-  # to pair on, so the CAST predicate stays there — over-refusing at
-  # worst, never under.
+  # CAST is not affinity: it turns ANY text into a number (junk to 0), while
+  # the copy converts only well-formed numeric literals. So pour the column
+  # into a scratch table twice: `raw` has no declared type and keeps every
+  # value as stored, `v` is declared with the type the rebuild will use.
+  # Count the pairs whose rendered text differs, tolerating two numbers of
+  # equal value — typeof on both sides, or `=` would coerce '007' to 7.
   # sobelow_skip ["SQL.Query"]
-  defp copy_rewritten_count!(meta, table, column, %{without_rowid: true}, opts) do
-    col = quote_name(column.name)
-
-    count_rows!(
-      meta,
-      table,
-      "#{col} IS NOT NULL AND CAST(CAST(#{col} AS NUMERIC) AS TEXT) <> CAST(#{col} AS TEXT)",
-      opts
-    )
-  end
-
-  # sobelow_skip ["SQL.Query"]
-  defp copy_rewritten_count!(meta, table, column, _storage, opts) do
+  defp copy_rewritten_count!(meta, table, column, type, modify_opts, opts) do
     col = quote_name(column.name)
     tbl = quote_name(to_string(table.name))
     probe = quote_name("xqlite_affinity_probe_#{System.os_time(:nanosecond)}")
+    target = XqliteEcto3.DataType.column_type(type, modify_opts)
 
-    Ecto.Adapters.SQL.query!(meta, "CREATE TEMP TABLE #{probe} (r INTEGER, v NUMERIC)", [], opts)
+    on_one_connection(meta, true, opts, fn ->
+      Ecto.Adapters.SQL.query!(meta, "CREATE TEMP TABLE #{probe} (raw, v #{target})", [], opts)
 
-    Ecto.Adapters.SQL.query!(
-      meta,
-      "INSERT INTO #{probe} SELECT rowid, #{col} FROM #{tbl}",
-      [],
-      opts
-    )
+      try do
+        Ecto.Adapters.SQL.query!(
+          meta,
+          "INSERT INTO #{probe} SELECT #{col}, #{col} FROM #{tbl}",
+          [],
+          opts
+        )
 
-    %{rows: [[n]]} =
-      Ecto.Adapters.SQL.query!(
-        meta,
-        "SELECT count(*) FROM #{probe} p JOIN #{tbl} t ON t.rowid = p.r " <>
-          "WHERE t.#{col} IS NOT NULL AND CAST(t.#{col} AS TEXT) <> CAST(p.v AS TEXT) " <>
-          "AND NOT (typeof(t.#{col}) IN ('integer', 'real') " <>
-          "AND typeof(p.v) IN ('integer', 'real') AND t.#{col} = p.v)",
-        [],
-        opts
-      )
+        %{rows: [[n]]} =
+          Ecto.Adapters.SQL.query!(
+            meta,
+            "SELECT count(*) FROM #{probe} WHERE raw IS NOT NULL " <>
+              "AND CAST(raw AS TEXT) <> CAST(v AS TEXT) " <>
+              "AND NOT (typeof(raw) IN ('integer', 'real') " <>
+              "AND typeof(v) IN ('integer', 'real') AND raw = v)",
+            [],
+            opts
+          )
 
-    Ecto.Adapters.SQL.query!(meta, "DROP TABLE #{probe}", [], opts)
-    n
+        n
+      after
+        Ecto.Adapters.SQL.query!(meta, "DROP TABLE #{probe}", [], opts)
+      end
+    end)
   end
 
   # sobelow_skip ["SQL.Query"]

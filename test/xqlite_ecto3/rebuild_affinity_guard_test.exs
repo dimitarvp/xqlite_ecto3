@@ -23,6 +23,10 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
     use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
   end
 
+  defmodule PooledGuardRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
   setup_all do
     database =
       Path.join(
@@ -52,10 +56,12 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
     Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(database <> suffix) end)
   end
 
-  defp alter!(table, changes) do
+  defp alter!(table, changes), do: alter!(GuardRepo, table, changes)
+
+  defp alter!(repo, table, changes) do
     {:ok, []} =
       XqliteEcto3.execute_ddl(
-        Ecto.Adapter.lookup_meta(GuardRepo),
+        Ecto.Adapter.lookup_meta(repo),
         {:alter, %Table{name: table}, changes},
         []
       )
@@ -63,9 +69,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
     :ok
   end
 
-  defp dump(table, cols) do
+  defp dump(table, cols, order \\ "rowid") do
     select = Enum.map_join(cols, ", ", fn c -> ~s|typeof("#{c}"), "#{c}"| end)
-    %{rows: rows} = GuardRepo.query!("SELECT #{select} FROM \"#{table}\" ORDER BY rowid")
+    %{rows: rows} = GuardRepo.query!("SELECT #{select} FROM \"#{table}\" ORDER BY #{order}")
     rows
   end
 
@@ -132,6 +138,167 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
 
       assert declared_type("ag_money", "fee") == "MONEY"
       assert dump("ag_money", ["fee"]) == [["integer", 7], ["real", 3.5]]
+    end
+
+    test "a column named rowid does not blind the guard" do
+      GuardRepo.query!(~s|CREATE TABLE ag_shadow ("rowid" TEXT, amt TEXT)|)
+      GuardRepo.query!("INSERT INTO ag_shadow (amt) VALUES ('007'), ('0012')")
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_shadow", [{:modify, :amt, :integer, []}])
+      end
+
+      assert declared_type("ag_shadow", "amt") == "TEXT"
+      assert dump("ag_shadow", ["amt"], "_rowid_") == [["text", "007"], ["text", "0012"]]
+
+      GuardRepo.query!(~s|CREATE TABLE ag_shadow_up ("ROWID" TEXT, amt TEXT)|)
+      GuardRepo.query!("INSERT INTO ag_shadow_up (amt) VALUES ('007'), ('0012')")
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_shadow_up", [{:modify, :amt, :integer, []}])
+      end
+
+      assert declared_type("ag_shadow_up", "amt") == "TEXT"
+      assert dump("ag_shadow_up", ["amt"], "_rowid_") == [["text", "007"], ["text", "0012"]]
+    end
+
+    test "the same table shape with an ordinary column name refuses too" do
+      GuardRepo.query!("CREATE TABLE ag_plain (rid TEXT, amt TEXT)")
+      GuardRepo.query!("INSERT INTO ag_plain (amt) VALUES ('007'), ('0012')")
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_plain", [{:modify, :amt, :integer, []}])
+      end
+
+      assert declared_type("ag_plain", "amt") == "TEXT"
+      assert dump("ag_plain", ["amt"]) == [["text", "007"], ["text", "0012"]]
+    end
+
+    test "a WITHOUT ROWID table is refused before the guard reaches the values" do
+      GuardRepo.query!("CREATE TABLE ag_wr (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
+      GuardRepo.query!("INSERT INTO ag_wr (k, v) VALUES ('a', '007')")
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_wr", [{:modify, :v, :integer, []}])
+      end
+
+      assert declared_type("ag_wr", "v") == "TEXT"
+      assert dump("ag_wr", ["v"], "k") == [["text", "007"]]
+    end
+
+    test "empty, all-NULL, and quoted-name columns take the guard's boundaries" do
+      GuardRepo.query!("CREATE TABLE ag_none (id INTEGER PRIMARY KEY, v TEXT)")
+
+      assert :ok = alter!("ag_none", [{:modify, :v, :integer, []}])
+      assert declared_type("ag_none", "v") == "INTEGER"
+
+      GuardRepo.query!("CREATE TABLE ag_nulls (id INTEGER PRIMARY KEY, v TEXT)")
+      GuardRepo.query!("INSERT INTO ag_nulls (v) VALUES (NULL), (NULL)")
+
+      assert :ok = alter!("ag_nulls", [{:modify, :v, :integer, []}])
+      assert dump("ag_nulls", ["v"]) == [["null", nil], ["null", nil]]
+
+      GuardRepo.query!(~s|CREATE TABLE ag_quoted (id INTEGER PRIMARY KEY, "my col" TEXT)|)
+      GuardRepo.query!(~s|INSERT INTO ag_quoted ("my col") VALUES ('007')|)
+
+      assert_raise ArgumentError, fn ->
+        alter!("ag_quoted", [{:modify, :"my col", :integer, []}])
+      end
+
+      GuardRepo.query!(~s|UPDATE ag_quoted SET "my col" = '7'|)
+
+      assert :ok = alter!("ag_quoted", [{:modify, :"my col", :integer, []}])
+      assert dump("ag_quoted", ["my col"]) == [["integer", 7]]
+    end
+  end
+
+  describe "the affinity guard under a pool of several connections" do
+    test "refuses on one connection and strands no scratch table" do
+      database =
+        Path.join(
+          System.tmp_dir!(),
+          "xqlite_ecto3_affinity_pool_#{System.os_time(:millisecond)}.db"
+        )
+
+      remove_database(database)
+
+      config = [
+        adapter: XqliteEcto3,
+        database: database,
+        pool_size: 3,
+        journal_mode: :wal,
+        busy_timeout: 1_000,
+        support_alter_via_table_rebuild: true
+      ]
+
+      Application.put_env(:xqlite_ecto3, PooledGuardRepo, config)
+      :ok = XqliteEcto3.storage_up(config)
+      start_supervised!({PooledGuardRepo, config})
+      on_exit(fn -> remove_database(database) end)
+
+      probes = fn ->
+        %{rows: [[n]]} =
+          PooledGuardRepo.query!(
+            "SELECT count(*) FROM sqlite_temp_schema WHERE name LIKE 'xqlite_affinity_probe%'"
+          )
+
+        n
+      end
+
+      me = self()
+
+      # Deferred: this process only has to occupy a pool connection. The
+      # repo's default BEGIN IMMEDIATE would hold the write lock too, and
+      # every other statement in this test would time out on it.
+      parked =
+        spawn_link(fn ->
+          PooledGuardRepo.transaction(
+            fn ->
+              send(me, :parked)
+
+              receive do
+                :release -> send(me, {:parked_probes, probes.()})
+              end
+            end,
+            mode: :deferred
+          )
+        end)
+
+      assert_receive :parked, 5_000
+
+      PooledGuardRepo.query!("CREATE TABLE ap_lossy (id INTEGER PRIMARY KEY, v TEXT)")
+      PooledGuardRepo.query!("INSERT INTO ap_lossy (v) VALUES ('007'), ('0012')")
+
+      assert_raise ArgumentError, fn ->
+        alter!(PooledGuardRepo, "ap_lossy", [{:modify, :v, :integer, []}])
+      end
+
+      assert probes.() == 0
+
+      holders =
+        Enum.map(1..2, fn _ ->
+          Task.async(fn ->
+            PooledGuardRepo.checkout(fn ->
+              send(me, {:held, self()})
+
+              receive do
+                :count -> probes.()
+              end
+            end)
+          end)
+        end)
+
+      Enum.each(holders, fn _ -> assert_receive {:held, _}, 5_000 end)
+      Enum.each(holders, fn task -> send(task.pid, :count) end)
+      assert Enum.map(holders, &Task.await(&1, 5_000)) == [0, 0]
+
+      PooledGuardRepo.query!("CREATE TABLE ap_exact (id INTEGER PRIMARY KEY, v TEXT)")
+      PooledGuardRepo.query!("INSERT INTO ap_exact (v) VALUES ('7'), ('12')")
+
+      assert :ok = alter!(PooledGuardRepo, "ap_exact", [{:modify, :v, :integer, []}])
+
+      send(parked, :release)
+      assert_receive {:parked_probes, 0}, 5_000
     end
   end
 
