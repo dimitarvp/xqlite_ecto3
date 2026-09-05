@@ -107,6 +107,48 @@ defmodule XqliteEcto3.StructureTest do
   end
 
   # ---------------------------------------------------------------------------
+  # structure_dump keeps its tuple contract whatever the machine has installed
+  # ---------------------------------------------------------------------------
+
+  test "structure_dump reports a missing sqlite3 executable as a tuple" do
+    db = unique_path("struct_dump_exe") <> ".db"
+    dump_path = unique_path("struct_dump_exe") <> ".sql"
+
+    on_exit(fn ->
+      File.rm(db)
+      File.rm(dump_path)
+    end)
+
+    {:ok, conn} = XqliteNIF.open(db)
+    XqliteNIF.close(conn)
+
+    result = XqliteEcto3.structure_dump("priv", database: db, dump_path: dump_path)
+
+    case System.find_executable("sqlite3") do
+      nil -> assert {:error, {:missing_executable, "sqlite3"}} = result
+      _exe -> assert {:ok, ^dump_path} = result
+    end
+  end
+
+  test "structure_dump reports an unwritable dump path as a tuple" do
+    db = unique_path("struct_dump_unwritable") <> ".db"
+    blocker = unique_path("struct_dump_blocker")
+    dump_path = Path.join(blocker, "structure.sql")
+
+    on_exit(fn ->
+      File.rm(db)
+      File.rm(blocker)
+    end)
+
+    {:ok, conn} = XqliteNIF.open(db)
+    XqliteNIF.close(conn)
+    File.write!(blocker, "not a directory")
+
+    assert {:error, {:cannot_write_dump, ^dump_path, :enotdir}} =
+             XqliteEcto3.structure_dump("priv", database: db, dump_path: dump_path)
+  end
+
+  # ---------------------------------------------------------------------------
   # Round-trip: dump then load (requires sqlite3 CLI)
   # ---------------------------------------------------------------------------
 

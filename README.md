@@ -454,6 +454,8 @@ Permanent SQLite constraints (not adapter choices):
 
 - `alter table ... add` with a non-constant `default:` fragment (`CURRENT_TIMESTAMP`, `(1+1)`) follows SQLite's own `ADD COLUMN` rule: it succeeds on an **empty** table and fails on a **populated** one ("Cannot add a column with non-constant default"). A migration can therefore pass in dev/CI against a fresh database and fail in production. Constant defaults — numbers, strings, booleans, and the adapter's JSON text defaults for maps/lists — are unaffected. Workaround: add the column without the non-constant default, backfill with `execute/1`, then set the default via `modify` if you need it for future rows.
 
+- `mix ecto.dump` shells out to the `sqlite3` command-line program (its `.dump` command); the bundled SQLite library does not include that program, so install it separately where you run the task. Without it the task stops with a structured `{:missing_executable, "sqlite3"}` error. `mix ecto.load` needs nothing extra — it reads the dump file and runs it in-process.
+
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 
 - Untyped boolean JSON extraction — `select: o.meta["enabled"]` returns SQLite's storage-faithful `1`/`0`, not `true`/`false` (no boolean storage class, no JSON wire typing; PostgreSQL/MySQL pass via protocol-level typing). Sanctioned fix: `select: type(o.meta["enabled"], :boolean)`. WHERE comparisons and dynamic path segments (`o.meta[o.label][o.idx]`) work fully.

@@ -526,21 +526,49 @@ defmodule XqliteEcto3 do
   end
 
   @impl Ecto.Adapter.Structure
-  # Writes the schema dump to the operator-configured dump path
-  # (mix ecto.dump) — not request-data traversal.
-  # sobelow_skip ["Traversal.FileModule"]
   def structure_dump(default, config) do
     database = Keyword.fetch!(config, :database)
     path = config[:dump_path] || Path.join(default, "structure.sql")
 
-    case System.cmd("sqlite3", [database, ".dump"], stderr_to_stdout: true) do
-      {dump, 0} ->
-        File.mkdir_p!(Path.dirname(path))
-        File.write!(path, dump)
-        {:ok, path}
+    with :ok <- create_dump_dir(path),
+         :ok <- ensure_sqlite3_executable(),
+         {:ok, dump} <- run_sqlite3_dump(database),
+         :ok <- write_dump(path, dump) do
+      {:ok, path}
+    end
+  end
 
-      {output, _code} ->
-        {:error, output}
+  # Creates the operator-configured dump directory (mix ecto.dump) — not
+  # request-data traversal.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp create_dump_dir(path) do
+    case File.mkdir_p(Path.dirname(path)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:cannot_write_dump, path, reason}}
+    end
+  end
+
+  defp ensure_sqlite3_executable do
+    case System.find_executable("sqlite3") do
+      nil -> {:error, {:missing_executable, "sqlite3"}}
+      _path -> :ok
+    end
+  end
+
+  defp run_sqlite3_dump(database) do
+    case System.cmd("sqlite3", [database, ".dump"], stderr_to_stdout: true) do
+      {dump, 0} -> {:ok, dump}
+      {output, _code} -> {:error, output}
+    end
+  end
+
+  # Writes the operator-configured dump path (mix ecto.dump) — not
+  # request-data traversal.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp write_dump(path, dump) do
+    case File.write(path, dump) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:cannot_write_dump, path, reason}}
     end
   end
 
