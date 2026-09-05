@@ -323,6 +323,12 @@ MyApp.Repo.transaction(fn ->
 end)
 ```
 
+`Repo.stream/2` is the one path `:timeout` does not cancel yet. Each
+fetch runs xqlite's stream NIF, which takes no cancel token today, so a
+slow batch runs to completion and `:timeout` only bounds the checkout
+wait around each fetch. The wiring lands with the xqlite release that
+adds cancellable stream fetches.
+
 ### Telemetry (opt-in, compile-time)
 
 ```elixir
