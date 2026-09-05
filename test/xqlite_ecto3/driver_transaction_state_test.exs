@@ -25,6 +25,16 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
     {:ok, state: state, db_path: db_path}
   end
 
+  describe "handle_begin/2 refusals carry a typed error" do
+    test "a savepoint begin with no enclosing transaction", %{state: state} do
+      assert {:disconnect,
+              %XqliteEcto3.Error{
+                type: :savepoint_without_transaction,
+                details: %{mode: :savepoint, transaction_status: :idle}
+              }, _state} = Driver.handle_begin([mode: :savepoint], state)
+    end
+  end
+
   describe "handle_status/2 reflects real SQLite transaction state" do
     test "fresh connection reports :idle", %{state: state} do
       assert {:idle, _state} = Driver.handle_status([], state)
@@ -234,7 +244,7 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
     end
 
     test "savepoint begin with no enclosing transaction is refused", %{state: state} do
-      assert {:disconnect, %DBConnection.ConnectionError{}, _state} =
+      assert {:disconnect, %XqliteEcto3.Error{type: :savepoint_without_transaction}, _state} =
                Driver.handle_begin([mode: :savepoint], state)
     end
   end

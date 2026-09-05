@@ -41,6 +41,18 @@ defmodule XqliteEcto3.CancellationTest do
       assert elapsed < 2_000, "cancellation took #{elapsed}ms, expected under 2s"
     end
 
+    @tag capture_log: true
+    test "a negative timeout cancels at once instead of running unbounded",
+         %{state: state, slow_sql: sql} do
+      query = %XqliteEcto3.Query{statement: sql, ref: make_ref()}
+      started = System.monotonic_time(:millisecond)
+      result = Driver.handle_execute(query, [], [timeout: -1], state)
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      assert {:error, %DBConnection.ConnectionError{}, _} = result
+      assert elapsed < 1_000, "a negative timeout ran for #{elapsed}ms"
+    end
+
     test "fast query with short timeout still completes", %{state: state} do
       query = %XqliteEcto3.Query{statement: "SELECT 1", ref: make_ref()}
 

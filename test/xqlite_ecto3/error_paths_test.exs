@@ -30,6 +30,11 @@ defmodule XqliteEcto3.ErrorPathsTest do
     assert error.type == :no_such_table
   end
 
+  test "SQL with no statement is reported as such, not as API misuse" do
+    assert {:error, %XqliteEcto3.Error{type: :cannot_execute}} = Repo.query("-- nothing to do\n")
+    assert {:error, %XqliteEcto3.Error{type: :cannot_execute}} = Repo.query("   ")
+  end
+
   # ---------------------------------------------------------------------------
   # Changeset validation errors (not DB errors)
   # ---------------------------------------------------------------------------

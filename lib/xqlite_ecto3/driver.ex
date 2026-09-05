@@ -430,17 +430,21 @@ defmodule XqliteEcto3.Driver do
                 {:disconnect, XqliteEcto3.Error.wrap(reason), state}
             end
 
-          {:savepoint, _no_enclosing_transaction} ->
+          {:savepoint, status} ->
             # A lone SAVEPOINT opens the transaction DEFERRED, silently
             # discarding default_transaction_mode; under write contention the
             # deferred snapshot loses its write with an instant busy error
             # SQLite never routes through the busy handler. Refuse instead.
             {:disconnect,
-             %DBConnection.ConnectionError{
+             %XqliteEcto3.Error{
+               type: :savepoint_without_transaction,
                message:
-                 "mode: :savepoint requires an enclosing transaction — a lone SAVEPOINT " <>
-                   "runs the transaction :deferred, discarding default_transaction_mode. " <>
-                   "Drop the mode: option for a top-level transaction."
+                 "mode: :savepoint with no enclosing transaction open on this connection — " <>
+                   "a lone SAVEPOINT runs the transaction :deferred, discarding " <>
+                   "default_transaction_mode. Open a top-level transaction first; under " <>
+                   "Ecto.Adapters.SQL.Sandbox this state means raw SQL ended the sandbox's " <>
+                   "transaction.",
+               details: %{mode: :savepoint, transaction_status: status}
              }, state}
 
           {_mode, _status} ->
@@ -450,14 +454,21 @@ defmodule XqliteEcto3.Driver do
                   :ok ->
                     {:ok, nil, %{state | transaction_status: :transaction}}
 
+                  # SQLite starts no transaction when BEGIN loses the lock race,
+                  # so the connection is intact and worth keeping.
+                  {:error, {:database_busy_or_locked, _, _} = reason} ->
+                    {:error, XqliteEcto3.Error.wrap(reason), state}
+
                   {:error, reason} ->
                     {:disconnect, XqliteEcto3.Error.wrap(reason), state}
                 end
 
               :invalid ->
                 {:disconnect,
-                 %DBConnection.ConnectionError{
-                   message: "invalid transaction mode: #{inspect(mode)}"
+                 %XqliteEcto3.Error{
+                   type: :invalid_transaction_mode,
+                   message: "invalid transaction mode: #{inspect(mode)}",
+                   details: %{mode: mode}
                  }, state}
             end
         end
@@ -769,7 +780,6 @@ defmodule XqliteEcto3.Driver do
     case NIF.stmt_prepare(state.conn, sql) do
       {:ok, stmt} -> {:ok, stmt, insert_stmt(state, sql, stmt)}
       {:error, :multiple_statements} -> {:fallback, state}
-      {:error, {:cannot_execute, _}} -> {:fallback, state}
       {:error, reason} -> {:error, reason, state}
     end
   end
@@ -1037,7 +1047,7 @@ defmodule XqliteEcto3.Driver do
       receive do
         :stop -> :ok
       after
-        timeout ->
+        max(timeout, 0) ->
           _ = NIF.cancel_operation(token)
       end
     end)

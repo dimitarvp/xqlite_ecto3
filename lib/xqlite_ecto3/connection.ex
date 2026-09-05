@@ -114,6 +114,15 @@ defmodule XqliteEcto3.Connection do
 
   def to_constraints(
         %XqliteEcto3.Error{
+          details: %XqliteEcto3.Error.Constraint{subtype: :constraint_rowid} = d
+        },
+        _opts
+      ) do
+    named_or_empty(:unique, unique_index_name(d))
+  end
+
+  def to_constraints(
+        %XqliteEcto3.Error{
           details: %XqliteEcto3.Error.Constraint{
             subtype: :constraint_foreign_key,
             fk_violations: [_ | _] = violations

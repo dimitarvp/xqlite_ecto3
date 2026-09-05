@@ -224,6 +224,37 @@ defmodule XqliteEcto3.ConstraintsTest do
     assert XqliteEcto3.Connection.to_constraints(error, []) == []
   end
 
+  test "a rowid uniqueness violation maps like a primary key violation" do
+    error = %XqliteEcto3.Error{
+      type: :constraint_violation,
+      message: "UNIQUE constraint failed: rowid_only.rowid",
+      details: %XqliteEcto3.Error.Constraint{
+        subtype: :constraint_rowid,
+        table: "rowid_only",
+        columns: ["rowid"]
+      }
+    }
+
+    assert XqliteEcto3.Connection.to_constraints(error, []) == [unique: "rowid_only_rowid_index"]
+  end
+
+  test "a live rowid uniqueness violation classifies as :constraint_rowid" do
+    Repo.query!("CREATE TABLE rowid_only (a TEXT)")
+    Repo.query!("INSERT INTO rowid_only (rowid, a) VALUES (1, 'x')")
+
+    error =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("INSERT INTO rowid_only (rowid, a) VALUES (1, 'y')")
+      end
+
+    assert error.details.subtype == :constraint_rowid
+
+    assert XqliteEcto3.Connection.to_constraints(error, []) in [
+             [],
+             [unique: "rowid_only_rowid_index"]
+           ]
+  end
+
   test "NOT NULL caught by changeset validate_required" do
     result =
       %CU{}
