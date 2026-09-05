@@ -144,8 +144,12 @@ defmodule XqliteEcto3.StructureTest do
     XqliteNIF.close(conn)
     File.write!(blocker, "not a directory")
 
-    assert {:error, {:cannot_write_dump, ^dump_path, :enotdir}} =
+    assert {:error, {:cannot_write_dump, ^dump_path, reason}} =
              XqliteEcto3.structure_dump("priv", database: db, dump_path: dump_path)
+
+    # File.mkdir_p/1 names a file in the way :enotdir on Elixir 1.19+ and
+    # :eexist before that.
+    assert reason in [:enotdir, :eexist]
   end
 
   # ---------------------------------------------------------------------------
