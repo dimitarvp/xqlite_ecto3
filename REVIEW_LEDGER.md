@@ -6868,3 +6868,103 @@ commit.
   0.11.0 (standing since Run 26); hexdocs read directly (standing);
   re-cover BOTH axes immediately after the 0.11.1 release.
 
+
+## Gate 3 RC prep — 2026-09-05 — the release-readiness checklist, both repos
+
+Not a review run: the Gate 3 checklist from the publish-readiness
+plan, worked item by item with evidence. Scoping and gating by the
+orchestrator; two Opus implementers (one per repo), one read-only
+Opus CHANGELOG auditor, one Opus cold-run of the README. Both
+implementers were cut off by a rate limit after their own green
+`mix verify`; their edits were salvaged from the working trees and
+re-gated here.
+
+**Evidence gathered first (orchestrator):** hexdocs built for both
+repos (adapter: two "Illegal attributes … ignored in IAL" warnings at
+README.md:83 — the rendered README was DROPPING
+`{:hook_subscriber_not_registered, name}` and
+`{:xqlite_update, action, db, table, rowid}`; plus two
+"undefined or private" warnings for `Xqlite.set_busy_handler/3`);
+a public-function doc census over every module of both apps
+(`Code.fetch_docs` + `Code.Typespec.fetch_specs`); precompiled
+honesty (8 release assets ≡ 8 checksum entries, NIF 2.17 only ⇒ OTP
+26 floor, undeclared); the Rust floor measured empirically (Rust
+1.90.0 refuses the crate — "rustler@0.38.0 requires rustc 1.91" —
+and 1.91.0 builds it; spike toolchains removed afterwards);
+dependency licenses of the resolved NIF graph (all permissive: MIT /
+Apache-2.0 / BSD-3 / ISC / Zlib / Unicode-3.0); both Hex packages
+found to ship `lib/mix/tasks/` (xqlite: `mix verify` under a generic
+name in every dependent project); the 21 accidental-public
+`Connection` helpers re-verified caller-free outside the module
+(lib + test, alias-aware), three of them driven by tests.
+
+**Landed, adapter (this commit):** [G1] closed — 18 helpers `defp`
+via one ast-grep rule (36 clause heads), three test-driven helpers
+kept public under `@doc false`, `all/2` hidden; the flip exposed
+four dead clauses, deleted (`insert_all/1`, the `%Ecto.Query{}`
+clause of `insert_all/2` — `rows_sql/3` renders query sources
+itself — `lock/2`, `create_names/1`). `embed_as/1` overridden with
+`@impl` in Duration/Instant/TimestampTZ (the inherited default was
+rendering as an undocumented function). `@spec` on `Error.wrap/1`.
+`exclude_patterns: [~r"^lib/mix/tasks/"]` in the package. README:
+the configuration paragraph replaced by the STE draft's bullet list
+(zero docs warnings; both tuples render); `Xqlite.set_busy_handler/3`
+→ `register_busy_observer/2`; `ecto_repos` moved into the
+`config.exs` block with the compile-time explanation; the
+supervision-tree and `mix ecto.gen.migration` steps added; the
+`details: nil` claim corrected. CHANGELOG: seven claims corrected
+(see the audit) and the streaming carve-out (`fk_diagnostics: :not_run`
+/ `unique_index_lookup: :not_run`) added to the two bullets that
+promised more than the stream path delivers. The STE draft mirrors
+every README change. Census after: `Connection` lists zero
+undocumented functions; the three types show none.
+
+**Landed, xqlite (separate commit):** `rust-version = "1.91"` in
+Cargo.toml; the README toolchain paragraph now states the platform
+list, the OTP 26 floor (NIF API 2.17) and the Rust 1.91 floor, STE
+draft mirrored; CHANGELOG Changed entries for both; the same
+`exclude_patterns`; UPGRADE_PLAYBOOK step 2 re-derives the floor on
+every rustler/rusqlite bump. F-X2-4's diagnosis corrected in the
+backlog (the floor was 1.91 since 0.11.0; as_chunks changed nothing).
+
+**CHANGELOG honesty audit (Opus, static only, every claim
+orchestrator-spot-checked before editing):** 168 claims — 148 true,
+6 false, 1 stale, 13 unverifiable by reading. Corrected: WITHOUT
+ROWID "keeps the conservative predicate" (unreachable branch —
+refused earlier at `unpreservable_table_option/1`); `on` in the
+column-name list (the scan matches `ON CONFLICT` only); "custom_pragmas
+stays unvalidated" (the option's shape is refused:
+`{:invalid_custom_pragma(s), _}`); "re-reads after ANY
+transaction-control statement" (execute path only — the stream path
+is not synced; filed [G3-1], S3, B3 court); `-64_000` "pages" (KiB);
+"tag-only errors keep details: nil" (six tags carry a map — README
+corrected too); the stale double-quote caveat on runtime JSON keys
+(escaped since `53599f4`). Refuted auditor item: `RebuildVerification`
+and `DecimalPrecision` "have real moduledocs" — both are
+`@moduledoc false`; the docstrings it saw belong to the exception
+modules sharing the files. The thirteen unverifiable claims are
+third-party comparisons (first adapter to cache statements,
+ecto_sqlite3's `:deferred` default, PostgreSQL parity claims), two
+measurements (120 s busy wait, first-retry success), upstream
+dispatch (Ecto raising `ConstraintError`, `mode:` forwarding,
+boolean-loader routing), and SQLite fidelity claims — listed for the
+maintainer's Gate 4 read; none contradicted by code.
+
+**README cold-run (Opus, fresh `mix new --sup`, the GitHub dep as
+written, precompiled NIF downloaded from the release — no Rust):**
+every asserted behavior held, including byte-exact
+`changeset.errors` under both config styles and the URL parameters
+taking effect. One defect (fixed): `ecto_repos` under
+`config/runtime.exs` made `mix ecto.gen.migration`/`create`/`migrate`
+no-op with a warning and exit 0. Two gaps closed (supervision tree,
+`gen.migration`). Two left to the Gate 4 README review: the snippets
+lack `import Config`, and a plain `mix new` has no `config/` dir.
+
+**Gate 3 status after this entry:** every checklist item has
+evidence — hexdocs completeness + typespecs + dialyzer (one
+justified ignore), accidental-public audit, precompiled/dep honesty,
+CI-matrix honesty (floors match the matrices; Windows is
+CI-tested), MSRV, license, CHANGELOG honesty, quickstart cold-run,
+`~>` sanity (`~> 0.11.0` since F-X1-4). Remaining before the gate
+is called green: CI on both pushes, and the maintainer's read of
+the unverifiable-claims list.

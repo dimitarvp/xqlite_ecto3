@@ -6,9 +6,28 @@ after the S0–S2 burn-down.
 
 ## Pre-publish gates (release-readiness, regardless of severity)
 
-- [G1] 21 accidental-public SQL helpers in `Connection` → `defp`
-  (verify the zero-external-caller claim per function first;
-  includes the `insert_all/1,2` name-confusion hazard). (wave-1)
+- [G1] DONE (2026-09-05, Gate 3 prep). Zero-external-caller claim
+  verified per function (lib + test, alias-aware): 18 helpers →
+  `defp`; `build_explain_query/2`, `quote_name/1`, `quote_table/1`
+  stay public under `@doc false` because tests drive them directly.
+  The `defp` flip exposed four dead clauses, deleted: `insert_all/1`,
+  the `%Ecto.Query{}` clause of `insert_all/2` (`rows_sql/3` renders
+  query-shaped rows itself), `lock/2` (the second, unreachable lock
+  refusal — settles F-B2-36-seed's reachability question), and
+  `create_names/1`. hexdocs now lists zero undocumented functions on
+  `Connection`; the three custom types no longer show the inherited
+  `embed_as/1`. (wave-1)
+- [G3-1] (S3 seed, B3 court, from the Gate 3 prep audit) The
+  transaction-control keyword sync (`sync_after_transaction_control`)
+  runs only on the ordinary execute path (`driver.ex`, the
+  `handle_execute` columnless-success branch). A `BEGIN`/`COMMIT`/
+  `ROLLBACK` issued through the streaming path (`handle_declare` +
+  `handle_fetch`) is not seen, so the cached transaction flag goes
+  stale — the rollback-disconnect guard's fifth door, reachable only
+  by streaming raw transaction control (nobody does; reachability ≈
+  nil). Remedy candidates: route the declare/fetch success paths
+  through the same sync, or refuse transaction control on the stream
+  path. CHANGELOG wording corrected to the true scope.
 - [G2] DONE (Run 4 + Run 8). Run 4: header fixed (SQLite 3.53.2, 16/18)
   and the two vague rows thickened to "supported" after the two-tag probe
   (P1). Run 8: dropped the orphaned `:concurrent_poolrepo_transactions`
@@ -695,6 +714,18 @@ after the S0–S2 burn-down.
   path. Fix in xqlite's court: rust-version = "1.88" + one release-
   notes line, or revert the lint rewrite. Precompiled-NIF users
   unaffected. (Run 49, X2)
+  ADDENDUM 2026-09-05 (Gate 3 prep): the diagnosis was off by one
+  floor. The source-build floor has been 1.91 since 0.11.0 — rustler
+  0.38.0 (commit 11796ff) declares `rust-version = "1.91"` and cargo
+  enforces it (Rust 1.90.0 refuses the crate naming rustler; 1.91.0
+  builds it) — so the as_chunks rewrite (1.88) changed nothing. FIX
+  LANDED in xqlite main for 0.11.1: `rust-version = "1.91"` in
+  Cargo.toml, the README's toolchain paragraph (also states the OTP
+  26 floor the NIF-2.17-only precompiled binaries imply) mirrored in
+  the STE draft, a CHANGELOG entry, and an UPGRADE_PLAYBOOK step to
+  re-derive the floor on every rustler/rusqlite bump. CI still pins
+  `stable` only — an MSRV lane was deliberately not added (maintainer
+  works at latest Rust; declare, do not test-pin). CLOSED.
 
 ## Feature follow-ups (owed, not review findings)
 
