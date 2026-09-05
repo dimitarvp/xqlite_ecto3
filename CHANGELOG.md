@@ -22,7 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare `unique_constraint/1` against a custom-named index now raises
   `Ecto.ConstraintError` — declare the real name. The lookup runs
   only on the error path, is time-budgeted, and degrades to the
-  derived name if its reads fail.
+  derived name if its reads fail. Streamed DML
+  (`Ecto.Adapters.SQL.stream/4`) skips the lookup and reports
+  `unique_index_lookup: :not_run`.
 
 - **`XqliteEcto3.Telemetry.OpenTelemetry`.** A pure, dependency-free
   mapping from the adapter's telemetry events to OpenTelemetry's
@@ -162,9 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integers index arrays, anything else is a dot-safe quoted object
   key; a NULL segment yields NULL instead of an error. Un-excludes
   the shared suite's `:json_extract_path_with_field` tag, including
-  its `parent_as`/subquery variants. Caveat: runtime keys containing
-  a double quote are unsupported (path-grammar limitation, same as
-  MySQL's CONCAT-built paths).
+  its `parent_as`/subquery variants. A runtime key containing a
+  backslash or a double quote is escaped in the generated SQL, so it
+  matches the literal key instead of silently missing.
 - **Documented boolean-extraction story.** Untyped
   `select: o.meta["enabled"]` returns SQLite's storage-faithful
   `1`/`0` — there is no boolean storage class and no JSON wire
@@ -186,7 +188,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Ecto.Changeset.foreign_key_constraint/3` matches like on
   PostgreSQL, and the shared Ecto suite's `:foreign_key_constraint`
   exclusion is gone. Commit-time deferred violations are diagnosed
-  in place (no replay). Zero happy-path cost; diagnostic failures
+  in place (no replay). Streamed DML skips the replay and reports
+  `fk_diagnostics: :not_run`. Zero happy-path cost; diagnostic failures
   degrade to the original error with
   `fk_diagnostics: {:unavailable, reason}`. Emits a
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
@@ -223,8 +226,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plain text (`CAST` converts junk to 0; the copy's affinity
   coercion carries it byte-exact) — such columns now pour through a
   NUMERIC scratch table and only values the pour actually changes
-  count as rewrites. WITHOUT ROWID tables keep the conservative
-  predicate.
+  count as rewrites. Tables declared WITHOUT ROWID are unaffected: a
+  rebuild refuses them outright, before this check runs.
 
 - **The vendored-suite exclusion artifacts are re-trued and now
   self-checking.** The README's exclusion-taxonomy sentence gains the
@@ -288,8 +291,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step, naming the column and both affinities; values that convert
   exactly migrate freely.
 
-- **A column named `check` (or `collate`, `deferrable`, `on`) no
-  longer blocks its table's rebuild.** The construct scans read
+- **A column named `check` (or `collate`, `deferrable`) no longer
+  blocks its table's rebuild.** The construct scans read
   quoted identifiers verbatim, so `add :check, :boolean` made every
   later `modify` refuse claiming a CHECK constraint the table does
   not have. The scans now run over a product that empties quoted
@@ -454,8 +457,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mmap_size`, and `rich_fk_diagnostics` (a struct-match consumer, so
   `"true"` used to silently disable the feature) now reject invalid
   values with structured connect errors, matching the existing three
-  validators. `custom_pragmas` stays deliberately unvalidated (the
-  escape hatch) — documented as such.
+  validators. The pragma names and values in `custom_pragmas` stay
+  deliberately unchecked (the escape hatch) — documented as such —
+  though a malformed option list is still refused at connect.
 
 - **A UTF-8 BOM or a leading semicolon no longer hides transaction
   control from the driver's state sync.** SQLite's tokenizer skips
@@ -529,9 +533,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit durably in autocommit inside a transaction that reported
   failure. Two gaps closed: the detection depended on a cached flag
   that a `BEGIN` issued through `Repo.query` never set (the driver now
-  re-reads SQLite's transaction state after any successful
-  transaction-control statement — a leading-keyword check costing
-  nanoseconds on ordinary statements), and the streaming callbacks
+  re-reads SQLite's transaction state after a successful
+  transaction-control statement run as an ordinary query — a
+  leading-keyword check costing nanoseconds; a `BEGIN` sent through
+  the streaming path is not seen), and the streaming callbacks
   (`handle_declare` / `handle_fetch`) bypassed the guard entirely. A
   raw transaction whose statements are not pinned to one connection
   (`BEGIN` via `Repo.query` without `Repo.checkout` on a pool) remains
@@ -642,7 +647,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requires `VACUUM` (SQLite semantics). Two more params
   from the same allowlist stopped being overridden by hardcoded
   values: explicit `cache_size` and `foreign_keys` config now wins;
-  the defaults are unchanged (`-64_000` pages, foreign keys ON).
+  the defaults are unchanged (`cache_size` of `-64_000`, meaning
+  64 000 KiB, and foreign keys ON).
 
 - **ecto_sql 3.14 compatibility.** ecto_sql 3.14.0 widened the
   `Connection.insert` callback to `insert/8` (trailing options
@@ -682,7 +688,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     %XqliteEcto3.Error.Input{code, message, sql, offset}` — only the
     message survived before; the offending SQL and byte offset were
     lost; now preserved structurally.
-  - Tag-only errors keep `details: nil`.
+  - Tag-only errors keep `details: nil`, except a few named tags
+    that carry a small map: the extended result code for busy,
+    read-only, schema-changed, and authorization errors; the column
+    number for a UTF-8 error; the path and result code for a failed
+    database open.
   Migration: `e.constraint_type` → `e.details.subtype`;
   `e.constraint_details.table` → `e.details.table`. The exception
   type itself is unchanged — `rescue e in XqliteEcto3.Error` still
