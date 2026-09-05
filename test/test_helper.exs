@@ -195,7 +195,10 @@ excludes = [
   {:location, {"deps/ecto_sql/integration_test/sql/migration.exs", 664}}
 ]
 
-ExUnit.configure(exclude: excludes)
+# The vendored suite waits on ExUnit's default 100 ms window in sandbox.exs:174
+# and migrator.exs:118, and the 3-core macOS runners ran it out repeatedly. Our
+# own tests all pass explicit windows; a green test never waits.
+ExUnit.configure(exclude: excludes, assert_receive_timeout: 2_000)
 
 # -- Load shared schemas and migration ----------------------------------------
 

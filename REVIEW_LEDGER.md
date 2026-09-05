@@ -7647,4 +7647,24 @@ events flowing.
 - `mix verify` GREEN (exit file 0 — format, compile, deps.audit, sobelow,
   dialyzer, the full sequential suite; `env -u XQLITE_PATH`, Hex xqlite 0.11.0).
 
+### Run 54 addendum — the push's CI red (macOS timing), fixed same session
+
+`3f1126f`'s CI came back RED on one cell (macos-latest, 1.19, OTP 28;
+run 33964676176, job 101302619926): the vendored sandbox.exs:174 test
+AND migrator.exs:118 ("broken link migration"), both "no matching
+message after 100ms" — the slow-macOS class, FOURTH event
+(sandbox.exs:174 in every one; the migrator test new). Unrelated to
+Run 54's change: the other eleven macOS cells green, neither test
+touches the rebuild. The Run-47 rule said exclude-with-rationale at
+the fourth event; DISPOSITION REVISED at execution — test_helper now
+sets `assert_receive_timeout: 2_000` suite-wide instead. Reasons: our
+own tests carry explicit windows (27 sites, zero on the default), so
+only the vendored suite feels it; both tests keep running on every
+platform; the next member of the class (any default-window
+`assert_receive` in the 16 vendored files) is covered without another
+exclusion; a green test never waits. The upstream report (explicit
+windows on both tests, as sandbox.exs:188 already does) is WRITTEN in
+the review-ledgers workdir (`xqlite_ecto3/upstream_reports/`), NOT
+filed. B2's exclusion census unchanged (440/26).
+
 ---
