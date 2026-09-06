@@ -754,14 +754,17 @@ defmodule XqliteEcto3 do
   # sobelow_skip ["SQL.Query"]
   defp rebuild_table(meta, table, changes, opts) do
     if !rebuild_enabled?(meta) do
-      raise ArgumentError,
-            "SQLite does not support ALTER TABLE ... MODIFY COLUMN. xqlite_ecto3 " <>
-              "can implement it via a full table rebuild (create new, copy, drop, " <>
-              "rename, recreate indexes/triggers) but requires the opt-in flag:\n\n" <>
-              "    config :my_app, MyApp.Repo,\n" <>
-              "      support_alter_via_table_rebuild: true\n\n" <>
-              "Consider the cost on large tables: the rebuild acquires a write lock " <>
-              "and rewrites every row."
+      raise XqliteEcto3.RebuildRefusedError,
+        reason: :rebuild_not_enabled,
+        table: to_string(table.name),
+        message:
+          "SQLite does not support ALTER TABLE ... MODIFY COLUMN. xqlite_ecto3 " <>
+            "can implement it via a full table rebuild (create new, copy, drop, " <>
+            "rename, recreate indexes/triggers) but requires the opt-in flag:\n\n" <>
+            "    config :my_app, MyApp.Repo,\n" <>
+            "      support_alter_via_table_rebuild: true\n\n" <>
+            "Consider the cost on large tables: the rebuild acquires a write lock " <>
+            "and rewrites every row."
     end
 
     table = resolve_stored_table_name!(meta, table, opts)
@@ -801,7 +804,8 @@ defmodule XqliteEcto3 do
     {new_columns, copy_pairs, primary_key} =
       plan_new_schema(existing_columns, changes,
         autoincrement: autoincrement?,
-        key_sort_order: key_sort_order
+        key_sort_order: key_sort_order,
+        table: to_string(table.name)
       )
 
     copy_rowid? = rowid_copy_needed?(existing_columns, changes, key_sort_order)
@@ -865,10 +869,15 @@ defmodule XqliteEcto3 do
             {:ok, []}
 
           %{rows: violations} ->
-            raise "table-rebuild for #{inspect(table.name)} left foreign-key violations: " <>
-                    inspect(violations) <>
-                    ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
-                    "dependent tables that reference this one."
+            raise XqliteEcto3.RebuildRefusedError,
+              reason: :foreign_key_violations,
+              table: to_string(table.name),
+              violations: violations,
+              message:
+                "table-rebuild for #{inspect(table.name)} left foreign-key violations: " <>
+                  inspect(violations) <>
+                  ". The rebuild ran under PRAGMA defer_foreign_keys = ON; check rows in " <>
+                  "dependent tables that reference this one."
         end
       rescue
         # The one sanctioned rescue on this path: a self-opened transaction
@@ -935,8 +944,10 @@ defmodule XqliteEcto3 do
         %{table | name: stored}
 
       %{rows: []} ->
-        raise ArgumentError,
-              "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: no such table"
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :table_not_found,
+          table: to_string(table.name),
+          message: "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: no such table"
     end
   end
 
@@ -993,7 +1004,12 @@ defmodule XqliteEcto3 do
 
       confirmed ->
         hits = Enum.map(confirmed, fn %{type: type, name: name} -> {type, name} end)
-        raise ArgumentError, dependents_message(to_string(table.name), hits)
+
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :dependents_exist,
+          table: to_string(table.name),
+          details: %{dependents: hits},
+          message: dependents_message(to_string(table.name), hits)
     end
   end
 
@@ -1083,7 +1099,12 @@ defmodule XqliteEcto3 do
         :ok
 
       [{trigger_name, column} | _rest] ->
-        raise ArgumentError, trigger_column_message(table.name, trigger_name, column)
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :trigger_reads_removed_column,
+          table: to_string(table.name),
+          column: column,
+          details: %{trigger: trigger_name},
+          message: trigger_column_message(table.name, trigger_name, column)
     end
   end
 
@@ -1118,14 +1139,21 @@ defmodule XqliteEcto3 do
 
   defp refuse_first_stranded!(_table, []), do: :ok
 
-  defp refuse_first_stranded!(table, [{construct, remedy, column} | _rest]),
-    do: raise(ArgumentError, stranded_message(table.name, construct, remedy, column))
+  defp refuse_first_stranded!(table, [{kind, construct, remedy, column} | _rest]) do
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :stranded_constraint,
+      table: to_string(table.name),
+      construct: kind,
+      column: column,
+      message: stranded_message(table.name, construct, remedy, column)
+  end
 
   defp stranded(constructs, removed) do
     for construct <- constructs,
         column <- removed,
         names_column?(construct, column),
-        do: {construct_description(construct), construct_remedy(construct), column}
+        do:
+          {construct.kind, construct_description(construct), construct_remedy(construct), column}
   end
 
   # An index can cover an expression over the column instead of the column
@@ -1180,8 +1208,17 @@ defmodule XqliteEcto3 do
   defp refuse_reference_changes!(table, changes) do
     case Enum.find(changes, &reference_change?/1) do
       nil -> :ok
-      change -> raise ArgumentError, reference_change_message(table.name, change)
+      change -> raise_reference_change!(table, change)
     end
+  end
+
+  defp raise_reference_change!(table, {op, name, _ref, _opts} = change) do
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :reference_change,
+      table: to_string(table.name),
+      column: to_string(name),
+      details: %{change: op},
+      message: reference_change_message(table.name, change)
   end
 
   defp reference_change?({op, _name, %Ecto.Migration.Reference{}, _opts})
@@ -1223,7 +1260,12 @@ defmodule XqliteEcto3 do
     if Enum.any?(changes, &grants_inline_key?/1) do
       :ok
     else
-      raise ArgumentError, removed_primary_key_message(table.name, removed)
+      raise XqliteEcto3.RebuildRefusedError,
+        reason: :primary_key_removed,
+        table: to_string(table.name),
+        construct: :primary_key,
+        details: %{removed: removed},
+        message: removed_primary_key_message(table.name, removed)
     end
   end
 
@@ -1260,8 +1302,15 @@ defmodule XqliteEcto3 do
   defp grants_own_key?([kept], [granted]), do: same_column?(kept, granted)
   defp grants_own_key?(_kept, _granted), do: false
 
-  defp raise_key_grant!(table, kept, [granted | _rest]),
-    do: raise(ArgumentError, key_grant_message(table.name, kept, granted))
+  defp raise_key_grant!(table, kept, [granted | _rest]) do
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :key_already_granted,
+      table: to_string(table.name),
+      construct: :primary_key,
+      column: granted,
+      details: %{kept: kept, granted: granted},
+      message: key_grant_message(table.name, kept, granted)
+  end
 
   defp granted_key_columns(changes) do
     for {_op, name, _type, _opts} = change <- changes,
@@ -1304,13 +1353,26 @@ defmodule XqliteEcto3 do
         :ok
 
       kind ->
-        raise ArgumentError,
-              "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: the table declares " <>
-                "#{kind} that a table rebuild cannot preserve, so rebuilding would silently " <>
-                "drop them. Perform this change by hand with execute/1, recreating the full " <>
-                "table — columns, constraints, indexes, and triggers — so nothing is lost."
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :unpreservable_construct,
+          table: to_string(table.name),
+          construct: kind,
+          message:
+            "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: the table declares " <>
+              "#{unpreservable_description(kind)} that a table rebuild cannot preserve, so " <>
+              "rebuilding would silently drop them. Perform this change by hand with " <>
+              "execute/1, recreating the full table — columns, constraints, indexes, and " <>
+              "triggers — so nothing is lost."
     end
   end
+
+  defp unpreservable_description(:generated_columns), do: "generated columns"
+  defp unpreservable_description(:without_rowid), do: "WITHOUT ROWID storage"
+  defp unpreservable_description(:strict), do: "STRICT typing"
+  defp unpreservable_description(:check), do: "CHECK constraints"
+  defp unpreservable_description(:collate), do: "COLLATE clauses"
+  defp unpreservable_description(:deferrable), do: "DEFERRABLE foreign keys"
+  defp unpreservable_description(:on_conflict), do: "ON CONFLICT clauses"
 
   # A rebuild drops the old table before renaming its replacement into place.
   # With foreign keys enforced — the default, and unavoidable inside a migration
@@ -1335,8 +1397,15 @@ defmodule XqliteEcto3 do
       |> Enum.filter(fn {ref_table, _action} -> table_has_rows?(meta, ref_table, opts) end)
 
     case populated do
-      [] -> :ok
-      hits -> raise ArgumentError, incoming_actions_message(table_name, hits)
+      [] ->
+        :ok
+
+      hits ->
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :incoming_action_on_populated,
+          table: table_name,
+          details: %{referencing: hits},
+          message: incoming_actions_message(table_name, hits)
     end
   end
 
@@ -1410,13 +1479,22 @@ defmodule XqliteEcto3 do
       rewritten_count(meta, table, column, old_affinity, new_affinity, type, modify_opts, opts)
 
     if rewritten > 0 do
-      raise ArgumentError,
-            affinity_rewrite_message(
-              table.name,
-              column.name,
-              {old_affinity, new_affinity},
-              rewritten
-            )
+      raise XqliteEcto3.RebuildRefusedError,
+        reason: :affinity_rewrite,
+        table: to_string(table.name),
+        column: column.name,
+        details: %{
+          old_affinity: old_affinity,
+          new_affinity: new_affinity,
+          rewritten: rewritten
+        },
+        message:
+          affinity_rewrite_message(
+            table.name,
+            column.name,
+            {old_affinity, new_affinity},
+            rewritten
+          )
     end
   end
 
@@ -1518,7 +1596,7 @@ defmodule XqliteEcto3 do
   # plain column.
   defp unpreservable_kind(meta, table, storage, opts) do
     if has_generated_columns?(meta, table, opts) do
-      "generated columns"
+      :generated_columns
     else
       unpreservable_table_option(storage) ||
         scan_create_sql_for_unpreservable(meta, table, opts)
@@ -1561,10 +1639,10 @@ defmodule XqliteEcto3 do
     scannable = XqliteEcto3.RebuildVerification.without_string_literals_or_names(create_sql)
 
     cond do
-      Regex.match?(~r/\bCHECK\b/i, scannable) -> "CHECK constraints"
-      Regex.match?(~r/\bCOLLATE\b/i, scannable) -> "COLLATE clauses"
-      Regex.match?(~r/\bDEFERRABLE\b/i, scannable) -> "DEFERRABLE foreign keys"
-      Regex.match?(~r/\bON\s+CONFLICT\b/i, scannable) -> "ON CONFLICT clauses"
+      Regex.match?(~r/\bCHECK\b/i, scannable) -> :check
+      Regex.match?(~r/\bCOLLATE\b/i, scannable) -> :collate
+      Regex.match?(~r/\bDEFERRABLE\b/i, scannable) -> :deferrable
+      Regex.match?(~r/\bON\s+CONFLICT\b/i, scannable) -> :on_conflict
       true -> nil
     end
   end
@@ -1599,26 +1677,32 @@ defmodule XqliteEcto3 do
   # replace a search index with an ordinary table and drop the module's
   # storage along with it.
   defp refuse_virtual_table!(table, %{type: "virtual"}) do
-    raise ArgumentError,
-          "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: it is a virtual table, " <>
-            "and a rebuild would replace it with an ordinary one, dropping the storage its " <>
-            "module keeps behind it. Make this change with execute/1, using the module's own " <>
-            "DDL."
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :virtual_table,
+      table: to_string(table.name),
+      message:
+        "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: it is a virtual table, " <>
+          "and a rebuild would replace it with an ordinary one, dropping the storage its " <>
+          "module keeps behind it. Make this change with execute/1, using the module's own " <>
+          "DDL."
   end
 
   defp refuse_virtual_table!(table, %{type: "shadow"}) do
-    raise ArgumentError,
-          "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: it is a shadow table, " <>
-            "storage that belongs to a virtual table, and rebuilding it would corrupt that " <>
-            "table. Change the virtual table itself with execute/1, using its module's own DDL."
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :shadow_table,
+      table: to_string(table.name),
+      message:
+        "cannot rebuild #{inspect(table.name)} for ALTER ... MODIFY: it is a shadow table, " <>
+          "storage that belongs to a virtual table, and rebuilding it would corrupt that " <>
+          "table. Change the virtual table itself with execute/1, using its module's own DDL."
   end
 
   defp refuse_virtual_table!(_table, _storage), do: :ok
 
   # A rebuild would silently drop either option — converting a WITHOUT ROWID
   # table to a rowid table, or dropping strict type-checking.
-  defp unpreservable_table_option(%{without_rowid: true}), do: "WITHOUT ROWID storage"
-  defp unpreservable_table_option(%{strict: true}), do: "STRICT typing"
+  defp unpreservable_table_option(%{without_rowid: true}), do: :without_rowid
+  defp unpreservable_table_option(%{strict: true}), do: :strict
   defp unpreservable_table_option(_storage), do: nil
 
   defp fetch_full_column_info!(meta, %Ecto.Migration.Table{name: name}, opts) do
@@ -1825,8 +1909,14 @@ defmodule XqliteEcto3 do
         opts
       )
 
+    table_name = to_string(name)
+
     Enum.map(rows, fn [schema, trg_name, sql] ->
-      %{schema: schema, name: trg_name, sql: recreate_trigger_sql(schema, trg_name, sql)}
+      %{
+        schema: schema,
+        name: trg_name,
+        sql: recreate_trigger_sql(schema, trg_name, sql, table_name)
+      }
     end)
   end
 
@@ -1835,18 +1925,22 @@ defmodule XqliteEcto3 do
   # the TEMP, TEMPORARY, and temp.-qualified spellings alike), so replaying
   # it verbatim would re-create the trigger in the MAIN schema. Reinstate
   # TEMP; a prefix that breaks the invariant is refused, not guessed at.
-  defp recreate_trigger_sql("main", _trg_name, sql), do: sql
+  defp recreate_trigger_sql("main", _trg_name, sql, _table_name), do: sql
 
-  defp recreate_trigger_sql("temp", trg_name, sql) do
+  defp recreate_trigger_sql("temp", trg_name, sql, table_name) do
     case sql do
       "CREATE TRIGGER" <> rest ->
         "CREATE TEMP TRIGGER" <> rest
 
       _other ->
-        raise ArgumentError,
-              "cannot rebuild: TEMP trigger #{inspect(trg_name)} has stored SQL in an " <>
-                "unexpected form, so re-creating it in the temp schema is not possible. " <>
-                "Drop it, run this migration, then recreate it."
+        raise XqliteEcto3.RebuildRefusedError,
+          reason: :trigger_sql_unrecognized,
+          table: table_name,
+          details: %{trigger: trg_name},
+          message:
+            "cannot rebuild #{inspect(table_name)}: TEMP trigger #{inspect(trg_name)} has " <>
+              "stored SQL in an unexpected form, so re-creating it in the temp schema is not " <>
+              "possible. Drop it, run this migration, then recreate it."
     end
   end
 
@@ -1920,6 +2014,7 @@ defmodule XqliteEcto3 do
   defp plan_new_schema(existing, changes, opts) do
     autoincrement? = Keyword.fetch!(opts, :autoincrement)
     key_sort_order = Keyword.fetch!(opts, :key_sort_order)
+    table_name = Keyword.fetch!(opts, :table)
 
     # Primary-key columns in declared order (table_xinfo `pk` is the 1-based
     # position within the key, 0 otherwise). A single-column key stays inline on
@@ -1953,7 +2048,7 @@ defmodule XqliteEcto3 do
     # FROM (nil for a fresh add), spec the CREATE TABLE column definition.
     final =
       Enum.reduce(changes, base, fn change, cols ->
-        apply_change(cols, change)
+        apply_change(cols, change, table_name)
       end)
 
     copy_pairs =
@@ -2071,35 +2166,36 @@ defmodule XqliteEcto3 do
     Regex.match?(@literal_default_pattern, String.trim(text))
   end
 
-  defp apply_change(cols, {:add, name, type, opts}) do
+  defp apply_change(cols, {:add, name, type, opts}, _table) do
     cols ++
       [%{name: to_string(name), source_name: nil, spec: add_spec(name, type, opts), meta: nil}]
   end
 
-  defp apply_change(cols, {:add_if_not_exists, name, type, opts}) do
+  defp apply_change(cols, {:add_if_not_exists, name, type, opts}, table) do
     if Enum.any?(cols, &same_column?(&1.name, name)) do
       cols
     else
-      apply_change(cols, {:add, name, type, opts})
+      apply_change(cols, {:add, name, type, opts}, table)
     end
   end
 
-  defp apply_change(cols, {:remove, name, _type, _opts}), do: apply_change(cols, {:remove, name})
+  defp apply_change(cols, {:remove, name, _type, _opts}, table),
+    do: apply_change(cols, {:remove, name}, table)
 
-  defp apply_change(cols, {:remove, name}) do
-    refuse_unknown_column!(cols, name, :remove)
+  defp apply_change(cols, {:remove, name}, table) do
+    refuse_unknown_column!(cols, name, :remove, table)
     Enum.reject(cols, &same_column?(&1.name, name))
   end
 
-  defp apply_change(cols, {:remove_if_exists, name, _type}),
-    do: apply_change(cols, {:remove_if_exists, name})
+  defp apply_change(cols, {:remove_if_exists, name, _type}, table),
+    do: apply_change(cols, {:remove_if_exists, name}, table)
 
-  defp apply_change(cols, {:remove_if_exists, name}) do
+  defp apply_change(cols, {:remove_if_exists, name}, _table) do
     Enum.reject(cols, &same_column?(&1.name, name))
   end
 
-  defp apply_change(cols, {:modify, name, type, opts}) do
-    refuse_unknown_column!(cols, name, :modify)
+  defp apply_change(cols, {:modify, name, type, opts}, table) do
+    refuse_unknown_column!(cols, name, :modify, table)
 
     Enum.map(cols, fn col ->
       if same_column?(col.name, name) do
@@ -2110,7 +2206,7 @@ defmodule XqliteEcto3 do
     end)
   end
 
-  defp apply_change(cols, _other), do: cols
+  defp apply_change(cols, _other, _table), do: cols
 
   # SQLite resolves column names ASCII-case-insensitively, so the rebuild
   # matches them the same way — a raw compare made a differently-spelled
@@ -2119,14 +2215,19 @@ defmodule XqliteEcto3 do
     ascii_equal_fold?(stored_name, to_string(change_name))
   end
 
-  defp refuse_unknown_column!(cols, name, kind) do
+  defp refuse_unknown_column!(cols, name, kind, table) do
     if Enum.any?(cols, &same_column?(&1.name, name)) do
       :ok
     else
-      raise ArgumentError,
-            "cannot rebuild for ALTER ... MODIFY: #{kind} names the column " <>
-              "#{inspect(to_string(name))}, and the table has no such column. " <>
-              "Nothing was changed."
+      raise XqliteEcto3.RebuildRefusedError,
+        reason: :unknown_column,
+        table: table,
+        column: to_string(name),
+        details: %{change: kind},
+        message:
+          "cannot rebuild #{inspect(table)} for ALTER ... MODIFY: #{kind} names the column " <>
+            "#{inspect(to_string(name))}, and the table has no such column. " <>
+            "Nothing was changed."
     end
   end
 

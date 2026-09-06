@@ -1,6 +1,8 @@
 defmodule XqliteEcto3.TableRebuildTest do
   use XqliteEcto3.AdapterCase, async: true
 
+  import XqliteEcto3.RebuildRefusal
+
   alias Ecto.Migration.Table
 
   defp adapter_meta, do: Ecto.Adapter.lookup_meta(TestRepo)
@@ -25,9 +27,9 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       create("CREATE TABLE rb_flag(id INTEGER PRIMARY KEY, name TEXT)")
 
-      assert_raise ArgumentError, ~r/support_alter_via_table_rebuild/, fn ->
+      assert_refused(:rebuild_not_enabled, fn ->
         run_alter(:rb_flag, [{:modify, :name, :integer, []}])
-      end
+      end)
     end
   end
 
@@ -69,9 +71,12 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_chk(id INTEGER PRIMARY KEY, qty INTEGER CHECK (qty >= 0))")
       TestRepo.query!("INSERT INTO rb_chk(qty) VALUES (5)")
 
-      assert_raise ArgumentError, ~r/CHECK/, fn ->
-        run_alter(:rb_chk, [{:modify, :qty, :integer, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_chk, [{:modify, :qty, :integer, [null: true]}])
+        end)
+
+      assert error.construct == :check
 
       # CHECK still enforced.
       assert_raise XqliteEcto3.Error, fn ->
@@ -83,9 +88,12 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_coll(id INTEGER PRIMARY KEY, code TEXT COLLATE NOCASE)")
       TestRepo.query!("INSERT INTO rb_coll(code) VALUES ('ABC')")
 
-      assert_raise ArgumentError, ~r/COLLATE/, fn ->
-        run_alter(:rb_coll, [{:modify, :code, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_coll, [{:modify, :code, :string, [null: true]}])
+        end)
+
+      assert error.construct == :collate
 
       # NOCASE still folds case.
       %{rows: rows} = TestRepo.query!("SELECT id FROM rb_coll WHERE code = 'abc'")
@@ -100,9 +108,12 @@ defmodule XqliteEcto3.TableRebuildTest do
           "pid INTEGER REFERENCES rb_def_parent(id) DEFERRABLE INITIALLY DEFERRED)"
       )
 
-      assert_raise ArgumentError, ~r/DEFERRABLE/, fn ->
-        run_alter(:rb_def, [{:modify, :name, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_def, [{:modify, :name, :string, [null: true]}])
+        end)
+
+      assert error.construct == :deferrable
 
       # The table is untouched — the deferrable FK is still declared.
       %{rows: fk_list} = TestRepo.query!("PRAGMA foreign_key_list('rb_def')")
@@ -117,9 +128,12 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_oc(id, name, sku) VALUES (1, 'a', 's1')")
 
-      assert_raise ArgumentError, ~r/ON CONFLICT/, fn ->
-        run_alter(:rb_oc, [{:modify, :name, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_oc, [{:modify, :name, :string, [null: true]}])
+        end)
+
+      assert error.construct == :on_conflict
 
       # ON CONFLICT REPLACE still active — a duplicate sku replaces, does not error.
       TestRepo.query!("INSERT INTO rb_oc(id, name, sku) VALUES (2, 'b', 's1')")
@@ -131,14 +145,14 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE VIRTUAL TABLE rb_fts USING fts5(body)")
       TestRepo.query!("INSERT INTO rb_fts(body) VALUES ('alpha beta')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:virtual_table, fn ->
         run_alter(:rb_fts, [{:modify, :body, :text, []}])
-      end
+      end)
 
       # The module's own storage tables are just as unrebuildable.
-      assert_raise ArgumentError, fn ->
+      assert_refused(:shadow_table, fn ->
         run_alter(:rb_fts_data, [{:modify, :block, :binary, []}])
-      end
+      end)
 
       assert %{rows: [["virtual"]]} =
                TestRepo.query!(
@@ -197,9 +211,12 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_cmt(id, qty) VALUES (1, 5)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_cmt, [{:modify, :note, :text, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_cmt, [{:modify, :note, :text, [null: true]}])
+        end)
+
+      assert error.construct == :check
 
       assert_raise XqliteEcto3.Error, fn ->
         TestRepo.query!("INSERT INTO rb_cmt(id, qty) VALUES (2, -7)")
@@ -214,9 +231,12 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_cmt_oc(id, a) VALUES (1, 'x')")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_cmt_oc, [{:modify, :a, :text, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_cmt_oc, [{:modify, :a, :text, [null: true]}])
+        end)
+
+      assert error.construct == :on_conflict
 
       assert %{rows: [[1, "x"]]} = TestRepo.query!("SELECT id, a FROM rb_cmt_oc")
     end
@@ -232,9 +252,12 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_gen(id, base, plain) VALUES (1, 10, 'x')")
 
-      assert_raise ArgumentError, ~r/generated/, fn ->
-        run_alter(:rb_gen, [{:modify, :plain, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_gen, [{:modify, :plain, :string, [null: true]}])
+        end)
+
+      assert error.construct == :generated_columns
 
       # Both generated columns are still present and still computing.
       %{rows: [[doubled, tripled]]} =
@@ -354,9 +377,12 @@ defmodule XqliteEcto3.TableRebuildTest do
     test "naming the table in a different case still sees its constructs" do
       create(~s|CREATE TABLE "RbCase"(id INTEGER PRIMARY KEY, v TEXT, CHECK (v <> 'bad'))|)
 
-      assert_raise ArgumentError, ~r/CHECK/, fn ->
-        run_alter(:rbcase, [{:modify, :v, :text, []}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rbcase, [{:modify, :v, :text, []}])
+        end)
+
+      assert error.construct == :check
     end
 
     test "STRICT behind a trailing comment still refuses" do
@@ -365,9 +391,12 @@ defmodule XqliteEcto3.TableRebuildTest do
           "STRICT -- keyed on (id)"
       )
 
-      assert_raise ArgumentError, ~r/STRICT/, fn ->
-        run_alter(:rb_strict_c, [{:modify, :v, :text, []}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_strict_c, [{:modify, :v, :text, []}])
+        end)
+
+      assert error.construct == :strict
 
       create("INSERT INTO rb_strict_c(id, v, n) VALUES (1, 'x', 1)")
 
@@ -379,9 +408,12 @@ defmodule XqliteEcto3.TableRebuildTest do
     test "WITHOUT ROWID behind a trailing comment still refuses" do
       create("CREATE TABLE rb_wr_c(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID -- keyed by (k)")
 
-      assert_raise ArgumentError, ~r/WITHOUT ROWID/, fn ->
-        run_alter(:rb_wr_c, [{:modify, :v, :text, []}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          run_alter(:rb_wr_c, [{:modify, :v, :text, []}])
+        end)
+
+      assert error.construct == :without_rowid
     end
 
     test "a view over the table refuses the rebuild up front" do
@@ -389,9 +421,12 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("INSERT INTO rb_viewed(id, v) VALUES (1, 'x')")
       create("CREATE VIEW rb_v AS SELECT id FROM rb_viewed")
 
-      assert_raise ArgumentError, ~r/rb_v/, fn ->
-        run_alter(:rb_viewed, [{:modify, :v, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:dependents_exist, fn ->
+          run_alter(:rb_viewed, [{:modify, :v, :string, [null: true]}])
+        end)
+
+      assert error.details.dependents == [{"view", "rb_v"}]
 
       assert %{rows: [[1]]} = TestRepo.query!("SELECT count(*) FROM rb_viewed")
 
@@ -426,9 +461,12 @@ defmodule XqliteEcto3.TableRebuildTest do
           "BEGIN INSERT INTO rb_trg_target(v) VALUES ('x'); END"
       )
 
-      assert_raise ArgumentError, ~r/rb_trg_foreign/, fn ->
-        run_alter(:rb_trg_target, [{:modify, :v, :string, [null: true]}])
-      end
+      error =
+        assert_refused(:dependents_exist, fn ->
+          run_alter(:rb_trg_target, [{:modify, :v, :string, [null: true]}])
+        end)
+
+      assert error.details.dependents == [{"trigger", "rb_trg_foreign"}]
     end
 
     test "removing every primary-key column refuses, leaving the table intact" do
@@ -438,13 +476,13 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_pk_all(tenant, code, label) VALUES (1, 'x', 'a')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:primary_key_removed, fn ->
         run_alter(:rb_pk_all, [
           {:modify, :label, :string, [null: true]},
           {:remove, :tenant, :integer, []},
           {:remove, :code, :string, []}
         ])
-      end
+      end)
 
       assert %{rows: [[1, "x", "a"]]} =
                TestRepo.query!("SELECT tenant, code, label FROM rb_pk_all")
@@ -460,12 +498,12 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_pk_one(id INTEGER PRIMARY KEY, name TEXT)")
       TestRepo.query!("INSERT INTO rb_pk_one(id, name) VALUES (1, 'a')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:primary_key_removed, fn ->
         run_alter(:rb_pk_one, [
           {:modify, :name, :string, [null: true]},
           {:remove, :id, :integer, []}
         ])
-      end
+      end)
 
       assert %{rows: [[1, "a"]]} = TestRepo.query!("SELECT id, name FROM rb_pk_one")
     end
@@ -500,12 +538,15 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_trg_col(id, a, v) VALUES (1, 'x', 1.0)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_trg_col, [
-          {:remove, :a, :string, []},
-          {:modify, :v, :float, [null: false]}
-        ])
-      end
+      error =
+        assert_refused(:trigger_reads_removed_column, fn ->
+          run_alter(:rb_trg_col, [
+            {:remove, :a, :string, []},
+            {:modify, :v, :float, [null: false]}
+          ])
+        end)
+
+      assert error.column == "a"
 
       # SQLite compiles a trigger body when the trigger fires, so a trigger
       # left reading a column that is gone only shows on the next write.
@@ -520,12 +561,16 @@ defmodule XqliteEcto3.TableRebuildTest do
 
       TestRepo.query!("INSERT INTO rb_uq_gone(id, a, b, v) VALUES (1, 'x', 'y', 1.0)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_uq_gone, [
-          {:remove, :b, :string, []},
-          {:modify, :v, :float, [null: false]}
-        ])
-      end
+      error =
+        assert_refused(:stranded_constraint, fn ->
+          run_alter(:rb_uq_gone, [
+            {:remove, :b, :string, []},
+            {:modify, :v, :float, [null: false]}
+          ])
+        end)
+
+      assert error.construct == :unique
+      assert error.column == "b"
 
       assert %{rows: [["id"], ["a"], ["b"], ["v"]]} =
                TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_uq_gone') ORDER BY cid")
@@ -545,12 +590,16 @@ defmodule XqliteEcto3.TableRebuildTest do
       TestRepo.query!("INSERT INTO rb_fk_parent(id) VALUES (1)")
       TestRepo.query!("INSERT INTO rb_fk_child(id, pid, v) VALUES (1, 1, 1.0)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_fk_child, [
-          {:remove, :pid, :integer, []},
-          {:modify, :v, :float, [null: false]}
-        ])
-      end
+      error =
+        assert_refused(:stranded_constraint, fn ->
+          run_alter(:rb_fk_child, [
+            {:remove, :pid, :integer, []},
+            {:modify, :v, :float, [null: false]}
+          ])
+        end)
+
+      assert error.construct == :foreign_key
+      assert error.column == "pid"
 
       assert %{rows: [["id"], ["pid"], ["v"]]} =
                TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_fk_child') ORDER BY cid")
@@ -566,12 +615,16 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE INDEX rb_ix_gone_a ON rb_ix_gone(a)")
       TestRepo.query!("INSERT INTO rb_ix_gone(id, a, v) VALUES (1, 'x', 1.0)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_ix_gone, [
-          {:remove, :a, :string, []},
-          {:modify, :v, :float, [null: false]}
-        ])
-      end
+      error =
+        assert_refused(:stranded_constraint, fn ->
+          run_alter(:rb_ix_gone, [
+            {:remove, :a, :string, []},
+            {:modify, :v, :float, [null: false]}
+          ])
+        end)
+
+      assert error.construct == :index
+      assert error.column == "a"
 
       assert %{rows: [["id"], ["a"], ["v"]]} =
                TestRepo.query!("SELECT name FROM pragma_table_xinfo('rb_ix_gone') ORDER BY cid")
@@ -613,6 +666,42 @@ defmodule XqliteEcto3.TableRebuildTest do
       assert {:ok, []} = run_alter(:rb_dfu, [{:modify, :name, :string, [null: true]}])
 
       assert %{rows: [[1]]} = TestRepo.query!("PRAGMA defer_foreign_keys")
+      TestRepo.query!("PRAGMA defer_foreign_keys = OFF")
+    end
+
+    test "altering a table that does not exist refuses before anything else" do
+      error =
+        assert_refused(:table_not_found, fn ->
+          run_alter(:rb_absent, [{:modify, :v, :string, [null: true]}])
+        end)
+
+      assert error.table == "rb_absent"
+    end
+
+    # Rows that break a foreign key can already be in the table when the
+    # rebuild starts: PRAGMA defer_foreign_keys puts the check off to a COMMIT
+    # the sandbox never reaches, so an orphan row lands. The rebuild's own
+    # foreign_key_check then finds it and reports the rows themselves.
+    test "orphan rows found after the copy are reported with their rows" do
+      create("CREATE TABLE rb_fkv_parent(id INTEGER PRIMARY KEY)")
+
+      create(
+        "CREATE TABLE rb_fkv(id INTEGER PRIMARY KEY, name TEXT, " <>
+          "pid INTEGER REFERENCES rb_fkv_parent(id))"
+      )
+
+      TestRepo.query!("PRAGMA defer_foreign_keys = ON")
+      TestRepo.query!("INSERT INTO rb_fkv(id, name, pid) VALUES (1, 'a', 999)")
+
+      error =
+        assert_refused(:foreign_key_violations, fn ->
+          run_alter(:rb_fkv, [{:modify, :name, :string, [null: true]}])
+        end)
+
+      assert error.table == "rb_fkv"
+      assert [["rb_fkv", _rowid, "rb_fkv_parent", _fkid]] = error.violations
+
+      TestRepo.query!("DELETE FROM rb_fkv")
       TestRepo.query!("PRAGMA defer_foreign_keys = OFF")
     end
   end
@@ -683,9 +772,14 @@ defmodule XqliteEcto3.TableRebuildTest do
     test "a change naming a column the table does not have refuses loudly" do
       create("CREATE TABLE rb_fold3(id INTEGER PRIMARY KEY, name TEXT)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_fold3, [{:modify, :nope, :text, [null: true]}])
-      end
+      error =
+        assert_refused(:unknown_column, fn ->
+          run_alter(:rb_fold3, [{:modify, :nope, :text, [null: true]}])
+        end)
+
+      assert error.table == "rb_fold3"
+      assert error.column == "nope"
+      assert error.details.change == :modify
 
       assert %{rows: [[2]]} =
                TestRepo.query!("SELECT count(*) FROM pragma_table_xinfo('rb_fold3')")
@@ -732,9 +826,9 @@ defmodule XqliteEcto3.TableRebuildTest do
       TestRepo.query!("INSERT INTO rb_tview(id, name) VALUES (1, 'a')")
       create("CREATE TEMP VIEW rb_tview_v AS SELECT name FROM rb_tview")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:dependents_exist, fn ->
         run_alter(:rb_tview, [{:modify, :name, :text, [null: true]}])
-      end
+      end)
 
       assert %{rows: [[1, "a"]]} = TestRepo.query!("SELECT id, name FROM rb_tview")
     end
@@ -959,9 +1053,13 @@ defmodule XqliteEcto3.TableRebuildTest do
     test "de-keying the only primary key refuses" do
       create("CREATE TABLE rb_dekey(id INTEGER PRIMARY KEY, name TEXT)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_dekey, [{:modify, :id, :integer, [primary_key: false]}])
-      end
+      error =
+        assert_refused(:primary_key_removed, fn ->
+          run_alter(:rb_dekey, [{:modify, :id, :integer, [primary_key: false]}])
+        end)
+
+      assert error.construct == :primary_key
+      assert error.details.removed == ["id"]
 
       assert %{rows: [[1]]} =
                TestRepo.query!("SELECT pk FROM pragma_table_xinfo('rb_dekey') WHERE name = 'id'")
@@ -984,22 +1082,28 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_ckey(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
       TestRepo.query!("INSERT INTO rb_ckey(a, b, v) VALUES (1, 'x', 1.0)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_ckey, [{:modify, :v, :float, [primary_key: true]}])
-      end
+      error =
+        assert_refused(:key_already_granted, fn ->
+          run_alter(:rb_ckey, [{:modify, :v, :float, [primary_key: true]}])
+        end)
+
+      assert error.construct == :primary_key
+      assert error.column == "v"
+      assert error.details.granted == "v"
+      assert error.details.kept == ["a", "b"]
 
       # A member of the key is no different: the key still stands either way.
-      assert_raise ArgumentError, fn ->
+      assert_refused(:key_already_granted, fn ->
         run_alter(:rb_ckey, [{:modify, :a, :integer, [primary_key: true]}])
-      end
+      end)
 
       # De-keying only part of the key leaves the rest of it standing.
-      assert_raise ArgumentError, fn ->
+      assert_refused(:key_already_granted, fn ->
         run_alter(:rb_ckey, [
           {:modify, :a, :integer, [primary_key: false]},
           {:modify, :v, :float, [primary_key: true]}
         ])
-      end
+      end)
 
       assert %{rows: [["a", 1], ["b", 2]]} =
                TestRepo.query!(
@@ -1011,17 +1115,17 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_skey(id INTEGER PRIMARY KEY, v REAL)")
       TestRepo.query!("INSERT INTO rb_skey(id, v) VALUES (1, 1.0)")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:key_already_granted, fn ->
         run_alter(:rb_skey, [{:modify, :v, :float, [primary_key: true]}])
-      end
+      end)
 
       # An added column asking for the key is the same ask.
-      assert_raise ArgumentError, fn ->
+      assert_refused(:key_already_granted, fn ->
         run_alter(:rb_skey, [
           {:modify, :v, :float, [null: false]},
           {:add, :k, :integer, [primary_key: true]}
         ])
-      end
+      end)
 
       assert %{rows: [["id", 1]]} =
                TestRepo.query!(
@@ -1065,12 +1169,12 @@ defmodule XqliteEcto3.TableRebuildTest do
       create("CREATE TABLE rb_ckey4(a INTEGER, b TEXT, v REAL, PRIMARY KEY (a, b))")
       TestRepo.query!("INSERT INTO rb_ckey4(a, b, v) VALUES (1, 'x', 1.0)")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:primary_key_removed, fn ->
         run_alter(:rb_ckey4, [
           {:modify, :a, :integer, [primary_key: false]},
           {:modify, :b, :string, [primary_key: false]}
         ])
-      end
+      end)
 
       assert %{rows: [["a", 1], ["b", 2]]} =
                TestRepo.query!(
@@ -1139,11 +1243,15 @@ defmodule XqliteEcto3.TableRebuildTest do
           "parent_id INTEGER REFERENCES rb_refp(id))"
       )
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_refc, [
-          {:modify, :parent_id, %Ecto.Migration.Reference{table: "rb_refp2"}, []}
-        ])
-      end
+      error =
+        assert_refused(:reference_change, fn ->
+          run_alter(:rb_refc, [
+            {:modify, :parent_id, %Ecto.Migration.Reference{table: "rb_refp2"}, []}
+          ])
+        end)
+
+      assert error.column == "parent_id"
+      assert error.details.change == :modify
 
       assert %{rows: [["rb_refp"]]} =
                TestRepo.query!("SELECT \"table\" FROM pragma_foreign_key_list('rb_refc')")
@@ -1152,12 +1260,16 @@ defmodule XqliteEcto3.TableRebuildTest do
     test "add with references inside a rebuild block refuses before anything destructive" do
       create("CREATE TABLE rb_refa(id INTEGER PRIMARY KEY, name TEXT)")
 
-      assert_raise ArgumentError, fn ->
-        run_alter(:rb_refa, [
-          {:modify, :name, :text, [null: true]},
-          {:add, :parent_id, %Ecto.Migration.Reference{table: "rb_refp"}, []}
-        ])
-      end
+      error =
+        assert_refused(:reference_change, fn ->
+          run_alter(:rb_refa, [
+            {:modify, :name, :text, [null: true]},
+            {:add, :parent_id, %Ecto.Migration.Reference{table: "rb_refp"}, []}
+          ])
+        end)
+
+      assert error.column == "parent_id"
+      assert error.details.change == :add
 
       assert %{rows: [[2]]} =
                TestRepo.query!("SELECT count(*) FROM pragma_table_xinfo('rb_refa')")

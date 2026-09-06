@@ -220,8 +220,9 @@ with `lock:` set.
 `rebuild_table/4` runs only under `support_alter_via_table_rebuild: true`. It
 resolves the table's stored spelling from `sqlite_schema`, reads
 `pragma_table_list` for the table kind and the `WITHOUT ROWID` / `STRICT`
-flags, and runs ten pre-flight checks, each raising `ArgumentError` with
-nothing changed: a `references(...)` in the change set; a virtual or shadow
+flags, and runs ten pre-flight checks, each raising
+`RebuildRefusedError` — `reason`, `table`, `construct`, `column`,
+`violations`, `details` — with nothing changed: a `references(...)` in the change set; a virtual or shadow
 table; a construct no pragma exposes (`rebuild-cannot-preserve` below); a
 populated table referencing this one with a row-affecting `ON DELETE` action; a
 view or another table's trigger still naming it; the primary key removed; the

@@ -143,6 +143,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A connect error now names the repo option it refused.** Every
+  validator that rejects a repo configuration value carries the key and
+  the value together, and `XqliteEcto3.Error.wrap/1` puts them in
+  `details` as `%{key: key, value: value}`. Before, `details` was `nil`
+  and the message was `inspect` of the internal reason tuple — or, when
+  the value happened to be a string, only the value: a
+  `journal_mode: "wal"` typo failed the connect with the message `wal`,
+  naming neither the setting nor what was wrong with it. It now reads
+  `config journal_mode rejected: "wal"`, and the same structured error
+  reaches the `[:xqlite_ecto3, :connect, :stop]` telemetry event as
+  `error_reason`. The `:type` atom of each refusal is unchanged, so
+  code matching on it keeps working. Affected settings: `mode`,
+  `default_transaction_mode`, `statement_cache_size`, `busy_timeout`,
+  `journal_mode`, `synchronous`, `temp_store`, `foreign_keys`,
+  `cache_size`, `auto_vacuum`, `wal_autocheckpoint`, `mmap_size`,
+  `rich_fk_diagnostics`, `diagnostics_budget_ms`, `custom_pragmas` and
+  `hooks` (a refused progress option names that option as the key).
+
+- **The table rebuild raises `XqliteEcto3.RebuildRefusedError` instead
+  of `ArgumentError`.** Every pre-flight refusal, and the foreign-key
+  check after the copy, used to be an `ArgumentError` (or, in one case,
+  a `RuntimeError`) whose only content was its message, so telling one
+  refusal from another meant matching prose. The new exception carries
+  `reason` (an atom per check), `table`, `construct`, `column`,
+  `violations`, `details` and the same full `message` as before. The
+  `reason` values are `:rebuild_not_enabled`, `:table_not_found`,
+  `:virtual_table`, `:shadow_table`, `:unpreservable_construct`,
+  `:dependents_exist`, `:incoming_action_on_populated`,
+  `:reference_change`, `:primary_key_removed`, `:key_already_granted`,
+  `:affinity_rewrite`, `:trigger_reads_removed_column`,
+  `:stranded_constraint`, `:unknown_column`,
+  `:trigger_sql_unrecognized` and `:foreign_key_violations`. Code that
+  rescued `ArgumentError` around a migration has to rescue
+  `XqliteEcto3.RebuildRefusedError` now.
+
+- **`handle_begin/2` reports an open transaction instead of
+  disconnecting.** Asked for a top-level `BEGIN` while a transaction is
+  already open on the connection, the driver returns DBConnection's
+  `{:transaction, state}` status form. Before, it ran the `BEGIN`
+  anyway and disconnected on SQLite's "cannot start a transaction
+  within a transaction". `Ecto.Adapters.SQL.Sandbox` turns the status
+  form into its "a connection was not appropriately rolled back after
+  use" message; on the disconnect it silently threw the connection away
+  and opened a new one, so the mistake that caused it stayed invisible.
+  The savepoint path and `handle_commit/2` / `handle_rollback/2` are
+  unchanged.
+
 - **A pooled private in-memory database is refused when the repo
   starts.** `database: ":memory:"`, the empty string, and any `file:`
   URI that opens an in-memory database without `cache=shared` — the

@@ -16,6 +16,10 @@ defmodule XqliteEcto3.Error do
     * `type: :sql_input_error` → `details` is
       `XqliteEcto3.Error.Input` (code, message, offending SQL, byte
       offset).
+    * A repo option refused at connect (`type: :invalid_journal_mode`,
+      `:invalid_busy_timeout`, `:invalid_hook_option`, …) → `details` is
+      `%{key: key, value: value}`: the configuration key as it was
+      written and the value it was given.
     * Tag-only errors (`:no_such_table`, `:connection_closed`, …) →
       `details` is `nil`; the tag lives in `type`.
 
@@ -164,6 +168,7 @@ defmodule XqliteEcto3.Error do
           | %{extended_code: integer()}
           | %{column: integer()}
           | %{path: String.t(), code: integer()}
+          | %{key: atom(), value: term()}
           | nil
 
   @type t :: %__MODULE__{
@@ -172,6 +177,33 @@ defmodule XqliteEcto3.Error do
           type: atom() | nil,
           details: details()
         }
+
+  # Every refusal the connect validators produce. They all carry
+  # `{key, value}` — the repo configuration key as the user wrote it and
+  # the value it was given — so the exception can name both.
+  @connect_refusal_tags [
+    :transaction_mode_as_connection_mode,
+    :invalid_connection_mode,
+    :invalid_statement_cache_size,
+    :invalid_busy_timeout,
+    :invalid_journal_mode,
+    :invalid_synchronous,
+    :invalid_temp_store,
+    :invalid_foreign_keys,
+    :invalid_cache_size,
+    :invalid_auto_vacuum,
+    :invalid_wal_autocheckpoint,
+    :invalid_mmap_size,
+    :invalid_rich_fk_diagnostics,
+    :invalid_diagnostics_budget_ms,
+    :invalid_default_transaction_mode,
+    :invalid_hooks_config,
+    :invalid_hook_config,
+    :invalid_hook_option,
+    :hook_subscriber_not_registered,
+    :invalid_custom_pragma,
+    :invalid_custom_pragmas
+  ]
 
   @doc """
   Wraps an error reason into an `XqliteEcto3.Error` exception.
@@ -234,7 +266,20 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: msg, type: :cannot_open_database, details: %{path: path, code: code}}
   end
 
-  def wrap({tag, msg}) when is_atom(tag) and is_binary(msg) do
+  def wrap({tag, {key, value}}) when tag in @connect_refusal_tags do
+    %__MODULE__{
+      message: "config #{key} rejected: #{inspect(value)}",
+      type: tag,
+      details: %{key: key, value: value}
+    }
+  end
+
+  # The binary payload of a NIF reason is SQLite's own message. A refused
+  # configuration value can be a binary too, and reading as a bare message
+  # was how `journal_mode: "wal"` came out as the error `wal` — so the
+  # family that carries a key is kept out of this clause.
+  def wrap({tag, msg})
+      when is_atom(tag) and is_binary(msg) and tag not in @connect_refusal_tags do
     %__MODULE__{message: msg, type: tag}
   end
 

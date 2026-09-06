@@ -79,6 +79,23 @@ defmodule XqliteEcto3.TelemetryTest do
       :telemetry.detach(handler_id)
     end
 
+    test "a refused config value reaches the stop event with its key and value" do
+      handler_id = "test-connect-cfg-#{:erlang.unique_integer([:positive])}"
+      attach_capture(handler_id, [[:xqlite_ecto3, :connect, :stop]])
+
+      assert {:error, _} = Driver.connect(database: ":memory:", busy_timeout: 5_000_000_000)
+
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :connect, :stop], _, metadata}
+      assert metadata.result_class == :error
+
+      assert %XqliteEcto3.Error{
+               type: :invalid_busy_timeout,
+               details: %{key: :busy_timeout, value: 5_000_000_000}
+             } = metadata.error_reason
+
+      :telemetry.detach(handler_id)
+    end
+
     test "disconnect fires single event" do
       handler_id = "test-disc-#{:erlang.unique_integer([:positive])}"
       attach_capture(handler_id, [[:xqlite_ecto3, :disconnect]])

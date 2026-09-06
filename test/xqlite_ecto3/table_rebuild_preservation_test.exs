@@ -9,6 +9,8 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
   """
   use ExUnit.Case, async: true
 
+  import XqliteEcto3.RebuildRefusal
+
   alias Ecto.Integration.PoolRepo
 
   # --- migrations (one per scenario, unique versions) ------------------------
@@ -672,9 +674,12 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     PoolRepo.query!("INSERT INTO rp_pc_child(id, pid) VALUES (1, 1)")
 
     # Dropping the parent in the rebuild would cascade-delete the child's rows.
-    assert_raise ArgumentError, ~r/rp_pc_child/, fn ->
-      migrate!(PopulatedCascadeAlterMigration, 20_260_721_100_010)
-    end
+    error =
+      assert_refused(:incoming_action_on_populated, fn ->
+        migrate!(PopulatedCascadeAlterMigration, 20_260_721_100_010)
+      end)
+
+    assert error.details.referencing == [{"rp_pc_child", "CASCADE"}]
 
     # The refusal fired before any destructive step — both tables are intact.
     assert count("rp_pc_parent") == 1
@@ -699,9 +704,12 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     PoolRepo.query!("INSERT INTO rp_ps_child(id, pid) VALUES (1, 1)")
 
     # Dropping the parent in the rebuild would nullify the child's FK column.
-    assert_raise ArgumentError, ~r/rp_ps_child/, fn ->
-      migrate!(PopulatedSetNullAlterMigration, 20_260_721_100_011)
-    end
+    error =
+      assert_refused(:incoming_action_on_populated, fn ->
+        migrate!(PopulatedSetNullAlterMigration, 20_260_721_100_011)
+      end)
+
+    assert error.details.referencing == [{"rp_ps_child", "SET NULL"}]
 
     # SET NULL never fired — the child's FK value is unchanged, parent intact.
     assert [[1]] = PoolRepo.query!("SELECT pid FROM rp_ps_child WHERE id = 1").rows
@@ -734,9 +742,12 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     PoolRepo.query!("CREATE TABLE rp_wr(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
     PoolRepo.query!("INSERT INTO rp_wr(k, v) VALUES ('a', '1')")
 
-    assert_raise ArgumentError, fn ->
-      migrate!(WithoutRowidAlterMigration, 20_260_721_110_002)
-    end
+    error =
+      assert_refused(:unpreservable_construct, fn ->
+        migrate!(WithoutRowidAlterMigration, 20_260_721_110_002)
+      end)
+
+    assert error.construct == :without_rowid
 
     # Refusal fired before any destructive step — the row survives and the table
     # is still WITHOUT ROWID (a rowid reference does not resolve).
@@ -749,9 +760,12 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
     PoolRepo.query!("CREATE TABLE rp_st(id INTEGER PRIMARY KEY, n INTEGER) STRICT")
     PoolRepo.query!("INSERT INTO rp_st(id, n) VALUES (1, 10)")
 
-    assert_raise ArgumentError, fn ->
-      migrate!(StrictAlterMigration, 20_260_721_110_003)
-    end
+    error =
+      assert_refused(:unpreservable_construct, fn ->
+        migrate!(StrictAlterMigration, 20_260_721_110_003)
+      end)
+
+    assert error.construct == :strict
 
     # Refusal fired before any destructive step — the row survives and strict
     # typing still rejects a non-integer bound to the INTEGER column.

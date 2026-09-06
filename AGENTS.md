@@ -68,7 +68,7 @@ raise surface — `Ecto.QueryError` for a query SQLite has no grammar for,
 `ArgumentError` for migration DDL it cannot express and for a repo
 configuration that cannot work at boot (`connection.ex:child_spec/1`),
 and the typed error structs in `data_type.ex`, `decimal_precision.ex`,
-`rebuild_verification.ex`.
+`rebuild_verification.ex`, `rebuild_refused.ex`.
 
 ## Structured errors
 

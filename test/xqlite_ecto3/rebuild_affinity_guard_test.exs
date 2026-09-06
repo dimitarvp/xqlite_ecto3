@@ -17,6 +17,8 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
   """
   use ExUnit.Case, async: true
 
+  import XqliteEcto3.RebuildRefusal
+
   alias Ecto.Migration.Table
 
   defmodule GuardRepo do
@@ -88,9 +90,15 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
 
       rows_before = dump("ag_lossy", ["code"])
 
-      assert_raise ArgumentError, fn ->
-        alter!("ag_lossy", [{:modify, :code, :decimal, []}])
-      end
+      error =
+        assert_refused(:affinity_rewrite, fn ->
+          alter!("ag_lossy", [{:modify, :code, :decimal, []}])
+        end)
+
+      assert error.column == "code"
+      assert error.details.old_affinity == :text
+      assert error.details.new_affinity == :numeric
+      assert error.details.rewritten == 2
 
       assert declared_type("ag_lossy", "code") == "TEXT"
       assert dump("ag_lossy", ["code"]) == rows_before
@@ -112,9 +120,13 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
 
       rows_before = dump("ag_jsonb", ["payload"])
 
-      assert_raise ArgumentError, fn ->
-        alter!("ag_jsonb", [{:modify, :payload, :jsonb, [null: false]}])
-      end
+      error =
+        assert_refused(:affinity_rewrite, fn ->
+          alter!("ag_jsonb", [{:modify, :payload, :jsonb, [null: false]}])
+        end)
+
+      assert error.column == "payload"
+      assert error.details.new_affinity == :text
 
       assert declared_type("ag_jsonb", "payload") == "JSONB"
       assert dump("ag_jsonb", ["payload"]) == rows_before
@@ -144,9 +156,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       GuardRepo.query!(~s|CREATE TABLE ag_shadow ("rowid" TEXT, amt TEXT)|)
       GuardRepo.query!("INSERT INTO ag_shadow (amt) VALUES ('007'), ('0012')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:affinity_rewrite, fn ->
         alter!("ag_shadow", [{:modify, :amt, :integer, []}])
-      end
+      end)
 
       assert declared_type("ag_shadow", "amt") == "TEXT"
       assert dump("ag_shadow", ["amt"], "_rowid_") == [["text", "007"], ["text", "0012"]]
@@ -154,9 +166,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       GuardRepo.query!(~s|CREATE TABLE ag_shadow_up ("ROWID" TEXT, amt TEXT)|)
       GuardRepo.query!("INSERT INTO ag_shadow_up (amt) VALUES ('007'), ('0012')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:affinity_rewrite, fn ->
         alter!("ag_shadow_up", [{:modify, :amt, :integer, []}])
-      end
+      end)
 
       assert declared_type("ag_shadow_up", "amt") == "TEXT"
       assert dump("ag_shadow_up", ["amt"], "_rowid_") == [["text", "007"], ["text", "0012"]]
@@ -166,9 +178,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       GuardRepo.query!("CREATE TABLE ag_plain (rid TEXT, amt TEXT)")
       GuardRepo.query!("INSERT INTO ag_plain (amt) VALUES ('007'), ('0012')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:affinity_rewrite, fn ->
         alter!("ag_plain", [{:modify, :amt, :integer, []}])
-      end
+      end)
 
       assert declared_type("ag_plain", "amt") == "TEXT"
       assert dump("ag_plain", ["amt"]) == [["text", "007"], ["text", "0012"]]
@@ -178,9 +190,12 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       GuardRepo.query!("CREATE TABLE ag_wr (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID")
       GuardRepo.query!("INSERT INTO ag_wr (k, v) VALUES ('a', '007')")
 
-      assert_raise ArgumentError, fn ->
-        alter!("ag_wr", [{:modify, :v, :integer, []}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          alter!("ag_wr", [{:modify, :v, :integer, []}])
+        end)
+
+      assert error.construct == :without_rowid
 
       assert declared_type("ag_wr", "v") == "TEXT"
       assert dump("ag_wr", ["v"], "k") == [["text", "007"]]
@@ -201,9 +216,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       GuardRepo.query!(~s|CREATE TABLE ag_quoted (id INTEGER PRIMARY KEY, "my col" TEXT)|)
       GuardRepo.query!(~s|INSERT INTO ag_quoted ("my col") VALUES ('007')|)
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:affinity_rewrite, fn ->
         alter!("ag_quoted", [{:modify, :"my col", :integer, []}])
-      end
+      end)
 
       GuardRepo.query!(~s|UPDATE ag_quoted SET "my col" = '7'|)
 
@@ -269,9 +284,9 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
       PooledGuardRepo.query!("CREATE TABLE ap_lossy (id INTEGER PRIMARY KEY, v TEXT)")
       PooledGuardRepo.query!("INSERT INTO ap_lossy (v) VALUES ('007'), ('0012')")
 
-      assert_raise ArgumentError, fn ->
+      assert_refused(:affinity_rewrite, fn ->
         alter!(PooledGuardRepo, "ap_lossy", [{:modify, :v, :integer, []}])
-      end
+      end)
 
       assert probes.() == 0
 
@@ -315,9 +330,12 @@ defmodule XqliteEcto3.RebuildAffinityGuardTest do
     test "a real CHECK constraint still refuses" do
       GuardRepo.query!("CREATE TABLE ck_t (id INTEGER PRIMARY KEY, v INTEGER CHECK (v > 0))")
 
-      assert_raise ArgumentError, fn ->
-        alter!("ck_t", [{:modify, :v, :integer, [null: false]}])
-      end
+      error =
+        assert_refused(:unpreservable_construct, fn ->
+          alter!("ck_t", [{:modify, :v, :integer, [null: false]}])
+        end)
+
+      assert error.construct == :check
     end
   end
 

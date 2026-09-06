@@ -111,7 +111,7 @@ defmodule XqliteEcto3.TableRebuildLawTest do
           assert row_count(plan.table) == rows_before
           assert column_values(plan.table, kept) == values_before
 
-        {:refused, %ArgumentError{}} ->
+        {:refused, %XqliteEcto3.RebuildRefusedError{}} ->
           assert read_structure(plan.table) == before
           assert row_count(plan.table) == rows_before
           assert column_values(plan.table, kept) == values_before
@@ -131,7 +131,9 @@ defmodule XqliteEcto3.TableRebuildLawTest do
       before = read_structure(refusal.table)
       rows_before = row_count(refusal.table)
 
-      assert_raise ArgumentError, fn -> alter(refusal.table, refusal.changes) end
+      assert_raise XqliteEcto3.RebuildRefusedError, fn ->
+        alter(refusal.table, refusal.changes)
+      end
 
       assert read_structure(refusal.table) == before
       assert row_count(refusal.table) == rows_before
@@ -153,7 +155,7 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   defp attempt_alter(table, changes) do
     {:ok, []} = alter(table, changes)
   rescue
-    e in ArgumentError -> {:refused, e}
+    e in XqliteEcto3.RebuildRefusedError -> {:refused, e}
   end
 
   defp read_structure(table) do

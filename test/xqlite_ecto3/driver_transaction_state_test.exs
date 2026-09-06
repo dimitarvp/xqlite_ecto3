@@ -33,6 +33,23 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
                 details: %{mode: :savepoint, transaction_status: :idle}
               }, _state} = Driver.handle_begin([mode: :savepoint], state)
     end
+
+    # Ecto.Adapters.SQL.Sandbox calls handle_begin/2 on a connection it has
+    # just checked out and turns this status return into the "a connection
+    # was not appropriately rolled back after use" diagnostic. Anything else
+    # makes it silently disconnect and reconnect instead.
+    test "a second top-level begin reports the open transaction", %{state: state} do
+      assert {:ok, nil, state} = Driver.handle_begin([], state)
+      assert {:transaction, ^state} = Driver.handle_begin([mode: :transaction], state)
+      assert {:transaction, ^state} = Driver.handle_begin([], state)
+      assert {:ok, nil, _state} = Driver.handle_rollback([], state)
+    end
+
+    test "a begin after the transaction ends opens a new one", %{state: state} do
+      assert {:ok, nil, state} = Driver.handle_begin([], state)
+      assert {:ok, nil, state} = Driver.handle_rollback([], state)
+      assert {:ok, nil, _state} = Driver.handle_begin([], state)
+    end
   end
 
   describe "handle_status/2 reflects real SQLite transaction state" do

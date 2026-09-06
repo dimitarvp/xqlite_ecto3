@@ -114,7 +114,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp validate_statement_cache_size(other) do
-    {:error, {:invalid_statement_cache_size, other}}
+    {:error, {:invalid_statement_cache_size, {:statement_cache_size, other}}}
   end
 
   # SQLite stores busy_timeout as a C int: negatives and values past int32 max
@@ -129,17 +129,17 @@ defmodule XqliteEcto3.Driver do
 
   defp validate_connection_mode(mode)
        when mode in [:transaction, :savepoint, :deferred, :immediate, :exclusive] do
-    {:error, {:transaction_mode_as_connection_mode, mode}}
+    {:error, {:transaction_mode_as_connection_mode, {:mode, mode}}}
   end
 
-  defp validate_connection_mode(other), do: {:error, {:invalid_connection_mode, other}}
+  defp validate_connection_mode(other), do: {:error, {:invalid_connection_mode, {:mode, other}}}
 
   defp validate_busy_timeout(ms) when is_integer(ms) and ms >= 0 and ms <= 2_147_483_647 do
     {:ok, ms}
   end
 
   defp validate_busy_timeout(other) do
-    {:error, {:invalid_busy_timeout, other}}
+    {:error, {:invalid_busy_timeout, {:busy_timeout, other}}}
   end
 
   # SQLite's pragma parser never errors on an unrecognized value — it picks a
@@ -155,24 +155,24 @@ defmodule XqliteEcto3.Driver do
   @auto_vacuum_modes [:none, :full, :incremental]
 
   defp validate_journal_mode(mode) when mode in @journal_modes, do: {:ok, mode}
-  defp validate_journal_mode(other), do: {:error, {:invalid_journal_mode, other}}
+  defp validate_journal_mode(other), do: {:error, {:invalid_journal_mode, {:journal_mode, other}}}
 
   defp validate_synchronous(level) when level in @synchronous_levels, do: {:ok, level}
-  defp validate_synchronous(other), do: {:error, {:invalid_synchronous, other}}
+  defp validate_synchronous(other), do: {:error, {:invalid_synchronous, {:synchronous, other}}}
 
   defp validate_temp_store(store) when store in @temp_stores, do: {:ok, store}
-  defp validate_temp_store(other), do: {:error, {:invalid_temp_store, other}}
+  defp validate_temp_store(other), do: {:error, {:invalid_temp_store, {:temp_store, other}}}
 
   defp validate_foreign_keys(flag) when is_boolean(flag), do: {:ok, flag}
-  defp validate_foreign_keys(other), do: {:error, {:invalid_foreign_keys, other}}
+  defp validate_foreign_keys(other), do: {:error, {:invalid_foreign_keys, {:foreign_keys, other}}}
 
   # Negative cache_size is meaningful (-N = N KiB), so any integer passes.
   defp validate_cache_size(size) when is_integer(size), do: {:ok, size}
-  defp validate_cache_size(other), do: {:error, {:invalid_cache_size, other}}
+  defp validate_cache_size(other), do: {:error, {:invalid_cache_size, {:cache_size, other}}}
 
   defp validate_auto_vacuum(nil), do: {:ok, nil}
   defp validate_auto_vacuum(mode) when mode in @auto_vacuum_modes, do: {:ok, mode}
-  defp validate_auto_vacuum(other), do: {:error, {:invalid_auto_vacuum, other}}
+  defp validate_auto_vacuum(other), do: {:error, {:invalid_auto_vacuum, {:auto_vacuum, other}}}
 
   defp validate_wal_autocheckpoint(nil), do: {:ok, nil}
 
@@ -180,16 +180,19 @@ defmodule XqliteEcto3.Driver do
     {:ok, pages}
   end
 
-  defp validate_wal_autocheckpoint(other), do: {:error, {:invalid_wal_autocheckpoint, other}}
+  defp validate_wal_autocheckpoint(other),
+    do: {:error, {:invalid_wal_autocheckpoint, {:wal_autocheckpoint, other}}}
 
   defp validate_mmap_size(nil), do: {:ok, nil}
   defp validate_mmap_size(bytes) when is_integer(bytes) and bytes >= 0, do: {:ok, bytes}
-  defp validate_mmap_size(other), do: {:error, {:invalid_mmap_size, other}}
+  defp validate_mmap_size(other), do: {:error, {:invalid_mmap_size, {:mmap_size, other}}}
 
   # Not a pragma — a struct pattern match consumes it, so any value other
   # than the atom true silently disabled the feature.
   defp validate_rich_fk_diagnostics(flag) when is_boolean(flag), do: {:ok, flag}
-  defp validate_rich_fk_diagnostics(other), do: {:error, {:invalid_rich_fk_diagnostics, other}}
+
+  defp validate_rich_fk_diagnostics(other),
+    do: {:error, {:invalid_rich_fk_diagnostics, {:rich_fk_diagnostics, other}}}
 
   # The wall-clock allowance both error-path diagnoses spend, in
   # milliseconds. Zero switches them off; a negative or non-integer value
@@ -197,7 +200,7 @@ defmodule XqliteEcto3.Driver do
   defp validate_diagnostics_budget_ms(ms) when is_integer(ms) and ms >= 0, do: {:ok, ms}
 
   defp validate_diagnostics_budget_ms(other) do
-    {:error, {:invalid_diagnostics_budget_ms, other}}
+    {:error, {:invalid_diagnostics_budget_ms, {:diagnostics_budget_ms, other}}}
   end
 
   # Repo-config hook subscribers: registered NAMES (not pids — config
@@ -217,7 +220,7 @@ defmodule XqliteEcto3.Driver do
     end)
   end
 
-  defp register_config_hooks(_conn, other), do: {:error, {:invalid_hooks_config, other}}
+  defp register_config_hooks(_conn, other), do: {:error, {:invalid_hooks_config, {:hooks, other}}}
 
   defp register_config_hook(conn, {kind, name})
        when kind in @config_hook_kinds and is_atom(name) do
@@ -246,11 +249,11 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  defp register_config_hook(_conn, entry), do: {:error, {:invalid_hook_config, entry}}
+  defp register_config_hook(_conn, entry), do: {:error, {:invalid_hook_config, {:hooks, entry}}}
 
   defp resolve_hook_subscriber(name) do
     case Process.whereis(name) do
-      nil -> {:error, {:hook_subscriber_not_registered, name}}
+      nil -> {:error, {:hook_subscriber_not_registered, {:hooks, name}}}
       pid -> {:ok, pid}
     end
   end
@@ -275,7 +278,7 @@ defmodule XqliteEcto3.Driver do
         {key, value}, :ok -> {:halt, {:error, {:invalid_hook_option, {key, value}}}}
       end)
     else
-      {:error, {:invalid_hook_config, {:progress, opts}}}
+      {:error, {:invalid_hook_config, {:hooks, {:progress, opts}}}}
     end
   end
 
@@ -287,7 +290,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp validate_transaction_mode(other) do
-    {:error, {:invalid_default_transaction_mode, other}}
+    {:error, {:invalid_default_transaction_mode, {:default_transaction_mode, other}}}
   end
 
   defp open_database(database, :readwrite), do: NIF.open(database)
@@ -337,8 +340,11 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
-  defp apply_custom_pragmas(_conn, [entry | _rest]), do: {:error, {:invalid_custom_pragma, entry}}
-  defp apply_custom_pragmas(_conn, other), do: {:error, {:invalid_custom_pragmas, other}}
+  defp apply_custom_pragmas(_conn, [entry | _rest]),
+    do: {:error, {:invalid_custom_pragma, {:custom_pragmas, entry}}}
+
+  defp apply_custom_pragmas(_conn, other),
+    do: {:error, {:invalid_custom_pragmas, {:custom_pragmas, other}}}
 
   # Config-optional pragmas: absent means "leave SQLite's default alone",
   # not "apply our own default" — so nil skips the write entirely.
@@ -460,6 +466,15 @@ defmodule XqliteEcto3.Driver do
                    "transaction.",
                details: %{mode: :savepoint, transaction_status: status}
              }, state}
+
+          # DBConnection's contract for "this transaction cannot begin
+          # because of the transaction status" — the cached flag answers it
+          # without a round trip. Ecto.Adapters.SQL.Sandbox turns it into
+          # the "a connection was not appropriately rolled back after use"
+          # diagnostic; SQLite's own refusal disconnects instead, and the
+          # Sandbox silently reconnects on that.
+          {_mode, :transaction} ->
+            {:transaction, state}
 
           {_mode, _status} ->
             case begin_mode(mode, state) do
@@ -1161,6 +1176,10 @@ defmodule XqliteEcto3.Driver do
 
       {:disconnect, error, _state} ->
         {result, Map.merge(start_md, %{result_class: :error, error_reason: {:disconnect, error}})}
+
+      {status, _state} when status in [:idle, :transaction, :error] ->
+        {result,
+         Map.merge(start_md, %{result_class: :error, error_reason: {:transaction_status, status}})}
     end
   end
 end
