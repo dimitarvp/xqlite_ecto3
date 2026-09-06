@@ -30,8 +30,8 @@ read out of the file it names. Paths are relative to `lib/xqlite_ecto3/`.
   `UnsupportedDefaultError`, `UnsupportedTypeError`, `DecimalPrecisionError`.
 - `error.ex` — `XqliteEcto3.Error` and the payload structs `Error.Constraint`,
   `Error.SqliteFailure`, `Error.Input`, `Error.FkViolation`; `wrap/1` turns any
-  xqlite reason into one. `fk_diagnostics.ex` (`wrap_with_replay/4`,
-  `wrap_at_commit/2`) and `unique_index_names.ex` (`resolve/2`) are the
+  xqlite reason into one. `fk_diagnostics.ex` (`wrap_with_replay/6`,
+  `wrap_at_commit/4`) and `unique_index_names.ex` (`resolve/4`) are the
   error-path enrichments.
 - `rebuild_verification.ex` — `read/2`, `verify/3`, and the predicates the
   rebuild engine shares with it (`autoincrement_declared?/1`,
@@ -88,7 +88,7 @@ value falls back to that default — `batch_size_from_opts/1`). A failed
 with the rows, or `:halt` with an empty batch when the stream reports `:done`.
 `handle_deallocate/4` closes the handle.
 
-This path never calls `UniqueIndexNames.resolve/2`: a streamed DML violation
+This path never calls `UniqueIndexNames.resolve/4`: a streamed DML violation
 (an `INSERT ... RETURNING` through `Ecto.Adapters.SQL.stream/4`) stays
 correctly classified but reports `unique_index_lookup: :not_run`, because no
 changeset traverses a stream.
@@ -147,7 +147,7 @@ keeping the structured details SQLite gave with
 ### 5. Errors, and the two reads on the error path
 
 `Error.wrap/1` produces `%XqliteEcto3.Error{type:, message:, details:}`;
-`Driver.wrap_execute_error/4` then runs `UniqueIndexNames.resolve/2` always and
+`Driver.wrap_execute_error/5` then runs `UniqueIndexNames.resolve/4` always and
 `FkDiagnostics` only under `rich_fk_diagnostics: true`, and stamps
 `:statement`. It runs only on a connection the disconnect verdict kept (flow
 4). `Ecto.Adapters.SQL`
@@ -156,14 +156,20 @@ keeping the structured details SQLite gave with
 returns `[{:unique, name}]`, `[{:foreign_key, name}, ...]`, `[{:check, name}]`
 or `[]` — an empty list makes ecto_sql re-raise the structured error, which is
 what NOT NULL and unnamed foreign-key violations do.
-`UniqueIndexNames.resolve/2` reads `PRAGMA busy_timeout` for a time budget,
-then `PRAGMA index_list` and `PRAGMA index_info` per unique index.
-`FkDiagnostics.wrap_with_replay/4` opens the reserved savepoint
+`UniqueIndexNames.resolve/4` spends at most the repo's
+`:diagnostics_budget_ms` and is skipped when the statement's remaining
+deadline is below it; it counts the message's separators against the parsed
+names, reads `pragma_table_list` to find the table's schema (more than one
+schema degrades), then runs `PRAGMA index_list` and `PRAGMA index_info` per
+unique index, schema-qualified; on SQLite's index-name message form it
+fills `table` and `columns` from `sqlite_schema` and `index_info`.
+`FkDiagnostics.wrap_with_replay/6` opens the reserved savepoint
 `xqlite_fk_diag`, defers foreign keys, takes a `PRAGMA foreign_key_check`
 baseline, replays the failed statement, checks again, and keeps only rows the
-baseline did not have; `cleanup/1` always rolls back, releases and resets
-`defer_foreign_keys`. `wrap_at_commit/2` skips the replay and so has no
-baseline.
+baseline did not have — by `{child_table, fk_id}` group counts first, with the
+row-level degrade underneath for rowid reuse; `cleanup/1` always rolls back,
+releases and resets `defer_foreign_keys`. `wrap_at_commit/4` skips the replay
+and so has no baseline: it reports every orphan the check finds.
 
 ### 6. Connect, and URLs
 
