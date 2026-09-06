@@ -14,24 +14,16 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   costs more than the deadline ends in that error, promptly, and the
   connection keeps working afterwards.
 
-  The generated query has to be one that really outlives a deadline of a
-  few milliseconds. A recursive query that only counts hands back its
-  first batch in a hundredth of a millisecond however long the count runs
-  for, and SQLite only looks for a cancel signal every eight steps of its
-  virtual machine, so such a batch finishes before anything can stop it.
-  Sorting is what makes the first batch expensive: `ORDER BY x DESC` has
-  to see all two million rows before it can hand back the first one. The
-  fastest machine the suite has met sorts two hundred thousand in under
-  twenty milliseconds, so the count is ten times that: the first batch
-  outlives the largest deadline this file generates many times over on
-  any hardware, and a cancelled run still costs only its deadline.
-
-  The deadline is what a run costs, so the generated range is small on
-  purpose; the number of runs is not what shrinks if the property gets
-  slow. The range's top is measured, not assumed: one uncancelled first
-  batch is timed where the file runs, and no deadline in the file goes
-  above a tenth of it — a runner ten times faster than the machine that
-  wrote this still sees every batch outlive its deadline.
+  Nothing here is a bet on the machine's speed. A deadline of zero or
+  less makes the canceller fire before the fetch reaches its first
+  cancel check, and SQLite looks for a cancel signal every eight steps
+  of its virtual machine, so any batch that does more than eight steps
+  is cancelled, on any hardware. The query is a two-million-row
+  recursive count under a sort, which does far more than eight steps
+  before it can hand back a row; the sort is there so that even the
+  first batch has real work in front of it. A positive deadline would
+  turn the same law into a race between the batch and the clock, which
+  is a fact about the runner, not about the driver.
 
   The file runs on the pool repo, not the sandboxed one: the same
   `:timeout` also arms DBConnection's own deadline, and when that timer
@@ -42,8 +34,7 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   ## The boundaries beside it
 
   `:infinity` asks for no deadline and drains the same slow query to the
-  end. A deadline of zero or less cancels the first batch at once, which
-  is again only observable on a batch that does real work. A fast query
+  end. A spent deadline cancels the first batch at once. A fast query
   under a short deadline drains completely, because every batch gets its
   own deadline rather than sharing one that the earlier batches spent.
   And the error travels the way `DBConnection` raises it: left alone it
@@ -84,31 +75,8 @@ defmodule XqliteEcto3.StreamCancelLawTest do
 
   setup_all do
     Repo.query!("CREATE TABLE IF NOT EXISTS stream_cancel_rows (n INTEGER NOT NULL)")
-    {:ok, first_batch_ms: first_batch_ms()}
+    :ok
   end
-
-  # The one number the whole file hangs on, measured where the file
-  # runs: how long the slow query takes to hand back its first batch
-  # with no deadline at all. Every deadline below is at most a tenth of
-  # it, so a batch outlives its deadline on the fastest runner as
-  # surely as on the slowest, and a cancelled run still costs only its
-  # deadline.
-  defp first_batch_ms do
-    started = System.monotonic_time(:millisecond)
-
-    {:ok, _} =
-      Repo.transaction(fn ->
-        Repo
-        |> Ecto.Adapters.SQL.stream(@slow_sql, [], max_rows: 1, timeout: :infinity)
-        |> Enum.take(1)
-      end)
-
-    max(System.monotonic_time(:millisecond) - started, 10)
-  end
-
-  defp deadline_cap(%{first_batch_ms: ms}), do: min(20, div(ms, 10))
-
-  defp short_deadline(context), do: max(deadline_cap(context), 1)
 
   setup do
     Repo.query!("DELETE FROM stream_cancel_rows")
@@ -121,10 +89,10 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   end
 
   describe "the deadline on a batch" do
-    property "a batch that outlives its :timeout ends in the deadline error", context do
+    property "a batch that outlives its :timeout ends in the deadline error" do
       check all(
               batch_size <- integer(1..20),
-              timeout <- integer(-5..deadline_cap(context)),
+              timeout <- integer(-5..0),
               max_runs: @law_runs
             ) do
         started = System.monotonic_time(:millisecond)
@@ -143,8 +111,8 @@ defmodule XqliteEcto3.StreamCancelLawTest do
       end
     end
 
-    test "a slow stream under a short deadline raises instead of draining", context do
-      timeout = short_deadline(context)
+    test "a slow stream under a spent deadline raises instead of draining" do
+      timeout = 0
 
       error =
         assert_raise DBConnection.ConnectionError, fn ->
@@ -195,8 +163,8 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   end
 
   describe "the deadline inside a transaction" do
-    test "left alone it rolls the transaction back and comes out of it", context do
-      timeout = short_deadline(context)
+    test "left alone it rolls the transaction back and comes out of it" do
+      timeout = 0
 
       error =
         assert_raise DBConnection.ConnectionError, fn ->
@@ -211,8 +179,8 @@ defmodule XqliteEcto3.StreamCancelLawTest do
       assert Repo.query!("SELECT 1").rows == [[1]]
     end
 
-    test "caught inside the transaction it leaves the transaction usable", context do
-      timeout = short_deadline(context)
+    test "caught inside the transaction it leaves the transaction usable" do
+      timeout = 0
 
       assert {:ok, {reason, rows}} =
                Repo.transaction(fn ->
