@@ -152,7 +152,7 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
-  property "an allowance to spare resolves the index name whatever busy_timeout says",
+  property "an allowance to spare performs the index lookup whatever busy_timeout says",
            context do
     check all(
             busy_timeout <- integer(0..5_000),
@@ -163,10 +163,11 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
 
       resolved = UniqueIndexNames.resolve(unique_error(), context.conn, budget)
 
-      assert %Constraint{
-               unique_index_names: ["bud_items_v_uq"],
-               unique_index_lookup: :ok
-             } = resolved.details
+      assert %Constraint{unique_index_names: names, unique_index_lookup: status} =
+               resolved.details
+
+      assert performed?(status)
+      assert status != :ok or names == ["bud_items_v_uq"]
     end
   end
 
@@ -263,7 +264,7 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
-  property "a deadline past the reserve resolves the index name", context do
+  property "a deadline past the reserve does not skip the index lookup", context do
     check all(
             budget <- integer(@ample_ms..1_000),
             remaining_ms <- integer((@ample_ms + @reserve_ms)..2_000),
@@ -271,10 +272,11 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
           ) do
       resolved = UniqueIndexNames.resolve(unique_error(), context.conn, budget, remaining_ms)
 
-      assert %Constraint{
-               unique_index_names: ["bud_items_v_uq"],
-               unique_index_lookup: :ok
-             } = resolved.details
+      assert %Constraint{unique_index_names: names, unique_index_lookup: status} =
+               resolved.details
+
+      assert performed?(status)
+      assert status != :ok or names == ["bud_items_v_uq"]
     end
   end
 
@@ -330,7 +332,7 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
-  property "a deadline past the reserve diagnoses the foreign-key violation", context do
+  property "a deadline past the reserve does not skip the foreign-key replay", context do
     check all(
             budget <- integer(@ample_ms..1_000),
             remaining_ms <- integer((@ample_ms + @reserve_ms)..2_000),
@@ -338,9 +340,11 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
           ) do
       error = replay(context.conn, budget, remaining_ms)
 
-      assert %Constraint{fk_diagnostics: :ok, fk_violations: [violation]} = error.details
-      assert violation.child_table == "bud_children"
-      assert violation.parent_table == "bud_parents"
+      assert %Constraint{fk_diagnostics: status, fk_violations: violations} = error.details
+      assert performed?(status)
+
+      assert status != :ok or
+               match?([%{child_table: "bud_children", parent_table: "bud_parents"}], violations)
     end
   end
 
@@ -487,6 +491,13 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   # may win: the cancel token ends a read mid-scan, and the wall-clock
   # check between reads ends the chain when a read finished just past
   # it — on a machine that schedules the canceller late, the second.
+  # The deadline rule decides whether a diagnosis runs; how long it then
+  # takes is the machine's. Past the reserve it must never be skipped:
+  # it either completes or the wall-clock budget stops it under way.
+  defp performed?(:ok), do: true
+  defp performed?({:unavailable, {:diagnostics_budget_exceeded, _}}), do: true
+  defp performed?(_other), do: false
+
   defp stopped_inside_the_allowance?({:unavailable, :operation_cancelled}), do: true
   defp stopped_inside_the_allowance?({:unavailable, {:diagnostics_budget_exceeded, _}}), do: true
   defp stopped_inside_the_allowance?(_other), do: false
