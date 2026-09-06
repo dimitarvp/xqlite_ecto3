@@ -20,9 +20,11 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   for, and SQLite only looks for a cancel signal every eight steps of its
   virtual machine, so such a batch finishes before anything can stop it.
   Sorting is what makes the first batch expensive: `ORDER BY x DESC` has
-  to see all two hundred thousand rows before it can hand back the first
-  one, which takes about a tenth of a second — far longer than any
-  deadline this file generates.
+  to see all two million rows before it can hand back the first one. The
+  fastest machine the suite has met sorts two hundred thousand in under
+  twenty milliseconds, so the count is ten times that: the first batch
+  outlives the largest deadline this file generates many times over on
+  any hardware, and a cancelled run still costs only its deadline.
 
   The deadline is what a run costs, so the generated range is small on
   purpose; the number of runs is not what shrinks if the property gets
@@ -54,7 +56,7 @@ defmodule XqliteEcto3.StreamCancelLawTest do
 
   @slow_sql """
   WITH RECURSIVE q(x) AS (
-    SELECT 1 UNION ALL SELECT x + 1 FROM q WHERE x < 200000
+    SELECT 1 UNION ALL SELECT x + 1 FROM q WHERE x < 2000000
   )
   SELECT x FROM q ORDER BY x DESC
   """
@@ -129,7 +131,7 @@ defmodule XqliteEcto3.StreamCancelLawTest do
     end
 
     test ":infinity drains the slow query to the end" do
-      assert {:ok, 200_000} =
+      assert {:ok, 2_000_000} =
                Repo.transaction(fn ->
                  drain(@slow_sql, max_rows: 500, timeout: :infinity)
                end)
