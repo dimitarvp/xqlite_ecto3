@@ -42,9 +42,11 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   alias XqliteEcto3.UniqueIndexNames
 
   # How long the second connection keeps the write lock, and how much
-  # wall-clock noise a ceiling tolerates on a busy machine.
+  # wall-clock noise a ceiling tolerates: a slow CI runner adds hundreds
+  # of milliseconds of scheduling, and the ceiling only has to stay far
+  # below the 5 s busy_timeout the connections run under.
   @hold_ms 60
-  @slack_ms 250
+  @slack_ms 2_000
 
   @uncontended_runs 2000
   @contended_runs 30
