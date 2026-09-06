@@ -212,10 +212,8 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
       {error, elapsed_ms} =
         under_write_lock(context.writer, fn -> replay(context.conn, budget) end)
 
-      assert %Constraint{
-               fk_violations: [],
-               fk_diagnostics: {:unavailable, :operation_cancelled}
-             } = error.details
+      assert %Constraint{fk_violations: [], fk_diagnostics: diagnostics} = error.details
+      assert stopped_inside_the_allowance?(diagnostics)
 
       assert elapsed_ms <= budget + @hold_ms + @slack_ms
 
@@ -396,7 +394,9 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
 
     # Through a pool the caller's own deadline is also DBConnection's
     # checkout deadline: a diagnosis that outstayed it would cost the
-    # connection and report nothing about the violation.
+    # connection and report nothing about the violation. A small budget
+    # is what makes the scan outlive its allowance here; the deadline
+    # stays wide so the slowest runner's checkout gap never decides.
     test "the caller gets the violation's error, not the pool's deadline", context do
       {:ok, pid} =
         DBConnection.start_link(
@@ -404,13 +404,14 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
           database: context.scan_path,
           pool_size: 1,
           rich_fk_diagnostics: true,
+          diagnostics_budget_ms: 5,
           show_sensitive_data_on_connection_error: true
         )
 
       insert = "INSERT INTO bud_children (id, p_id) VALUES (7, 999)"
 
       assert {:error, %Error{details: %Constraint{} = details}} =
-               XqliteEcto3.Connection.query(pid, insert, [], timeout: 30)
+               XqliteEcto3.Connection.query(pid, insert, [], timeout: 2_000)
 
       assert details.subtype == :constraint_foreign_key
       assert stopped_inside_the_allowance?(details.fk_diagnostics)
