@@ -70,6 +70,8 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   @hold_ms 60
   @slack_ms 2_000
 
+  @moduletag timeout: 300_000
+
   @uncontended_runs 2000
   @contended_runs 30
 
@@ -110,6 +112,12 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     {:ok, _} = XqliteNIF.set_pragma(writer, "busy_timeout", 5_000)
     {:ok, _} = XqliteNIF.set_pragma(conn, "busy_timeout", 5_000)
     {:ok, _} = XqliteNIF.set_pragma(conn, "foreign_keys", true)
+    # Durability is not under test and a slow disk made two thousand
+    # savepoint replays outlive a runner's limit; the rollback journal
+    # stays, since the contended properties wait on its write lock.
+    {:ok, _} = XqliteNIF.set_pragma(writer, "journal_mode", :memory)
+    {:ok, _} = XqliteNIF.set_pragma(writer, "synchronous", :off)
+    {:ok, _} = XqliteNIF.set_pragma(conn, "synchronous", :off)
 
     {:ok, _} =
       XqliteNIF.query(writer, "CREATE TABLE bud_items (id INTEGER PRIMARY KEY, v TEXT)", [])
