@@ -288,9 +288,9 @@ defmodule XqliteEcto3.ConnectionTest do
   end
 
   test "Error.wrap preserves type for generic tuple errors" do
-    error = XqliteEcto3.Error.wrap({:no_such_table, "no such table: foo"})
-    assert error.type == :no_such_table
-    assert error.message == "no such table: foo"
+    error = XqliteEcto3.Error.wrap({:cannot_execute, "SQL contains no statement"})
+    assert error.type == :cannot_execute
+    assert error.message == "SQL contains no statement"
     assert error.details == nil
   end
 

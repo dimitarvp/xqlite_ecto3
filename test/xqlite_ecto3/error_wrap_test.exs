@@ -1,7 +1,14 @@
 defmodule XqliteEcto3.ErrorWrapTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias XqliteEcto3.Error
+
+  @law_runs 2000
+
+  # xqlite hands these four reasons the object name alone; the sentence
+  # around it is the adapter's to rebuild.
+  @name_tags [:no_such_table, :no_such_index, :table_exists, :index_exists]
 
   describe "wrap/1 on {:constraint_violation, subtype, details_map}" do
     test "builds a Constraint payload with subtype, type, and fields" do
@@ -114,11 +121,46 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
   end
 
+  describe "wrap/1 on the four name-carrying tags" do
+    property "rebuilds SQLite's sentence around the name and keeps the name in details" do
+      check all(tag <- member_of(@name_tags), name <- object_name(), max_runs: @law_runs) do
+        e = Error.wrap({tag, name})
+
+        assert e.type == tag
+        assert e.details == %{name: name}
+        assert Exception.message(e) == sentence(tag, name)
+      end
+    end
+
+    test "the four sentences read the way SQLite wrote them" do
+      assert Exception.message(Error.wrap({:no_such_table, "users"})) == "no such table: users"
+
+      assert Exception.message(Error.wrap({:no_such_index, "users_email_index"})) ==
+               "no such index: users_email_index"
+
+      assert Exception.message(Error.wrap({:table_exists, "users"})) ==
+               "table users already exists"
+
+      assert Exception.message(Error.wrap({:index_exists, "users_email_index"})) ==
+               "index users_email_index already exists"
+    end
+
+    test "the name goes in as SQLite rendered it, qualified or re-quoted" do
+      qualified = Error.wrap({:no_such_table, "main.users"})
+      assert qualified.details == %{name: "main.users"}
+      assert Exception.message(qualified) == "no such table: main.users"
+
+      requoted = Error.wrap({:table_exists, ~s("a b")})
+      assert requoted.details == %{name: ~s("a b")}
+      assert Exception.message(requoted) == ~s(table "a b" already exists)
+    end
+  end
+
   describe "wrap/1 on generic {tag, msg}" do
     test "preserves tag as type with nil details" do
-      e = Error.wrap({:no_such_table, "no such table: foo"})
-      assert e.type == :no_such_table
-      assert e.message == "no such table: foo"
+      e = Error.wrap({:cannot_execute, "SQL contains no statement"})
+      assert e.type == :cannot_execute
+      assert e.message == "SQL contains no statement"
       assert e.details == nil
     end
 
@@ -231,7 +273,7 @@ defmodule XqliteEcto3.ErrorWrapTest do
 
   describe "as exception" do
     test "raises as a proper Exception" do
-      e = Error.wrap({:no_such_table, "no such table: foo"})
+      e = Error.wrap({:no_such_table, "foo"})
 
       assert_raise XqliteEcto3.Error, fn ->
         raise e
@@ -239,8 +281,36 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
 
     test "Exception.message/1 returns the message field" do
-      e = Error.wrap({:no_such_table, "no such table: foo"})
+      e = Error.wrap({:no_such_table, "foo"})
       assert Exception.message(e) == "no such table: foo"
     end
+  end
+
+  defp sentence(:no_such_table, name), do: "no such table: " <> name
+  defp sentence(:no_such_index, name), do: "no such index: " <> name
+  defp sentence(:table_exists, name), do: "table " <> name <> " already exists"
+  defp sentence(:index_exists, name), do: "index " <> name <> " already exists"
+
+  # SQLite hands back whatever the statement wrote, so the generator
+  # carries what a name can hold and what it never should: nothing at
+  # all, spaces, dots, quotes, a NUL byte, bytes that are not UTF-8, and
+  # something far longer than any identifier.
+  defp object_name do
+    one_of([
+      constant(""),
+      string(:alphanumeric, max_length: 12),
+      string(:printable, max_length: 12),
+      binary(max_length: 12),
+      member_of([
+        "  ",
+        "main.users",
+        "a.b.c",
+        ~s("a b"),
+        "it's",
+        <<"a", 0, "b">>,
+        <<0xFF, 0xFE, 0x00>>,
+        String.duplicate("n", 300)
+      ])
+    ])
   end
 end

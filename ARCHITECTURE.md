@@ -84,8 +84,20 @@ once with `NIF.stream_get_columns/1`, and stores them on the cursor together
 with a batch size taken from `:max_rows` (default 500, and any non-positive
 value falls back to that default — `batch_size_from_opts/1`). A failed
 `stream_get_columns` closes the handle before wrapping the error.
-`handle_fetch/4` calls `NIF.stream_fetch/2` once per batch and returns `:cont`
-with the rows, or `:halt` with an empty batch when the stream reports `:done`.
+`handle_fetch/4` fetches one batch and returns `:cont` with the rows, or
+`:halt` with an empty batch when the stream reports `:done`. It reads `:timeout`
+from the options DBConnection hands it — the caller's, or the repo's configured
+one — the same way `handle_execute/4` does, and `fetch_with_cancel/3` mirrors
+`execute_with_cancel/4`: `:infinity` calls `NIF.stream_fetch/2`, an integer
+creates one token, spawns a canceller for the deadline and calls
+`NIF.stream_fetch_cancellable/3`, stopping the canceller after the batch either
+way. A token is spent once, so every batch gets a fresh one and no deadline
+carries into the next batch. A cancelled batch answers
+`{:error, :operation_cancelled}`, which becomes the same
+`%DBConnection.ConnectionError{message: "query timed out"}` the execute path
+reports, through `disconnect_if_rolled_back/2`; xqlite has already closed the
+stream, and the handle it leaves answers `:done` on a further fetch and `:ok` on
+close, so `handle_deallocate/4` runs unchanged.
 A cursor over a statement with no result columns is where streamed transaction
 control takes effect, so both of those returns carry the same
 `sync_after_transaction_control/2` re-read the execute path does.

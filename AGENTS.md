@@ -34,7 +34,7 @@ mix xqlite_ecto3.test.seq   # full suite, one OS process per test file
 ### The vendored integration suite
 
 The shared ecto and ecto_sql suites run inside the full suite behind a
-curated exclusion list. Anchor: 440 passed / 26 excluded, exit 0 — any
+curated exclusion list. Anchor: 441 passed / 25 excluded, exit 0 — any
 delta is accounted for, never patched to green.
 
 - Exclusions live in `test/test_helper.exs` (tags and `{:location, {file,

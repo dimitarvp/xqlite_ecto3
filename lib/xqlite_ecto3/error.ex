@@ -20,7 +20,12 @@ defmodule XqliteEcto3.Error do
       `:invalid_busy_timeout`, `:invalid_hook_option`, …) → `details` is
       `%{key: key, value: value}`: the configuration key as it was
       written and the value it was given.
-    * Tag-only errors (`:no_such_table`, `:connection_closed`, …) →
+    * An error naming one database object (`type: :no_such_table`,
+      `:no_such_index`, `:table_exists`, `:index_exists`) → `details`
+      is `%{name: name}`: the table or index name exactly as SQLite
+      rendered it, which the message repeats inside SQLite's own
+      sentence.
+    * Tag-only errors (`:connection_closed`, `:cannot_execute`, …) →
       `details` is `nil`; the tag lives in `type`.
 
   `to_constraints/2` and user-level handling pattern-match the
@@ -174,6 +179,7 @@ defmodule XqliteEcto3.Error do
           | %{column: integer()}
           | %{path: String.t(), code: integer()}
           | %{key: atom(), value: term()}
+          | %{name: String.t()}
           | nil
 
   @type t :: %__MODULE__{
@@ -209,6 +215,8 @@ defmodule XqliteEcto3.Error do
     :invalid_custom_pragma,
     :invalid_custom_pragmas
   ]
+
+  @name_tags [:no_such_table, :no_such_index, :table_exists, :index_exists]
 
   @doc """
   Wraps an error reason into an `XqliteEcto3.Error` exception.
@@ -279,6 +287,13 @@ defmodule XqliteEcto3.Error do
     }
   end
 
+  # These four reasons carry the object name alone, so the message a
+  # user reads is rebuilt around it — the sentence SQLite itself printed
+  # for that failure — while the name stays available unparsed.
+  def wrap({tag, name}) when tag in @name_tags and is_binary(name) do
+    %__MODULE__{message: name_message(tag, name), type: tag, details: %{name: name}}
+  end
+
   # The binary payload of a NIF reason is SQLite's own message. A refused
   # configuration value can be a binary too, and reading as a bare message
   # was how `journal_mode: "wal"` came out as the error `wal` — so the
@@ -314,4 +329,9 @@ defmodule XqliteEcto3.Error do
 
   defp sqlite_failure_message(nil), do: "SQLite failure"
   defp sqlite_failure_message(msg), do: "SQLite failure: " <> msg
+
+  defp name_message(:no_such_table, name), do: "no such table: " <> name
+  defp name_message(:no_such_index, name), do: "no such index: " <> name
+  defp name_message(:table_exists, name), do: "table " <> name <> " already exists"
+  defp name_message(:index_exists, name), do: "index " <> name <> " already exists"
 end

@@ -1083,12 +1083,13 @@ defmodule XqliteEcto3.Driver do
   end
 
   @impl DBConnection
-  def handle_fetch(query, cursor, _opts, state) do
+  def handle_fetch(query, cursor, opts, state) do
+    timeout = Keyword.get(opts, :timeout, 15_000)
     start_md = %{conn: state.conn, cursor: cursor}
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_fetch], start_md do
       result =
-        case NIF.stream_fetch(cursor.handle, cursor.batch_size) do
+        case fetch_with_cancel(cursor.handle, cursor.batch_size, timeout) do
           {:ok, %{rows: rows}} ->
             r = %{
               columns: cursor.columns,
@@ -1102,12 +1103,37 @@ defmodule XqliteEcto3.Driver do
             {:halt, %{columns: cursor.columns, rows: [], num_rows: 0},
              sync_after_streamed_control(query, cursor, state)}
 
+          {:error, :operation_cancelled} ->
+            disconnect_if_rolled_back(
+              %DBConnection.ConnectionError{message: "query timed out"},
+              state
+            )
+
           {:error, reason} ->
             sql = IO.iodata_to_binary(query.statement)
             stream_error(reason, sql, state)
         end
 
       classify_dbc(result, start_md)
+    end
+  end
+
+  # A cancel token is spent once, so a batch cannot share one with the
+  # batch before it. xqlite closes the stream on a cancel, and the handle
+  # it leaves answers `:done` on a further fetch and `:ok` on close, so
+  # `handle_deallocate/4` still runs unchanged.
+  defp fetch_with_cancel(handle, batch_size, :infinity) do
+    NIF.stream_fetch(handle, batch_size)
+  end
+
+  defp fetch_with_cancel(handle, batch_size, timeout) when is_integer(timeout) do
+    {:ok, token} = NIF.create_cancel_token()
+    canceller = spawn_canceller(token, timeout)
+
+    try do
+      NIF.stream_fetch_cancellable(handle, batch_size, [token])
+    after
+      send(canceller, :stop)
     end
   end
 

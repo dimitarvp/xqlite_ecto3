@@ -28,6 +28,41 @@ defmodule XqliteEcto3.ErrorPathsTest do
       end
 
     assert error.type == :no_such_table
+    assert error.details == %{name: "nonexistent_table_xyz"}
+    assert Exception.message(error) == "no such table: nonexistent_table_xyz"
+  end
+
+  test "a missing index names itself in the error and in the message" do
+    error =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("DROP INDEX nonexistent_index_xyz")
+      end
+
+    assert error.type == :no_such_index
+    assert error.details == %{name: "nonexistent_index_xyz"}
+    assert Exception.message(error) == "no such index: nonexistent_index_xyz"
+  end
+
+  test "a table that is already there names itself in the error and in the message" do
+    error =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("CREATE TABLE err_users (id INTEGER)")
+      end
+
+    assert error.type == :table_exists
+    assert error.details == %{name: "err_users"}
+    assert Exception.message(error) == "table err_users already exists"
+  end
+
+  test "an index that is already there names itself in the error and in the message" do
+    error =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("CREATE INDEX err_users_email_index ON err_users(email)")
+      end
+
+    assert error.type == :index_exists
+    assert error.details == %{name: "err_users_email_index"}
+    assert Exception.message(error) == "index err_users_email_index already exists"
   end
 
   test "SQL with no statement is reported as such, not as API misuse" do

@@ -143,6 +143,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The xqlite dependency moves to `~> 0.12.0`.** The bundled SQLite
+  is unchanged at 3.53.2. Three of that release's changes are visible
+  through the adapter and are described in the three entries below;
+  nothing else in it has an adapter consumer.
+
+- **An error that names a table or an index carries the name.**
+  `%XqliteEcto3.Error{}` with `type: :no_such_table`, `:no_such_index`,
+  `:table_exists` or `:index_exists` now has `details: %{name: name}`
+  where it had `nil`, so the name can be read without taking the
+  message apart. The message itself is unchanged — `no such table:
+  users`, `table users already exists` — and the name inside it is what
+  SQLite rendered, qualified (`main.users`) or quoted (`"a b"`) exactly
+  as the failing statement wrote it.
+
+- **A rowid conflict now reports a unique constraint.** Inserting a
+  duplicate `rowid` used to give `Ecto` an empty constraint list, so a
+  changeset could not match it. It now reports the unique constraint of
+  the `rowid` column under Ecto's default index name —
+  `[unique: "<table>_rowid_index"]` — which
+  `Ecto.Changeset.unique_constraint(:rowid)` matches. A changeset that
+  relied on the empty list to fall through to a generic error will now
+  find that constraint instead.
+
 - **A `Decimal` inside JSON goes through the precision guard.** A
   `%Decimal{}` in a `:map` field or an `{:array, :decimal}` field used
   to reach Jason untouched, which prints one as a quoted string: a
@@ -453,6 +476,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **`Repo.stream/2` honours `:timeout`.** Each batch the stream fetches
+  now runs under the deadline given to `Repo.stream/2`, or under the
+  repo's configured `:timeout` when the call gives none, and a batch
+  still running when its deadline passes is cancelled on SQLite's
+  progress handler — the same signal a whole statement gets. The stream
+  then raises `%DBConnection.ConnectionError{reason: :error}`, the error
+  the execute path already reports on a deadline. Before this, a slow
+  batch ran to completion whatever `:timeout` said. Every batch gets its
+  own deadline, so the time earlier batches took never counts against a
+  later one, and a `:timeout` on the surrounding `Repo.transaction/2`
+  still does not reach the fetches. `timeout: :infinity` fetches without
+  a deadline, as it did.
 
 - **The telemetry-disabled build runs the whole test suite.** The CI
   lane that compiles telemetry to no-ops ran one smoke file, and 24

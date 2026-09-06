@@ -44,7 +44,7 @@ end
 
 Compatibility: each xqlite_ecto3 release pins exactly one xqlite minor
 series, because xqlite is pre-1.0 and its minor is the break slot. The
-current pairing is xqlite `~> 0.11.0` (pulled in automatically).
+current pairing is xqlite `~> 0.12.0` (pulled in automatically).
 
 Then configure your repo:
 
@@ -194,6 +194,8 @@ MyApp.Repo.all(slow_query, timeout: 5_000)
 # => after 5s, the SQLite progress handler fires, the in-flight query aborts,
 #    and an %DBConnection.ConnectionError{} surfaces — no zombie queries.
 ```
+
+Every statement the adapter runs is covered, `Repo.stream/2` included: there the deadline applies to each batch the stream fetches rather than to the stream as a whole (see Streaming below).
 
 Through a pool, that same `:timeout` also trips DBConnection's own checkout deadline (the same value), which disconnects and reconnects that connection — standard DBConnection behavior for every adapter, not specific to this one. So connection-local state does not survive a pooled query timeout: temp tables, session `PRAGMA`s, and the prepared-statement cache on that connection are gone, and there is a reconnect cost. What the graceful cancel adds on top is that the blocked query *returns at the deadline* instead of running to completion first — the connection recycles promptly rather than after the runaway query finishes.
 
@@ -348,11 +350,17 @@ MyApp.Repo.transaction(fn ->
 end)
 ```
 
-`Repo.stream/2` is the one path `:timeout` does not cancel yet. Each
-fetch runs xqlite's stream NIF, which takes no cancel token today, so a
-slow batch runs to completion and `:timeout` only bounds the checkout
-wait around each fetch. The wiring lands with the xqlite release that
-adds cancellable stream fetches.
+`:timeout` bounds every batch the stream fetches. The deadline is the
+one you give `Repo.stream/2`, or your repo's configured `:timeout` when
+the call gives none; a `:timeout` on the surrounding
+`Repo.transaction/2` does not reach the fetches. A batch still running
+when its deadline passes is cancelled through the same progress-handler
+token a whole statement gets, and the stream raises
+`%DBConnection.ConnectionError{reason: :error}` — the error the execute
+path reports on a deadline. Each batch gets its own deadline, so the
+time earlier batches took never counts against a later one. Left alone,
+that raise takes the surrounding transaction down with it; caught inside
+the transaction function, the transaction stays usable.
 
 ### Telemetry (opt-in, compile-time)
 

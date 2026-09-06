@@ -248,10 +248,11 @@ defmodule XqliteEcto3.ConstraintsTest do
       end
 
     assert error.details.subtype == :constraint_rowid
+    assert error.details.table == "rowid_only"
+    assert error.details.columns == ["rowid"]
 
-    assert XqliteEcto3.Connection.to_constraints(error, []) in [
-             [],
-             [unique: "rowid_only_rowid_index"]
+    assert XqliteEcto3.Connection.to_constraints(error, []) == [
+             unique: "rowid_only_rowid_index"
            ]
   end
 
