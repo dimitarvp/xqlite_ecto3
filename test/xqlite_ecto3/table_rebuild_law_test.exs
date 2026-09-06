@@ -73,32 +73,17 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   @spellings [:stored, :upper, :lower, :swapped]
 
   setup_all do
-    database =
-      Path.join(
-        System.tmp_dir!(),
-        "xqlite_ecto3_rebuild_law_#{System.os_time(:nanosecond)}.db"
-      )
-
-    remove_database(database)
-
     config = [
       adapter: XqliteEcto3,
-      database: database,
+      database: ":memory:",
       pool_size: 1,
       support_alter_via_table_rebuild: true
     ]
 
     Application.put_env(:xqlite_ecto3, LawRepo, config)
-    :ok = XqliteEcto3.storage_up(config)
     start_supervised!({LawRepo, config})
 
-    on_exit(fn -> remove_database(database) end)
-
     :ok
-  end
-
-  defp remove_database(database) do
-    Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(database <> suffix) end)
   end
 
   # --- the law ---------------------------------------------------------------
