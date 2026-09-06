@@ -592,11 +592,21 @@ defmodule XqliteEcto3.RebuildVerificationTest do
       assert :ok = verify(before, [], actual)
     end
 
-    test "a column declared without a type is rebuilt as BLOB" do
+    test "a column declared without a type is rebuilt without one" do
+      before = snapshot(columns: [column("id", "INTEGER", pk: 1), column("loose", "")])
+
+      assert :ok = verify(before, [], before)
+    end
+
+    test "a column declared without a type may not come back as BLOB" do
       before = snapshot(columns: [column("id", "INTEGER", pk: 1), column("loose", "")])
       actual = %{before | columns: [column("id", "INTEGER", pk: 1), column("loose", "BLOB")]}
 
-      assert :ok = verify(before, [], actual)
+      assert {:error, %RebuildVerificationError{} = error} = verify(before, [], actual)
+      assert error.construct == :column_type
+      assert error.column == "loose"
+      assert error.expected == ""
+      assert error.actual == "BLOB"
     end
   end
 

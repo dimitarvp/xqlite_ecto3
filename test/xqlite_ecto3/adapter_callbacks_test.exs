@@ -167,10 +167,9 @@ defmodule XqliteEcto3.AdapterCallbacksTest do
   end
 
   describe "dump_cmd/3" do
-    test "raises with a clear message (intentionally unsupported)" do
-      assert_raise RuntimeError, "dump_cmd is not supported — use structure_dump/2 instead", fn ->
-        XqliteEcto3.dump_cmd([], [], [])
-      end
+    test "reports the unsupported command as output and a non-zero exit status" do
+      assert {output, 127} = XqliteEcto3.dump_cmd(["--schema-only"], [], database: "db.sqlite3")
+      assert is_binary(output)
     end
   end
 end

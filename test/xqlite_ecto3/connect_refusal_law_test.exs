@@ -59,6 +59,22 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
 
       assert details == %{key: :mode, value: :immediate}
     end
+
+    property "a custom pragma that is not a name and a value names the entry" do
+      check all(entry <- rejected_custom_pragma(), max_runs: @law_runs) do
+        assert {:error, %XqliteEcto3.Error{type: :invalid_custom_pragma, details: details}} =
+                 Driver.connect(database: ":memory:", custom_pragmas: [entry])
+
+        assert details == %{key: :custom_pragmas, value: entry}
+      end
+    end
+
+    test "a custom pragma list that is not a list names the whole option" do
+      assert {:error, %XqliteEcto3.Error{type: :invalid_custom_pragmas, details: details}} =
+               Driver.connect(database: ":memory:", custom_pragmas: %{journal_size_limit: 1})
+
+      assert details == %{key: :custom_pragmas, value: %{journal_size_limit: 1}}
+    end
   end
 
   describe "hook refusals carry the option or the entry that was refused" do
@@ -129,7 +145,8 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
        &(is_nil(&1) or (is_integer(&1) and &1 >= 0)), []},
       {:mmap_size, :invalid_mmap_size, &(is_nil(&1) or (is_integer(&1) and &1 >= 0)), []},
       {:rich_fk_diagnostics, :invalid_rich_fk_diagnostics, &is_boolean/1, [true, false]},
-      {:diagnostics_budget_ms, :invalid_diagnostics_budget_ms, &(is_integer(&1) and &1 >= 0), []}
+      {:diagnostics_budget_ms, :invalid_diagnostics_budget_ms, &(is_integer(&1) and &1 >= 0), []},
+      {:custom_pragmas, :invalid_custom_pragmas, &is_list/1, []}
     ]
   end
 
@@ -156,6 +173,22 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
     ]
     |> StreamData.one_of()
     |> StreamData.filter(fn value -> not accepted?.(value) end, 100)
+  end
+
+  defp rejected_custom_pragma do
+    StreamData.one_of([
+      StreamData.integer(),
+      StreamData.member_of(@stray_floats),
+      StreamData.string(:ascii, max_length: 8),
+      StreamData.member_of(@stray_atoms),
+      StreamData.boolean(),
+      StreamData.list_of(StreamData.integer(), max_length: 2),
+      StreamData.tuple({StreamData.integer(), StreamData.integer()}),
+      StreamData.tuple({StreamData.member_of(@stray_floats), StreamData.integer()}),
+      StreamData.tuple(
+        {StreamData.atom(:alphanumeric), StreamData.integer(), StreamData.integer()}
+      )
+    ])
   end
 
   defp rejected_progress_option do

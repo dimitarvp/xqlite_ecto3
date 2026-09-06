@@ -226,6 +226,28 @@ defmodule XqliteEcto3.TelemetryTest do
       :telemetry.detach(handler_id)
     end
 
+    test "a second top-level begin reports the open transaction as the error reason", %{
+      state: state
+    } do
+      conn = state.conn
+      {:ok, _, state2} = Driver.handle_begin([], state)
+
+      handler_id = "test-begin-again-#{:erlang.unique_integer([:positive])}"
+      attach_capture(handler_id, [[:xqlite_ecto3, :handle_begin, :stop]])
+
+      assert {:transaction, state3} = Driver.handle_begin([], state2)
+
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_begin, :stop], _,
+                      %{
+                        conn: ^conn,
+                        result_class: :error,
+                        error_reason: {:transaction_status, :transaction}
+                      }}
+
+      Driver.handle_rollback([], state3)
+      :telemetry.detach(handler_id)
+    end
+
     test "savepoint mode is captured in metadata", %{state: state} do
       {:ok, _, state2} = Driver.handle_begin([], state)
 

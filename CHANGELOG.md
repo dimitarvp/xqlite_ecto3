@@ -143,6 +143,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Adding a column with a `{:fragment, "..."}` default is refused.**
+  SQLite computes an added column's default once for every row already
+  in the table and takes only a literal there, so the same `alter
+  table ... add` succeeded against an empty database and failed against
+  a populated one. The adapter now refuses every `add` (and
+  `add_if_not_exists`) whose `default:` is a raw SQL fragment, before
+  the statement runs, with `XqliteEcto3.RebuildRefusedError` and reason
+  `:non_constant_default_add`. Which fragments SQLite would have
+  accepted is decided by its own parser, which the adapter does not
+  run, so the whole shape goes. Plain defaults are unaffected, and a
+  fragment default still works when the same alter block carries a
+  `:modify` under `support_alter_via_table_rebuild: true` — that path
+  rewrites the table and evaluates the fragment for every row.
+
+- **Span measurements are nanoseconds on every machine.** The adapter's
+  spans used to come from `:telemetry.span/3`, which reads the clock
+  with no unit and therefore reports the runtime's native unit — a
+  nanosecond on Linux, something else elsewhere, with nothing in the
+  event to say which. They now run through
+  `XqliteEcto3.Telemetry.run_span/3`, which reads
+  `System.monotonic_time(:nanosecond)` and
+  `System.system_time(:nanosecond)`, matching xqlite's own spans and the
+  adapter's non-span events. The events are otherwise identical: same
+  names, same `telemetry_span_context` reference pairing `:start` with
+  its closing event, same `:exception` event with `kind`, `reason` and
+  `stacktrace`, same two block shapes.
+
+- **`dump_cmd/3` returns instead of raising.** `Ecto.Adapter.Structure`
+  types it as `{output, exit_status}`, so the unsupported command now
+  reports itself the way a shell reports a command it cannot find: the
+  explanation as the output and `127` as the status. Use
+  `structure_dump/2`, which writes the dump itself.
+
+- **A rebuilt table keeps a typeless column typeless.** A column stored
+  with no declared type at all was re-declared as `BLOB` by the rebuild,
+  and the post-rebuild check made the same substitution, so it could not
+  see the change. Both sides now carry the empty declared type through,
+  and any drift in a declared type is reported.
+
 - **A unique violation SQLite reports as `index 'name'` now carries a
   table and columns.** That form — the one an index built over an
   expression produces — used to leave `table: nil` and `columns: []`
@@ -368,6 +407,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **Transaction control sent through `Ecto.Adapters.SQL.stream/4` no
+  longer strands the driver's cached transaction flag.** A cursor
+  prepares its statement when it is declared and runs it on the first
+  fetch, and only the ordinary execute path re-read SQLite's real
+  transaction state afterwards. A streamed `BEGIN` therefore left the
+  driver believing the connection was in autocommit: the next
+  `Repo.transaction` issued a real `BEGIN` on a connection already
+  inside one, SQLite refused it, the connection was dropped, and every
+  write since the streamed `BEGIN` rolled back with it. `handle_fetch`
+  now runs the same re-read the execute path runs.
+
+- **`storage_up/1` and `structure_load/2` report their failures instead
+  of raising.** An unwritable database directory raised a `File.Error`
+  out of `mix ecto.create`, and a database path that cannot be opened
+  raised a `MatchError` out of `mix ecto.load`. Both now return
+  `{:error, term}` as their callbacks allow:
+  `{:cannot_create_directory, directory, posix_reason}` for the first,
+  and xqlite's own `{:cannot_open_database, path, code, message}` for
+  the second.
 
 - **UUID case is documented for all three paths.**
   `XqliteEcto3.Types.UUID` lower-cases on the way in, `Ecto.UUID`

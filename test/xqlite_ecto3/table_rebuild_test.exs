@@ -33,6 +33,67 @@ defmodule XqliteEcto3.TableRebuildTest do
     end
   end
 
+  describe "an added column whose default is a raw SQL fragment" do
+    test "is refused on an empty table" do
+      create("CREATE TABLE rb_ncd_empty(id INTEGER PRIMARY KEY)")
+
+      error =
+        assert_refused(:non_constant_default_add, fn ->
+          run_alter(:rb_ncd_empty, [
+            {:add, :stamp, :integer, [default: {:fragment, "(random())"}]}
+          ])
+        end)
+
+      assert error.table == "rb_ncd_empty"
+      assert error.column == "stamp"
+      assert error.details == %{change: :add}
+    end
+
+    test "is refused on a populated table" do
+      create("CREATE TABLE rb_ncd_pop(id INTEGER PRIMARY KEY)")
+      TestRepo.query!("INSERT INTO rb_ncd_pop(id) VALUES (1)")
+
+      assert_refused(:non_constant_default_add, fn ->
+        run_alter(:rb_ncd_pop, [{:add, :stamp, :integer, [default: {:fragment, "(random())"}]}])
+      end)
+
+      assert %{rows: [[1]]} = TestRepo.query!("SELECT count(*) FROM rb_ncd_pop")
+    end
+
+    test "is refused in the conditional add form too" do
+      create("CREATE TABLE rb_ncd_cond(id INTEGER PRIMARY KEY)")
+      TestRepo.query!("INSERT INTO rb_ncd_cond(id) VALUES (1)")
+
+      assert_refused(:non_constant_default_add, fn ->
+        run_alter(:rb_ncd_cond, [
+          {:add_if_not_exists, :stamp, :integer, [default: {:fragment, "CURRENT_TIMESTAMP"}]}
+        ])
+      end)
+    end
+
+    test "a constant default is still added on a populated table" do
+      create("CREATE TABLE rb_ncd_const(id INTEGER PRIMARY KEY)")
+      TestRepo.query!("INSERT INTO rb_ncd_const(id) VALUES (1)")
+
+      assert {:ok, []} = run_alter(:rb_ncd_const, [{:add, :label, :string, [default: "x"]}])
+
+      assert %{rows: [["x"]]} = TestRepo.query!("SELECT label FROM rb_ncd_const")
+    end
+
+    test "a fragment default still rides through a rebuild" do
+      create("CREATE TABLE rb_ncd_rebuild(id INTEGER PRIMARY KEY, v TEXT)")
+      TestRepo.query!("INSERT INTO rb_ncd_rebuild(v) VALUES ('seed')")
+
+      assert {:ok, []} =
+               run_alter(:rb_ncd_rebuild, [
+                 {:add, :stamp, :integer, [default: {:fragment, "(7)"}]},
+                 {:modify, :v, :string, [null: false]}
+               ])
+
+      assert %{rows: [[7]]} = TestRepo.query!("SELECT stamp FROM rb_ncd_rebuild")
+    end
+  end
+
   describe "connection state after a rebuild" do
     test "defer_foreign_keys is reset even when the transaction never commits" do
       create("CREATE TABLE rb_dfk_parent(id INTEGER PRIMARY KEY)")

@@ -86,6 +86,9 @@ value falls back to that default — `batch_size_from_opts/1`). A failed
 `stream_get_columns` closes the handle before wrapping the error.
 `handle_fetch/4` calls `NIF.stream_fetch/2` once per batch and returns `:cont`
 with the rows, or `:halt` with an empty batch when the stream reports `:done`.
+A cursor over a statement with no result columns is where streamed transaction
+control takes effect, so both of those returns carry the same
+`sync_after_transaction_control/2` re-read the execute path does.
 `handle_deallocate/4` closes the handle.
 
 This path never calls `UniqueIndexNames.resolve/4`: a streamed DML violation
@@ -125,8 +128,9 @@ open transaction issues `NIF.savepoint/2`; at top level it returns a
 `SAVEPOINT` would open the transaction deferred and discard the configured
 mode. `handle_commit/2` and `handle_rollback/2` split on the same `:savepoint`
 marker. Transaction control arriving as ordinary SQL never reaches those
-callbacks, so `handle_execute/4`
-calls `sync_after_transaction_control/2` on every column-less result; a
+callbacks, so `handle_execute/4` calls `sync_after_transaction_control/2` on
+every column-less result and `handle_fetch/4` on every fetch of a cursor with
+no result columns; a
 statement failing while a transaction is believed open goes through
 `disconnect_if_rolled_back/2` — see the state table below.
 

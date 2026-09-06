@@ -629,7 +629,7 @@ defmodule XqliteEcto3.RebuildVerification do
 
       %{
         name: col.name,
-        type: rebuilt_type(col.type),
+        type: col.type,
         notnull: declared.notnull,
         default: declared.default,
         pk_inline: declared.pk_inline,
@@ -639,9 +639,6 @@ defmodule XqliteEcto3.RebuildVerification do
       }
     end)
   end
-
-  defp rebuilt_type(type) when type in [nil, ""], do: "BLOB"
-  defp rebuilt_type(type), do: type
 
   defp apply_changes(planned, changes), do: Enum.reduce(changes, planned, &apply_change(&2, &1))
 

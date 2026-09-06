@@ -46,6 +46,19 @@ defmodule XqliteEcto3 do
   foreign-key checks, and the rebuilt table satisfies them at the end. See
   `XqliteEcto3.Migration` and the README for details.
 
+  Adding a column is the other half of the same story. SQLite computes an
+  added column's default once for every row already in the table and takes
+  only a literal there, so `add :stamp, :integer, default: {:fragment,
+  "(datetime('now'))"}` succeeds against a fresh database and fails against
+  a populated one — the same migration, two outcomes. The adapter refuses
+  any `:add` whose default is a raw SQL fragment before SQLite sees it
+  (`XqliteEcto3.RebuildRefusedError`, reason `:non_constant_default_add`),
+  so the outcome no longer depends on the row count. Plain `default:`
+  values — numbers, strings, booleans, maps and lists — are unaffected;
+  put a `:modify` in the same alter block under
+  `support_alter_via_table_rebuild: true` when you need a fragment, and
+  the rebuild evaluates it for every row.
+
   ## UUID / binary_id storage
 
   Set `config :xqlite_ecto3, :binary_id_storage, :string | :binary` and
@@ -489,13 +502,28 @@ defmodule XqliteEcto3 do
     if File.exists?(database) do
       {:error, :already_up}
     else
-      database
-      |> Path.dirname()
-      |> File.mkdir_p!()
+      create_database_file(database)
+    end
+  end
 
-      {:ok, conn} = XqliteNIF.open(database)
-      XqliteNIF.close(conn)
-      :ok
+  # sobelow_skip ["Traversal.FileModule"]
+  defp create_database_file(database) do
+    directory = Path.dirname(database)
+
+    case File.mkdir_p(directory) do
+      :ok -> create_empty_database(database)
+      {:error, reason} -> {:error, {:cannot_create_directory, directory, reason}}
+    end
+  end
+
+  defp create_empty_database(database) do
+    case XqliteNIF.open(database) do
+      {:ok, conn} ->
+        XqliteNIF.close(conn)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -588,23 +616,41 @@ defmodule XqliteEcto3 do
 
     case File.read(path) do
       {:ok, sql} ->
-        {:ok, conn} = XqliteNIF.open(database)
-        result = XqliteNIF.execute_batch(conn, sql)
-        XqliteNIF.close(conn)
-
-        case result do
-          :ok -> {:ok, path}
-          {:error, reason} -> {:error, inspect(reason)}
-        end
+        load_structure(database, path, sql)
 
       {:error, reason} ->
         {:error, "Could not read #{path}: #{inspect(reason)}"}
     end
   end
 
+  defp load_structure(database, path, sql) do
+    case XqliteNIF.open(database) do
+      {:ok, conn} -> run_structure_batch(conn, path, sql)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp run_structure_batch(conn, path, sql) do
+    result = XqliteNIF.execute_batch(conn, sql)
+    XqliteNIF.close(conn)
+
+    case result do
+      :ok -> {:ok, path}
+      {:error, reason} -> {:error, inspect(reason)}
+    end
+  end
+
+  @doc """
+  Not supported: there is no command-line dump this adapter drives.
+
+  `Ecto.Adapter.Structure` types this callback as `{output, exit_status}`,
+  the way `System.cmd/3` answers, so it reports the refusal the way a shell
+  reports a command it could not find: the explanation as the output, and
+  `127` as the status. Use `structure_dump/2`, which writes the dump itself.
+  """
   @impl Ecto.Adapter.Structure
   def dump_cmd(_args, _opts, _config) do
-    raise "dump_cmd is not supported — use structure_dump/2 instead"
+    {"dump_cmd is not supported by xqlite_ecto3 — use structure_dump/2 instead", 127}
   end
 
   @impl Ecto.Adapter.Migration
@@ -630,25 +676,12 @@ defmodule XqliteEcto3 do
         existing = fetch_existing_columns!(meta, table, opts)
 
         case resolve_conditional_changes(changes, existing) do
-          [] ->
-            {:ok, []}
-
-          resolved ->
-            Ecto.Adapters.SQL.execute_ddl(
-              meta,
-              XqliteEcto3.Connection,
-              {:alter, table, resolved},
-              opts
-            )
+          [] -> {:ok, []}
+          resolved -> native_alter(meta, table, resolved, opts)
         end
 
       true ->
-        Ecto.Adapters.SQL.execute_ddl(
-          meta,
-          XqliteEcto3.Connection,
-          {:alter, table, changes},
-          opts
-        )
+        native_alter(meta, table, changes, opts)
     end
   end
 
@@ -660,6 +693,54 @@ defmodule XqliteEcto3 do
   defp conditional_change?({:remove_if_exists, _, _}), do: true
   defp conditional_change?({:remove_if_exists, _}), do: true
   defp conditional_change?(_), do: false
+
+  defp native_alter(meta, table, changes, opts) do
+    case Enum.find(changes, &fragment_default_add?/1) do
+      nil ->
+        Ecto.Adapters.SQL.execute_ddl(
+          meta,
+          XqliteEcto3.Connection,
+          {:alter, table, changes},
+          opts
+        )
+
+      change ->
+        raise_non_constant_default_add!(table, change)
+    end
+  end
+
+  defp fragment_default_add?({op, _name, _type, opts}) when op in [:add, :add_if_not_exists] do
+    case Keyword.fetch(opts, :default) do
+      {:ok, {:fragment, _sql}} -> true
+      _other -> false
+    end
+  end
+
+  defp fragment_default_add?(_change), do: false
+
+  defp raise_non_constant_default_add!(table, {op, name, _type, _opts}) do
+    raise XqliteEcto3.RebuildRefusedError,
+      reason: :non_constant_default_add,
+      table: to_string(table.name),
+      column: to_string(name),
+      details: %{change: op},
+      message: non_constant_default_add_message(table.name, name)
+  end
+
+  defp non_constant_default_add_message(table_name, column) do
+    table = table_name |> to_string() |> inspect()
+    name = column |> to_string() |> inspect()
+
+    "cannot add #{name} to #{table} with a " <>
+      "default written as a raw SQL fragment. SQLite computes an added column's default once " <>
+      "per existing row and accepts only a literal there, so the same migration succeeds on " <>
+      "an empty table and fails on a populated one; whether a given fragment counts as a " <>
+      "literal is decided by SQLite's own parser, which this adapter does not run. Either " <>
+      "give the column a plain default: value (a number, string, boolean, map or list) and " <>
+      "write the computed values with a follow-up UPDATE, or put a :modify in the same alter " <>
+      "block under support_alter_via_table_rebuild: true, where the whole table is rewritten " <>
+      "and the fragment is evaluated for every row."
+  end
 
   # SQLite resolves a column name with ASCII case folding, so
   # `remove_if_exists :firstname` has to find a stored "firstName" — the
@@ -2138,7 +2219,7 @@ defmodule XqliteEcto3 do
   # stray quotes — is emitted as a quoted identifier (same affinity: the
   # marker scan reads the text either way). Splicing such text bare is a
   # syntax error on the transient CREATE, bricking every rebuild.
-  defp carried_type(type) when type in [nil, ""], do: "BLOB"
+  defp carried_type(type) when type in [nil, ""], do: ""
 
   defp carried_type(type) do
     if XqliteEcto3.DataType.bare_typename?(String.upcase(type)) or

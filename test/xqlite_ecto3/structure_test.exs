@@ -106,6 +106,17 @@ defmodule XqliteEcto3.StructureTest do
     assert msg == "Could not read #{dump_path}: :enoent"
   end
 
+  test "structure_load reports a database it cannot open as a tuple" do
+    dump_path = unique_path("struct_load_baddb") <> ".sql"
+    db = Path.join([unique_path("struct_load_baddb"), "no", "such", "dir", "db.sqlite3"])
+
+    on_exit(fn -> File.rm(dump_path) end)
+    File.write!(dump_path, "CREATE TABLE loaded (id INTEGER);")
+
+    assert {:error, {:cannot_open_database, ^db, _code, _message}} =
+             XqliteEcto3.structure_load("priv", database: db, dump_path: dump_path)
+  end
+
   # ---------------------------------------------------------------------------
   # structure_dump keeps its tuple contract whatever the machine has installed
   # ---------------------------------------------------------------------------

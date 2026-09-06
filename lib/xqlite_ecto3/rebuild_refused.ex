@@ -1,6 +1,10 @@
 defmodule XqliteEcto3.RebuildRefusedError do
   @moduledoc """
-  Raised when the opt-in table rebuild refuses to run.
+  Raised when a migration asks for a table change this adapter will not make.
+
+  Most of these are the opt-in table rebuild refusing to run. One is not:
+  `:non_constant_default_add` refuses an `:add` whose default is a raw SQL
+  fragment before it reaches SQLite, whatever the rebuild flag says.
 
   SQLite has no `ALTER TABLE ... MODIFY COLUMN`, so `:modify` is carried out
   by rebuilding the table: create a replacement, copy the rows, drop the
@@ -21,8 +25,8 @@ defmodule XqliteEcto3.RebuildRefusedError do
       `:incoming_action_on_populated`, `:reference_change`,
       `:primary_key_removed`, `:key_already_granted`, `:affinity_rewrite`,
       `:trigger_reads_removed_column`, `:stranded_constraint`,
-      `:unknown_column`, `:trigger_sql_unrecognized` or
-      `:foreign_key_violations`.
+      `:unknown_column`, `:trigger_sql_unrecognized`,
+      `:foreign_key_violations` or `:non_constant_default_add`.
     * `table` — the table the migration asked to alter.
     * `construct` — the part of the table's declaration that refused, where
       one construct is to blame: `:check`, `:collate`, `:deferrable`,
@@ -39,8 +43,9 @@ defmodule XqliteEcto3.RebuildRefusedError do
       `:key_already_granted`, `:old_affinity` / `:new_affinity` /
       `:rewritten` for `:affinity_rewrite`, `:trigger` for
       `:trigger_reads_removed_column` and `:trigger_sql_unrecognized`,
-      `:change` for `:reference_change` and `:unknown_column`. `%{}` where
-      the named fields say everything.
+      `:change` for `:reference_change`, `:unknown_column` and
+      `:non_constant_default_add`. `%{}` where the named fields say
+      everything.
     * `message` — the full explanation, including how to make the change by
       hand.
   """

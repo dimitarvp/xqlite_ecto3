@@ -65,17 +65,18 @@ interleaves independent counters.
 
 Every span event (`*, :start | :stop | :exception`) carries
 `monotonic_time` on `:start` and `monotonic_time` + `duration` on
-`:stop`. Those come from `:telemetry.span/3` and are in the runtime's
-NATIVE time unit, not necessarily nanoseconds — on Linux a native unit
-IS a nanosecond, so the numbers coincide; `System.convert_time_unit(1,
-:second, :native)` tells you what your runtime uses. The adapter's own
-non-span events (`:disconnect`, `:checkout`, the statement-cache
-events) are always in nanoseconds.
+`:stop`. Every one of those is an integer NANOSECOND count, on every
+machine, and so is every non-span event's `monotonic_time`
+(`:disconnect`, `:checkout`, the statement-cache events). The adapter
+runs its own span rather than calling `:telemetry.span/3` for exactly
+this reason: `:telemetry` reads the clock without a unit, which gives
+the runtime's native unit — a nanosecond on Linux and something else
+elsewhere, with nothing in the event to say which.
 
-`:telemetry.span/3` also adds `system_time` to every `:start`'s
-measurements and a `telemetry_span_context` reference to every span
-event's metadata — that reference is what pairs a `:start` with its
-`:stop`.
+The span also adds `system_time` (nanoseconds since the Unix epoch) to
+every `:start`'s measurements and a `telemetry_span_context` reference
+to every span event's metadata — that reference is what pairs a
+`:start` with its `:stop`.
 
 A graceful pool or application shutdown does NOT emit
 `[:xqlite_ecto3, :disconnect]`: the connection process exits before
@@ -199,7 +200,7 @@ which carries no `result_class` at all — raises inside the handler, and
 
 ### Catching slow statements
 
-`duration` is in native time units; convert before comparing:
+`duration` is in nanoseconds; convert before comparing:
 
 ```elixir
 require Logger
@@ -208,7 +209,7 @@ require Logger
   "slow-statements",
   [:xqlite_ecto3, :handle_execute, :stop],
   fn _, %{duration: d}, %{sql: sql}, budget_ms ->
-    ms = System.convert_time_unit(d, :native, :millisecond)
+    ms = System.convert_time_unit(d, :nanosecond, :millisecond)
     if ms > budget_ms, do: Logger.warning("slow statement (#{ms} ms): #{sql}")
   end,
   250

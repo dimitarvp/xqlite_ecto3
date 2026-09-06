@@ -24,6 +24,20 @@ defmodule XqliteEcto3.StorageTest do
     assert File.exists?(path)
   end
 
+  test "storage_up reports a directory it cannot create as a tuple" do
+    blocker = Path.join(@tmp_dir, "xqlite_storage_blocker_#{:erlang.unique_integer([:positive])}")
+    path = Path.join([blocker, "nested", "test.db"])
+    on_exit(fn -> File.rm(blocker) end)
+
+    File.write!(blocker, "not a directory")
+
+    assert {:error, {:cannot_create_directory, dir, reason}} =
+             XqliteEcto3.storage_up(database: path)
+
+    assert dir == Path.dirname(path)
+    assert reason in [:enotdir, :eexist]
+  end
+
   test "storage_up returns :already_up when file exists" do
     path = unique_db_path()
     File.write!(path, "")

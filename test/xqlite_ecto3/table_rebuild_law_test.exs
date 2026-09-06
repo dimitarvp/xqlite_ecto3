@@ -21,6 +21,13 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   away entirely or ask one table for two keys, and a removal that would
   strand a constraint, an index or a trigger — each has to raise before
   anything is dropped and leave the table exactly as it was.
+
+  The third property reads the declared type of every column the change set
+  did not name, before and after. A column SQLite stores with no declared
+  type at all is the case that matters: it has BLOB affinity but no type
+  token, so writing `BLOB` back for it is a table nobody asked for, and the
+  post-rebuild check cannot see the difference if it makes the same
+  substitution the rebuild made.
   """
   use ExUnit.Case, async: true
   use ExUnitProperties
@@ -36,8 +43,23 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   # twice. The house floor for property runs is 2000.
   @law_runs 2000
   @refusal_runs 2000
+  @declared_type_runs 2000
 
   @types ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"]
+
+  @declared_types [
+    "",
+    "INTEGER",
+    "TEXT",
+    "BLOB",
+    "REAL",
+    "NUMERIC",
+    "VARCHAR(255)",
+    "DOUBLE PRECISION",
+    "boolean",
+    "DECIMAL(10, 2)",
+    "unsigned big int"
+  ]
   @modify_types [:integer, :string, :float, :binary, :decimal]
 
   # Identifier shapes SQLite accepts but code that forgets to quote does not:
@@ -140,6 +162,41 @@ defmodule XqliteEcto3.TableRebuildLawTest do
 
       clean_up!(refusal)
     end
+  end
+
+  property "a rebuild leaves every carried column's declared type byte for byte" do
+    check all(
+            types <- list_of(member_of(@declared_types), min_length: 1, max_length: 4),
+            max_runs: @declared_type_runs
+          ) do
+      table = "rb_declared_#{:erlang.unique_integer([:positive])}"
+      create_declared!(table, types)
+
+      before = declared_types(table)
+
+      assert {:ok, []} = alter(table, [{:modify, :pivot, :string, []}])
+      assert declared_types(table) == before
+
+      drop_table!(table)
+    end
+  end
+
+  defp create_declared!(table, types) do
+    columns =
+      types
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {type, index} -> "#{quoted("c#{index}")} #{type}" end)
+
+    LawRepo.query!(
+      "CREATE TABLE #{quoted(table)} (id INTEGER PRIMARY KEY, pivot TEXT, #{columns})"
+    )
+  end
+
+  defp declared_types(table) do
+    %{rows: rows} =
+      LawRepo.query!("SELECT name, type FROM pragma_table_xinfo(?1)", [to_string(table)])
+
+    rows
   end
 
   # --- driving the adapter ---------------------------------------------------

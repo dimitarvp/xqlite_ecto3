@@ -17,16 +17,16 @@ defmodule XqliteEcto3.Telemetry do
 
   ## Event surface
 
-  The adapter's own single events (`:disconnect`, `:checkout` and the
-  statement-cache events) measure `monotonic_time` in nanoseconds, via
-  `System.monotonic_time(:nanosecond)`. Span events come from
-  `:telemetry.span/3`, which measures in the runtime's NATIVE time unit:
+  Every time-valued measurement is an integer nanosecond count, from
+  `System.monotonic_time(:nanosecond)` and `System.system_time(:nanosecond)`.
+  That holds for the adapter's own single events (`:disconnect`,
+  `:checkout` and the statement-cache events) and for span events alike:
   `:start` measures `%{monotonic_time, system_time}` (no `duration`);
-  `:stop` and `:exception` measure `%{monotonic_time, duration}`. Where
-  the native unit is a nanosecond — Linux, and every platform this
-  adapter is tested on — the two are the same number.
-  `System.convert_time_unit(1, :second, :native)` tells you what the
-  runtime you are on actually uses.
+  `:stop` and `:exception` measure `%{monotonic_time, duration}`. The
+  spans are run by `run_span/3` here rather than by `:telemetry.span/3`
+  for that reason alone — `:telemetry` reads the clock without a unit,
+  which gives the runtime's native unit, a nanosecond on Linux and
+  something else elsewhere, with nothing in the event to say which.
 
   Every span event's metadata also carries `telemetry_span_context`, the
   reference that pairs a `:start` with its `:stop`. The blocks below list
@@ -198,17 +198,88 @@ defmodule XqliteEcto3.Telemetry do
     end
 
     @doc """
-    Run `block` inside a `:telemetry.span/3`. The block must evaluate
-    to a value; that value is returned. The block can also return
-    `{value, extra_stop_metadata}` to enrich `:stop` metadata.
+    Run `block` inside a span: a `:start` event, then a `:stop` one.
+
+    The block returns `{value, stop_metadata}` or `{value,
+    extra_measurements, stop_metadata}`, so the `:stop` event can carry
+    numbers and metadata that were not known at `:start`; `value` is
+    what the macro returns. The stop metadata replaces the start
+    metadata, and the extra measurements are merged under `duration`
+    and `monotonic_time`. If the block raises, throws or exits, an
+    `:exception` event fires instead of `:stop`, with `kind`, `reason`
+    and `stacktrace` added to the metadata, and the exception re-raises
+    unchanged.
     """
     defmacro span_with_stop_metadata(event_name, start_metadata, do: block) do
       quote do
-        :telemetry.span(unquote(event_name), unquote(start_metadata), fn ->
+        XqliteEcto3.Telemetry.run_span(unquote(event_name), unquote(start_metadata), fn ->
           unquote(block)
         end)
       end
     end
+
+    @doc false
+    @spec run_span([atom()], map(), (-> term())) :: term()
+    def run_span(event_name, start_metadata, block) do
+      context = make_ref()
+      metadata = with_span_context(start_metadata, context)
+      start_time = monotonic_time()
+
+      :telemetry.execute(
+        event_name ++ [:start],
+        %{monotonic_time: start_time, system_time: System.system_time(:nanosecond)},
+        metadata
+      )
+
+      # The one try/catch the adapter keeps: it turns the caller's own
+      # exception into an `:exception` event and re-raises it untouched.
+      try do
+        block.()
+      catch
+        kind, reason ->
+          stacktrace = __STACKTRACE__
+          stop_time = monotonic_time()
+
+          :telemetry.execute(
+            event_name ++ [:exception],
+            %{duration: stop_time - start_time, monotonic_time: stop_time},
+            Map.merge(metadata, %{kind: kind, reason: reason, stacktrace: stacktrace})
+          )
+
+          :erlang.raise(kind, reason, stacktrace)
+      else
+        outcome -> emit_stop(event_name, start_time, context, outcome)
+      end
+    end
+
+    defp emit_stop(event_name, start_time, context, {result, stop_metadata}) do
+      stop_time = monotonic_time()
+
+      :telemetry.execute(
+        event_name ++ [:stop],
+        %{duration: stop_time - start_time, monotonic_time: stop_time},
+        with_span_context(stop_metadata, context)
+      )
+
+      result
+    end
+
+    defp emit_stop(event_name, start_time, context, {result, extra, stop_metadata}) do
+      stop_time = monotonic_time()
+
+      :telemetry.execute(
+        event_name ++ [:stop],
+        Map.merge(extra, %{duration: stop_time - start_time, monotonic_time: stop_time}),
+        with_span_context(stop_metadata, context)
+      )
+
+      result
+    end
+
+    defp with_span_context(%{telemetry_span_context: _} = metadata, _context), do: metadata
+
+    defp with_span_context(metadata, context),
+      do: Map.put(metadata, :telemetry_span_context, context)
   else
     @doc false
     defmacro emit(event_name, measurements, metadata) do
@@ -225,12 +296,18 @@ defmodule XqliteEcto3.Telemetry do
       quote do
         _ = unquote(event_name)
         _ = unquote(start_metadata)
-
-        case unquote(block) do
-          {value, _stop_metadata} -> value
-        end
+        unquote(__MODULE__).span_block_value(unquote(block))
       end
     end
+
+    # Unwrapping in a function rather than in a `case` inside the macro:
+    # the compiler knows each call site's block shape exactly, so an
+    # inlined `case` over both shapes leaves one clause provably dead
+    # there — a warning, and warnings are errors here.
+    @doc false
+    @spec span_block_value(term()) :: term()
+    def span_block_value({value, _extra_measurements, _stop_metadata}), do: value
+    def span_block_value({value, _stop_metadata}), do: value
   end
 
   @doc """

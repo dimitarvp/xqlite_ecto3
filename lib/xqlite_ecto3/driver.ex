@@ -1096,10 +1096,11 @@ defmodule XqliteEcto3.Driver do
               num_rows: length(rows)
             }
 
-            {:cont, r, state}
+            {:cont, r, sync_after_streamed_control(query, cursor, state)}
 
           :done ->
-            {:halt, %{columns: cursor.columns, rows: [], num_rows: 0}, state}
+            {:halt, %{columns: cursor.columns, rows: [], num_rows: 0},
+             sync_after_streamed_control(query, cursor, state)}
 
           {:error, reason} ->
             sql = IO.iodata_to_binary(query.statement)
@@ -1108,6 +1109,14 @@ defmodule XqliteEcto3.Driver do
 
       classify_dbc(result, start_md)
     end
+  end
+
+  # A declared cursor steps its statement on the first fetch, not at declare.
+  defp sync_after_streamed_control(_query, %{columns: [_ | _]}, state), do: state
+
+  defp sync_after_streamed_control(query, _cursor, state) do
+    sql = IO.iodata_to_binary(query.statement)
+    sync_after_transaction_control(state, sql)
   end
 
   defp stream_error(:connection_closed, _sql, state) do
