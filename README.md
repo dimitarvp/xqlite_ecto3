@@ -54,19 +54,21 @@ config :my_app, ecto_repos: [MyApp.Repo]
 
 config :my_app, MyApp.Repo,
   adapter: XqliteEcto3,
-  database: "priv/repo/my_app.db",
-  pool_size: 5
+  database: "priv/repo/my_app.db"
 ```
 
 Keep `ecto_repos` in `config/config.exs`: the `mix ecto.*` tasks read it at compile time, and when it only exists in `config/runtime.exs` they print a warning and silently do nothing.
+
+`pool_size` is Ecto's, and Ecto's default is 10. The adapter adds no default of its own — Ecto merges its own into your repo configuration before the adapter is ever consulted, so one here could never win.
+
+One database cannot be pooled at all: a private in-memory one. `":memory:"`, the empty string, and any `file:` URI that opens an in-memory database without `cache=shared` — the path `:memory:`, or `mode=memory`, which names one — give each connection its own empty database, so a write on one connection is invisible to every other. The adapter refuses that combination when the repo starts — `pool_size: 1`, or the shared-cache URI `file::memory:?cache=shared`, which every connection in the pool opens as the same database.
 
 …or, 12-factor-style, drive it from a URL — the adapter parses `sqlite://` URLs natively, so the standard Phoenix pattern just works:
 
 ```elixir
 # config/runtime.exs
 config :my_app, MyApp.Repo,
-  url: System.fetch_env!("DATABASE_URL"),
-  pool_size: 5
+  url: System.fetch_env!("DATABASE_URL")
 ```
 
 Accepts `sqlite:///absolute/path.db?busy_timeout=10000&journal_mode=wal` and similar. See `XqliteEcto3.URL` for the full query-parameter allowlist and error cases. (Ecto's own generic URL parsing would reject these URLs; the adapter injects a default `init/2` into repos that don't define one, translating `:url` before Ecto sees it.) If your repo defines its own `init/2`, put these two lines in it:
@@ -87,6 +89,7 @@ Beyond the URL-expressible parameters, the repo configuration also accepts these
 - `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit configuration always wins. This option is deliberately configuration-only, not URL-exposed. These pragmas are NOT validated: SQLite silently ignores an unknown pragma name and leniently parses values, so typos are yours to catch.
 - `mode: :readonly` — a read-only pool. The adapter skips its default pragmas that need writes, and writes fail with structured `{:read_only_database, _}` errors. For composable read scaling, point a second read-only repo at the same database file.
 - `default_transaction_mode: :deferred | :immediate | :exclusive` — the default is `:immediate`, deliberately: write transactions take their lock up front instead of deadlock-prone mid-transaction lock upgrades. This diverges from ecto_sqlite3's `:deferred` default on purpose. Pass `mode:` to `Repo.transaction/2` for a per-transaction override. `mode: :savepoint` works only inside an open transaction. At top level the adapter refuses it: a lone SAVEPOINT runs the transaction `:deferred` and silently discards `default_transaction_mode`. Do not put a transaction mode in the repo configuration key `mode:` — that key only sets the connection mode. The adapter refuses a transaction mode there at connect, with a structured `{:transaction_mode_as_connection_mode, _}` error. The configuration key for transactions stays `default_transaction_mode:`.
+- `diagnostics_budget_ms: 500` — the wall-clock allowance, in milliseconds, for each of the two error-path diagnoses: the unique-index-name lookup and the foreign-key replay. Both read the database back on a statement that has already failed while the caller waits, so the allowance is checked before every read and the diagnosis stops as soon as it is spent, degrading to what the adapter knew without it. `0` turns both off. Anything but a non-negative integer is a structured connect error.
 - `hooks: [update: MyListener, wal: MyListener, progress: {MyListener, every_n: 500}]` — installs xqlite's connection hooks (update, wal, commit, rollback, progress) on every pooled connection at connect time. One listener then hears every write the pool makes. Subscribers are registered process _names_, so the configuration survives restarts. If a name is not alive when a connection opens, connect fails with a structured `{:hook_subscriber_not_registered, name}` error. Messages arrive in xqlite's shapes, for example `{:xqlite_update, action, db, table, rowid}`.
 
 Define the repo:
@@ -307,10 +310,14 @@ candidate lands in `e.details.unique_index_names`. Postgres parity
 cuts both ways: a bare `unique_constraint/1` against a custom-named
 index raises `Ecto.ConstraintError` — declare the real name (this is
 the one changeset difference from ecto_sqlite3, which always derives
-the conventional name). The lookup runs only on the error path, is
-time-budgeted, and degrades to the derived name when its reads fail
-or the budget is exceeded — `e.details.unique_index_lookup` says
-which happened. Streamed DML skips the lookup the same way
+the conventional name). The lookup runs only on the error path, costs
+one `index_list` read plus one `index_info` read per unique index on
+the table, and stops as soon as its `diagnostics_budget_ms` allowance
+is spent; a failed read, a spent allowance and an allowance of `0` all
+degrade to the derived name — `e.details.unique_index_lookup` says
+which happened. Its cost is its own
+`[:xqlite_ecto3, :unique_index_names]` telemetry span, not time hidden
+inside the statement. Streamed DML skips the lookup the same way
 (`unique_index_lookup: :not_run`). Full contract in the
 `XqliteEcto3.UniqueIndexNames` moduledoc.
 
@@ -408,6 +415,14 @@ All live under `XqliteEcto3.Types.*`:
 - **`Array`** — JSON-TEXT list with optional `:element` typing (`:any`, `:string`, `:integer`, `:float`, `:boolean`).
 - **`ExactDecimal`** — arbitrary-precision decimal over a `:string`/TEXT column, stored as plain digits with every digit and the written scale kept. Binds as text, so no float is ever on the path and there is no digit ceiling — the opt-in exact alternative to `:decimal`, whose numeric binding stops at ~15 significant digits. The trade: SQL ordering, ranges and equality on that column are textual, not numeric.
 
+UUIDs are hexadecimal, so the same value can be written in upper case, lower case or a mix, and the three UUID paths treat that differently:
+
+- `XqliteEcto3.Types.UUID` lower-cases on the way in, so both the stored text and every read are lower case.
+- `Ecto.UUID` stores the text exactly as written and lower-cases on the way out, so an upper-case write reads back lower case.
+- `:binary_id` over `:string` storage passes the text through untouched in both directions, so mixed case survives byte for byte.
+
+The last one matters when you compare in SQL: `=` on a TEXT column is case-sensitive, so two spellings of one UUID are two different values to SQLite. Write UUIDs in one case, or use `XqliteEcto3.Types.UUID`, which settles the case for you.
+
 ### SQLite-specific extras via xqlite
 
 Features like the session extension, incremental blob I/O, online backup with progress, `sqlite3_serialize`/`deserialize`, extension loading, and structured schema introspection live at the xqlite layer — none have Ecto-level equivalents. `XqliteEcto3.with_xqlite/3` bridges the two worlds: it checks a connection out of your repo's pool and hands your callback the raw `XqliteNIF` handle, so the whole xqlite toolbox runs against the same database with no out-of-band second connection:
@@ -434,7 +449,7 @@ Whatever xqlite ships (currently 3.53.2). `Xqlite.sqlite_version/0` if you need 
 Yes, as any Ecto adapter does. There is no `--database xqlite_ecto3` shortcut in `mix phx.new` yet — add the dep manually and configure the repo per the install steps above.
 
 **Concurrency?**
-SQLite is single-writer per database file. The adapter runs a standard DBConnection pool (default `pool_size: 5`) against a single file in WAL mode. Readers are parallel; writers serialize. For high sustained writes, SQLite is the wrong tool and no adapter can change that. Working patterns are in "Living with a single writer" under Design notes.
+SQLite is single-writer per database file. The adapter runs a standard DBConnection pool (Ecto's default `pool_size` is 10) against a single file in WAL mode. Readers are parallel; writers serialize. For high sustained writes, SQLite is the wrong tool and no adapter can change that. Working patterns are in "Living with a single writer" under Design notes.
 
 **Can I use both xqlite_ecto3 and ecto_sqlite3 in the same app?**
 Technically yes — they target different Repo modules with different `:adapter`. But don't. Pick one. Mixing is a footgun for schema migrations and types.

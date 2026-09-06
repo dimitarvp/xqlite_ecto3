@@ -51,6 +51,7 @@ true
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
 | `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count` (rows carried, capped), `:violations_total` (the real number), `:diagnostics_status` (`:ok` \| `:truncated` \| `:unavailable`) |
+| `[:xqlite_ecto3, :unique_index_names, :*]` | the real index name behind a UNIQUE violation was read back | `:conn`, `:table`, `:columns`; on `:stop` also `:candidate_count` (unique indexes covering the violated columns), `:index_reads` (`index_info` reads made), `:lookup_status` (`:ok` \| `:unavailable`) |
 | `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
@@ -140,11 +141,12 @@ Pick the layer that matches your observability question:
 * **"How long did the adapter spend on the statement?"** →
   `[:xqlite_ecto3, :handle_execute]`. Its duration is the SQLite call
   plus xqlite_ecto3's own glue: timeout setup, error classification,
-  and — on failed statements only — the error-path reads (the
-  `fk_diagnostics` replay, which has its own span, and the
-  unique-index-name lookup, which currently does not; under write
-  contention on a rollback-journal database that lookup can wait up
-  to one `busy_timeout`).
+  and — on failed statements only — the error-path reads. Both of
+  those have spans of their own now, `fk_diagnostics` and
+  `unique_index_names`, so their share is measurable rather than
+  hidden here; under write contention on a rollback-journal database
+  a single read of either can still wait up to one `busy_timeout`,
+  and `diagnostics_budget_ms` bounds what follows it.
 
 ## Sample handlers
 

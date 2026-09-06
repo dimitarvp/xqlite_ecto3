@@ -49,26 +49,26 @@ defmodule XqliteEcto3.UniqueIndexNames do
   `unique_constraint/3` per name) to convert either outcome.
 
   The lookup runs on the caller's checked-out connection inside the
-  caller's timeout, so its work is bounded three ways: one
-  `index_info` read per unique index on the table; refused outright
-  past 24 of them (`{:unavailable, {:too_many_unique_indexes, n}}`);
-  and a wall-clock budget equal to the connection's `busy_timeout`,
-  checked before every read
-  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). When the
-  pragma reports a zero timeout — a genuine `busy_timeout: 0`, or a
-  busy policy or observer holding the connection's busy slot (both
-  make the pragma report 0; under a policy contended reads wait
-  policy-governed durations, under an observer alone they fail
-  immediately) — the lookup takes a fixed 500 ms budget instead: far
-  above any healthy lookup, and a hard bound on policy-governed
-  waits multiplying across the candidate reads. A single
-  read can still block for up to `busy_timeout` when another process
-  holds a write lock on a rollback-journal database — the same worst
-  case any statement pays under that contention; WAL databases do not
-  block these reads. Past the cap or the budget the emitted name
-  reverts to the conventional derived one, so a changeset that
-  declares a custom index name on such a table must declare the
-  derived name too.
+  caller's timeout, so its work is bounded three ways: 1 + N pragma
+  reads (one `index_list`, then one `index_info` per unique index on
+  the table); refused outright past 24 of them
+  (`{:unavailable, {:too_many_unique_indexes, n}}`); and a wall-clock
+  allowance, `:diagnostics_budget_ms` from the repo configuration
+  (500 ms unless set), checked before every `index_info` read
+  (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`). An
+  allowance of `0` turns the lookup off: nothing is read and the
+  result is `{:unavailable, :diagnostics_disabled}`. A single read can
+  still block for up to `busy_timeout` when another process holds a
+  write lock on a rollback-journal database — the same worst case any
+  statement pays under that contention; WAL databases do not block
+  these reads. Past the cap or the allowance the emitted name reverts
+  to the conventional derived one, so a changeset that declares a
+  custom index name on such a table must declare the derived name too.
+
+  A lookup that reads reports the
+  `[:xqlite_ecto3, :unique_index_names]` telemetry span, so its cost
+  is measurable on its own instead of hidden inside the statement that
+  failed.
 
   Both pragmas are fallible. Any failure leaves the names empty and
   records `{:unavailable, reason}`; the conventional derived name
@@ -78,45 +78,33 @@ defmodule XqliteEcto3.UniqueIndexNames do
   than as of the violation.
   """
 
+  import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
+
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.Constraint
   alias XqliteNIF, as: NIF
 
   @max_candidate_lookups 24
 
-  # A zero from `PRAGMA busy_timeout` is ambiguous: a genuine zero timeout,
-  # a busy observer (contended reads fail immediately in both cases), or a
-  # busy policy holding the connection's busy slot (contended reads then
-  # wait policy-governed durations). The three are indistinguishable from
-  # here, so a zero-reported timeout gets this fixed budget: far above a
-  # healthy lookup (a 24-candidate pass measures ~0.4 ms uncontended), far
-  # below a policy's worst case multiplied across every candidate read.
-  @zero_slot_budget_ms 500
-
   @doc """
   Fills in `unique_index_names` on a UNIQUE violation that names only
-  a table and columns.
+  a table and columns, spending at most `budget_ms` on the reads.
 
   Every other error — including the expression-index form, which
   already carries `index_name` — passes through untouched.
   """
-  @spec resolve(Error.t(), Xqlite.conn()) :: Error.t()
-  def resolve(%Error{details: %Constraint{} = details} = error, conn) do
-    %{error | details: resolve_details(details, conn)}
+  @spec resolve(Error.t(), Xqlite.conn(), non_neg_integer()) :: Error.t()
+  def resolve(%Error{details: %Constraint{} = details} = error, conn, budget_ms) do
+    %{error | details: resolve_details(details, conn, budget_ms)}
   end
 
-  def resolve(error, _conn), do: error
+  def resolve(error, _conn, _budget_ms), do: error
 
   @doc false
   @spec within_budget?(integer(), non_neg_integer(), integer()) :: boolean()
   def within_budget?(started_at_ms, budget_ms, now_ms) do
     now_ms - started_at_ms <= budget_ms
   end
-
-  @doc false
-  @spec lookup_budget_ms(non_neg_integer()) :: pos_integer()
-  def lookup_budget_ms(0), do: @zero_slot_budget_ms
-  def lookup_budget_ms(ms), do: ms
 
   defp resolve_details(
          %Constraint{
@@ -125,25 +113,45 @@ defmodule XqliteEcto3.UniqueIndexNames do
            table: table,
            columns: [_ | _] = columns
          } = details,
-         conn
+         conn,
+         budget_ms
        )
        when is_binary(table) do
-    case candidates(conn, table, columns) do
-      {:ok, names} -> %{details | unique_index_names: names, unique_index_lookup: :ok}
-      {:error, reason} -> %{details | unique_index_lookup: {:unavailable, reason}}
+    case budget_ms do
+      0 -> %{details | unique_index_lookup: {:unavailable, :diagnostics_disabled}}
+      _ms -> recorded(details, looked_up(conn, table, columns, budget_ms))
     end
   end
 
-  defp resolve_details(details, _conn), do: details
+  defp resolve_details(details, _conn, _budget_ms), do: details
 
-  defp candidates(conn, table, columns) do
-    case busy_budget(conn) do
-      {:ok, budget_ms} -> listed_candidates(conn, table, columns, budget_ms)
-      {:error, _reason} = err -> err
+  defp recorded(details, {:ok, names}) do
+    %{details | unique_index_names: names, unique_index_lookup: :ok}
+  end
+
+  defp recorded(details, {:error, reason}) do
+    %{details | unique_index_lookup: {:unavailable, reason}}
+  end
+
+  defp looked_up(conn, table, columns, budget_ms) do
+    start_md = %{conn: conn, table: table, columns: columns}
+
+    span_with_stop_metadata [:xqlite_ecto3, :unique_index_names], start_md do
+      {result, index_reads} = candidates(conn, table, columns, budget_ms)
+
+      {result, Map.merge(start_md, stop_metadata(result, index_reads))}
     end
   end
 
-  defp listed_candidates(conn, table, columns, budget_ms) do
+  defp stop_metadata({:ok, names}, index_reads) do
+    %{lookup_status: :ok, candidate_count: length(names), index_reads: index_reads}
+  end
+
+  defp stop_metadata({:error, _reason}, index_reads) do
+    %{lookup_status: :unavailable, candidate_count: 0, index_reads: index_reads}
+  end
+
+  defp candidates(conn, table, columns, budget_ms) do
     started_at_ms = System.monotonic_time(:millisecond)
 
     case NIF.query(conn, "PRAGMA index_list(#{quote_ident(table)})", []) do
@@ -153,21 +161,7 @@ defmodule XqliteEcto3.UniqueIndexNames do
         |> capped_matching_indexes(conn, columns, started_at_ms, budget_ms)
 
       {:error, _reason} = err ->
-        err
-    end
-  end
-
-  # The budget equals the connection's busy timeout: one blocked read
-  # already costs that much, so the budget stops further reads from
-  # multiplying the price across every candidate. A zero-reported timeout
-  # routes through `lookup_budget_ms/1` (see `@zero_slot_budget_ms`) so
-  # the lookup is never unbounded and never budgetless; an unexpected
-  # pragma shape takes the same fixed budget rather than either extreme.
-  defp busy_budget(conn) do
-    case NIF.query(conn, "PRAGMA busy_timeout", []) do
-      {:ok, %{rows: [[ms] | _]}} when is_integer(ms) and ms >= 0 -> {:ok, lookup_budget_ms(ms)}
-      {:ok, _unexpected_shape} -> {:ok, lookup_budget_ms(0)}
-      {:error, _reason} = err -> err
+        {err, 0}
     end
   end
 
@@ -177,7 +171,7 @@ defmodule XqliteEcto3.UniqueIndexNames do
     count = length(names)
 
     if count > @max_candidate_lookups do
-      {:error, {:too_many_unique_indexes, count}}
+      {{:error, {:too_many_unique_indexes, count}}, 0}
     else
       matching_indexes(names, conn, columns, started_at_ms, budget_ms)
     end
@@ -191,20 +185,33 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   defp unique_index(_row), do: []
 
+  # The read tally rides along with the result so the span can report how
+  # many index_info reads the lookup really made before it stopped.
   defp matching_indexes(names, conn, columns, started_at_ms, budget_ms) do
-    names
-    |> Enum.reduce_while({:ok, []}, fn name, acc ->
-      collect_match(conn, columns, name, acc, started_at_ms, budget_ms)
-    end)
-    |> deduplicate()
+    {result, index_reads} =
+      Enum.reduce_while(names, {{:ok, []}, 0}, fn name, acc ->
+        collect_match(conn, columns, name, acc, started_at_ms, budget_ms)
+      end)
+
+    {deduplicate(result), index_reads}
   end
 
-  defp collect_match(conn, columns, name, {:ok, acc}, started_at_ms, budget_ms) do
+  defp collect_match(conn, columns, name, {{:ok, acc}, index_reads}, started_at_ms, budget_ms) do
     now_ms = System.monotonic_time(:millisecond)
 
     case within_budget?(started_at_ms, budget_ms, now_ms) do
-      true -> budgeted_match(conn, columns, name, acc)
-      false -> {:halt, {:error, {:lookup_budget_exceeded, now_ms - started_at_ms}}}
+      true ->
+        counted_match(conn, columns, name, acc, index_reads)
+
+      false ->
+        {:halt, {{:error, {:lookup_budget_exceeded, now_ms - started_at_ms}}, index_reads}}
+    end
+  end
+
+  defp counted_match(conn, columns, name, acc, index_reads) do
+    case budgeted_match(conn, columns, name, acc) do
+      {:cont, result} -> {:cont, {result, index_reads + 1}}
+      {:halt, result} -> {:halt, {result, index_reads + 1}}
     end
   end
 

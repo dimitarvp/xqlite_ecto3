@@ -479,6 +479,21 @@ defmodule XqliteEcto3.TypesLawTest do
     end
   end
 
+  # Upper and lower case are both legal ways to write a UUID, and the three
+  # UUID paths treat them differently. `:binary_id` over a TEXT column is the
+  # one that touches neither end: the string is bound exactly as written and
+  # comes back as the text SQLite kept, case included. (`Ecto.UUID` stores as
+  # written and reads lower-cased; `Types.UUID` writes lower-cased. Both are
+  # pinned further down.)
+  property "a mixed-case binary_id is stored and read back byte for byte" do
+    check all(value <- mixed_case_uuid_value(), max_runs: @runs) do
+      {loaded, stored} = written_back_with_stored(:bid_field, value)
+
+      assert loaded == value
+      assert stored == value
+    end
+  end
+
   # The two UUID generators the library ships have to survive the same trip.
   test "both shipped UUID generators round-trip as binary_id" do
     v4 = Ecto.UUID.generate()
@@ -1055,4 +1070,19 @@ defmodule XqliteEcto3.TypesLawTest do
       Ecto.UUID.cast!(raw)
     end
   end
+
+  # The same UUID with an independently chosen case per character, so the
+  # domain covers all-lower, all-upper and everything between.
+  defp mixed_case_uuid_value do
+    gen all(value <- uuid_value(), flips <- list_of(boolean(), length: 36)) do
+      value
+      |> String.graphemes()
+      |> Enum.zip(flips)
+      |> Enum.map_join(&flip_case/1)
+    end
+  end
+
+  defp flip_case({char, true}), do: String.upcase(char)
+  defp flip_case({char, false}), do: char
+  defp flip_case({char, _flip}), do: char
 end

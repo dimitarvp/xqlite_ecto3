@@ -15,6 +15,7 @@ defmodule XqliteEcto3.Driver do
     savepoint: 0,
     default_transaction_mode: :immediate,
     rich_fk_diagnostics: false,
+    diagnostics_budget_ms: 500,
     stmt_cache: %{},
     stmt_cache_keys: [],
     stmt_cache_size: 50
@@ -47,6 +48,7 @@ defmodule XqliteEcto3.Driver do
     default_transaction_mode = Keyword.get(opts, :default_transaction_mode, :immediate)
     statement_cache_size = Keyword.get(opts, :statement_cache_size, 50)
     rich_fk_diagnostics = Keyword.get(opts, :rich_fk_diagnostics, false)
+    diagnostics_budget_ms = Keyword.get(opts, :diagnostics_budget_ms, 500)
     hooks = Keyword.get(opts, :hooks, [])
 
     start_md = %{database: database}
@@ -66,6 +68,8 @@ defmodule XqliteEcto3.Driver do
              {:ok, wal_autocheckpoint} <- validate_wal_autocheckpoint(wal_autocheckpoint),
              {:ok, mmap_size} <- validate_mmap_size(mmap_size),
              {:ok, rich_fk_diagnostics} <- validate_rich_fk_diagnostics(rich_fk_diagnostics),
+             {:ok, diagnostics_budget_ms} <-
+               validate_diagnostics_budget_ms(diagnostics_budget_ms),
              {:ok, conn} <- open_database(database, mode),
              # auto_vacuum only sticks while the database file has no pages;
              # journal_mode=wal below writes the header, so this must go first
@@ -91,6 +95,7 @@ defmodule XqliteEcto3.Driver do
              savepoint_prefix: random_savepoint_prefix(),
              default_transaction_mode: txn_mode,
              rich_fk_diagnostics: rich_fk_diagnostics,
+             diagnostics_budget_ms: diagnostics_budget_ms,
              stmt_cache_size: stmt_cache_size
            }}
         else
@@ -185,6 +190,15 @@ defmodule XqliteEcto3.Driver do
   # than the atom true silently disabled the feature.
   defp validate_rich_fk_diagnostics(flag) when is_boolean(flag), do: {:ok, flag}
   defp validate_rich_fk_diagnostics(other), do: {:error, {:invalid_rich_fk_diagnostics, other}}
+
+  # The wall-clock allowance both error-path diagnoses spend, in
+  # milliseconds. Zero switches them off; a negative or non-integer value
+  # is refused rather than turned into either extreme by accident.
+  defp validate_diagnostics_budget_ms(ms) when is_integer(ms) and ms >= 0, do: {:ok, ms}
+
+  defp validate_diagnostics_budget_ms(other) do
+    {:error, {:invalid_diagnostics_budget_ms, other}}
+  end
 
   # Repo-config hook subscribers: registered NAMES (not pids — config
   # survives restarts, pids don't), resolved at connect time, installed
@@ -523,7 +537,7 @@ defmodule XqliteEcto3.Driver do
   # FK violation leaves the transaction open with the violating rows
   # still present — diagnose by reading them directly, no replay.
   defp wrap_commit_error(reason, %__MODULE__{rich_fk_diagnostics: true} = state) do
-    XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, state.conn)
+    XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, state.conn, state.diagnostics_budget_ms)
   end
 
   defp wrap_commit_error(reason, _state), do: XqliteEcto3.Error.wrap(reason)
@@ -954,26 +968,32 @@ defmodule XqliteEcto3.Driver do
   # pragma lookups on a path that has already failed, always on.
   defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
     reason
-    |> diagnose_fk(sql, params, state.conn)
-    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
+    |> diagnose_fk(sql, params, state)
+    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn, state.diagnostics_budget_ms)
     |> put_statement(sql)
   end
 
   defp wrap_execute_error(reason, sql, _params, state) do
     reason
     |> XqliteEcto3.Error.wrap()
-    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn)
+    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn, state.diagnostics_budget_ms)
     |> put_statement(sql)
   end
 
   # A raw COMMIT, END, or RELEASE that fails on a deferred violation leaves
   # the transaction open with the violating rows still present: diagnose
   # in place; replaying transaction control would only reset its pragmas.
-  defp diagnose_fk(reason, sql, params, conn) do
+  defp diagnose_fk(reason, sql, params, state) do
     if leading_keyword(sql) in ["COMMIT", "END", "RELEASE"] do
-      XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, conn)
+      XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, state.conn, state.diagnostics_budget_ms)
     else
-      XqliteEcto3.FkDiagnostics.wrap_with_replay(reason, conn, sql, params)
+      XqliteEcto3.FkDiagnostics.wrap_with_replay(
+        reason,
+        state.conn,
+        sql,
+        params,
+        state.diagnostics_budget_ms
+      )
     end
   end
 

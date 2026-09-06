@@ -13,6 +13,9 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.{Constraint, FkViolation}
 
+  # What a repo gets when it sets no :diagnostics_budget_ms of its own.
+  @budget_ms 500
+
   defp tmp_db(tag) do
     Path.join(
       System.tmp_dir!(),
@@ -335,7 +338,8 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
         reason,
         raw,
         "INSERT INTO ch VALUES (7, 42)",
-        []
+        [],
+        @budget_ms
       )
 
     assert %Error{details: %Constraint{fk_diagnostics: :ok, fk_violations: []}} = enriched
@@ -358,7 +362,14 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
 
     reason = {:constraint_violation, :constraint_foreign_key, %{message: "FK failed"}}
 
-    err = XqliteEcto3.FkDiagnostics.wrap_with_replay(reason, conn, "INSERT INTO x VALUES (1)", [])
+    err =
+      XqliteEcto3.FkDiagnostics.wrap_with_replay(
+        reason,
+        conn,
+        "INSERT INTO x VALUES (1)",
+        [],
+        @budget_ms
+      )
 
     assert %Error{details: %Constraint{} = d} = err
     assert d.subtype == :constraint_foreign_key

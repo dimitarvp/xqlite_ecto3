@@ -64,6 +64,26 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
     end
   end
 
+  describe "diagnostics budget" do
+    test "the connection carries the configured allowance" do
+      state = connect!(database: tmp_db!("budget_set"), diagnostics_budget_ms: 25)
+
+      assert state.diagnostics_budget_ms == 25
+    end
+
+    test "an unset allowance is half a second" do
+      state = connect!(database: tmp_db!("budget_default"))
+
+      assert state.diagnostics_budget_ms == 500
+    end
+
+    test "a zero allowance is accepted and turns the diagnoses off" do
+      state = connect!(database: tmp_db!("budget_zero"), diagnostics_budget_ms: 0)
+
+      assert state.diagnostics_budget_ms == 0
+    end
+  end
+
   describe "busy_timeout validation" do
     test "the int32 boundaries connect and read back exactly" do
       zero = connect!(database: tmp_db!("busy_zero"), busy_timeout: 0)
@@ -101,7 +121,11 @@ defmodule XqliteEcto3.DriverConnectPragmasTest do
         {:wal_autocheckpoint, -1, :invalid_wal_autocheckpoint},
         {:mmap_size, 1.5, :invalid_mmap_size},
         {:rich_fk_diagnostics, "true", :invalid_rich_fk_diagnostics},
-        {:rich_fk_diagnostics, 1, :invalid_rich_fk_diagnostics}
+        {:rich_fk_diagnostics, 1, :invalid_rich_fk_diagnostics},
+        {:diagnostics_budget_ms, -1, :invalid_diagnostics_budget_ms},
+        {:diagnostics_budget_ms, 1.5, :invalid_diagnostics_budget_ms},
+        {:diagnostics_budget_ms, "500", :invalid_diagnostics_budget_ms},
+        {:diagnostics_budget_ms, :infinity, :invalid_diagnostics_budget_ms}
       ]
 
       for {key, bad, type} <- rejections do

@@ -4,14 +4,17 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
 
   ## 1. Every timed operation reports both ends
 
-  The driver times eight kinds of operation by wrapping them in
-  `:telemetry.span/3`: `connect`, `handle_begin`, `handle_commit`,
-  `handle_rollback`, `handle_execute`, `handle_declare`, `handle_fetch`
-  and `handle_deallocate`. A span emits `[..., :start]` when the work
-  begins and exactly one closing event when it ends. `:telemetry.span/3`
-  closes with `[..., :stop]` when the wrapped code returns a value and
-  with `[..., :exception]` when it raises, and it tags all three with the
-  same fresh reference under `telemetry_span_context`.
+  The adapter times ten kinds of operation by wrapping them in
+  `:telemetry.span/3`: the eight DBConnection callbacks `connect`,
+  `handle_begin`, `handle_commit`, `handle_rollback`, `handle_execute`,
+  `handle_declare`, `handle_fetch` and `handle_deallocate`, plus the two
+  reads that diagnose a statement that already failed —
+  `fk_diagnostics` and `unique_index_names`. A span emits
+  `[..., :start]` when the work begins and exactly one closing event
+  when it ends. `:telemetry.span/3` closes with `[..., :stop]` when the
+  wrapped code returns a value and with `[..., :exception]` when it
+  raises, and it tags all three with the same fresh reference under
+  `telemetry_span_context`.
 
   The driver never lets its wrapped code raise: every path funnels through
   `classify/2` or `classify_dbc/2` in `lib/xqlite_ecto3/driver.ex`, which
@@ -32,7 +35,9 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
       cursor it already saw;
     * the closing event's duration is not negative and its clock reading
       is not earlier than the start's;
-    * `result_class` is `:ok` exactly when `error_reason` is `nil`;
+    * a callback's closing event has `result_class` `:ok` exactly when
+      its `error_reason` is `nil`, and a diagnosis's closing event
+      carries the keys that say what the diagnosis found;
     * the operations that were made to fail produce exactly that many
       `:error` closings — the half of the rule where bugs actually live.
 
@@ -80,7 +85,9 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
   @span_runs 12_000
   @placeholder_runs 10_000
 
-  @span_families [
+  # The DBConnection callbacks the driver times. Their closing event
+  # reports the outcome as `result_class` and `error_reason`.
+  @callback_span_families [
     [:xqlite_ecto3, :connect],
     [:xqlite_ecto3, :handle_begin],
     [:xqlite_ecto3, :handle_commit],
@@ -90,6 +97,16 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
     [:xqlite_ecto3, :handle_fetch],
     [:xqlite_ecto3, :handle_deallocate]
   ]
+
+  # The two error-path diagnoses. They run inside a callback that has
+  # already failed, so their closing event reports what the diagnosis
+  # found rather than a result class.
+  @diagnostic_span_families [
+    [:xqlite_ecto3, :fk_diagnostics],
+    [:xqlite_ecto3, :unique_index_names]
+  ]
+
+  @span_families @callback_span_families ++ @diagnostic_span_families
 
   @span_events for family <- @span_families,
                    suffix <- [:start, :stop, :exception],
@@ -257,7 +274,7 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
 
     starts = Enum.filter(events, fn event -> event.suffix == :start end)
     stops = Enum.filter(events, fn event -> event.suffix == :stop end)
-    failed = Enum.filter(stops, fn event -> event.metadata.result_class == :error end)
+    failed = Enum.filter(stops, fn event -> event.metadata[:result_class] == :error end)
 
     assert length(starts) == length(stops)
     assert length(starts) >= expected.minimum_spans
@@ -290,6 +307,18 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
     assert is_integer(stop_event.measurements.duration)
     assert stop_event.measurements.duration >= 0
     assert stop_event.measurements.monotonic_time >= start_event.measurements.monotonic_time
+  end
+
+  defp assert_outcome(%{family: [:xqlite_ecto3, :fk_diagnostics], metadata: metadata}) do
+    assert metadata.diagnostics_status in [:ok, :truncated, :unavailable]
+    assert is_integer(metadata.violations_count)
+    assert is_integer(metadata.violations_total)
+  end
+
+  defp assert_outcome(%{family: [:xqlite_ecto3, :unique_index_names], metadata: metadata}) do
+    assert metadata.lookup_status in [:ok, :unavailable]
+    assert is_integer(metadata.candidate_count)
+    assert is_integer(metadata.index_reads)
   end
 
   defp assert_outcome(%{metadata: %{result_class: :ok, error_reason: reason}}) do

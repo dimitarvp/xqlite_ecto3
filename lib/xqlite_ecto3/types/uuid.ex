@@ -42,6 +42,28 @@ defmodule XqliteEcto3.Types.UUID do
   The Elixir-side representation is **always the 36-character string**
   regardless of storage mode.
 
+  ## Upper and lower case
+
+  A UUID is written in hexadecimal, so the same value has an upper-case,
+  a lower-case and any number of mixed spellings. The adapter's three
+  UUID paths settle that differently, and all three are stable:
+
+    * **This type** lower-cases on the way in, whatever the storage
+      mode, so the stored text and every read are lower case.
+
+    * **`Ecto.UUID`** stores the text exactly as written and lower-cases
+      on the way out, so an upper-case write reads back lower case while
+      the column keeps the upper-case text. That is Ecto's own rule, not
+      the adapter's.
+
+    * **`:binary_id` over `:string` storage** passes the text through
+      untouched in both directions, so a mixed-case UUID survives byte
+      for byte.
+
+  The last one is the one to watch in SQL: `=` on a TEXT column is
+  case-sensitive, so two spellings of one UUID are two values to SQLite.
+  Write UUIDs in one case, or use this type, which settles it for you.
+
   ## Migration
 
   The migration's column type must match the storage mode. The adapter

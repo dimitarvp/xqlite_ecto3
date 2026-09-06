@@ -28,7 +28,6 @@ defmodule XqliteEcto3.Connection do
     journal_mode: :wal,
     cache_size: -64_000,
     temp_store: :memory,
-    pool_size: 5,
     busy_timeout: 5_000
   ]
 
@@ -38,6 +37,8 @@ defmodule XqliteEcto3.Connection do
 
   @impl true
   def child_spec(opts) do
+    :ok = refuse_pooled_private_memory(opts)
+
     opts = merge_defaults(opts)
     DBConnection.child_spec(XqliteEcto3.Driver, opts)
   end
@@ -220,6 +221,58 @@ defmodule XqliteEcto3.Connection do
     Enum.reduce(@default_opts, opts, fn {key, val}, acc ->
       Keyword.put_new(acc, key, val)
     end)
+  end
+
+  # A private in-memory database belongs to the one connection that opened
+  # it, so a pool of several is a set of separate empty databases. This runs
+  # in the caller's process while the repo starts, unlike the connect
+  # validators, which run per connection after `Repo.start_link/1` returned.
+  # DBConnection opens one connection when no pool size is given.
+  defp refuse_pooled_private_memory(opts) do
+    database = Keyword.get(opts, :database)
+    pool_size = Keyword.get(opts, :pool_size, 1)
+
+    if is_integer(pool_size) and pool_size > 1 and private_memory_database?(database) do
+      raise ArgumentError, pooled_private_memory_message(database, pool_size)
+    end
+
+    :ok
+  end
+
+  defp private_memory_database?(":memory:"), do: true
+  defp private_memory_database?(""), do: true
+
+  # Two ways a `file:` URI opens an in-memory database: the path `:memory:`,
+  # and `mode=memory`, which names one. Both are private to the connection
+  # that opened them unless the URI also asks for the shared cache.
+  defp private_memory_database?("file:" <> rest) do
+    {path, params} = split_uri(rest)
+
+    (path == ":memory:" or Map.get(params, "mode") == "memory") and
+      Map.get(params, "cache") != "shared"
+  end
+
+  defp private_memory_database?(_database), do: false
+
+  defp split_uri(rest) do
+    case String.split(rest, "?", parts: 2) do
+      [path] -> {path, %{}}
+      [path, query] -> {path, URI.decode_query(query)}
+    end
+  end
+
+  defp pooled_private_memory_message(database, pool_size) do
+    """
+    A private in-memory database cannot be shared by a pool. Every pooled \
+    connection opens its own empty database, so a write on one connection \
+    is invisible to all the others.
+
+    Got database: #{inspect(database)} with pool_size: #{pool_size}.
+
+    Either set pool_size: 1, or point the repo at the shared-cache URI \
+    "file::memory:?cache=shared", which every connection in the pool opens \
+    as the same database.
+    """
   end
 
   @impl true

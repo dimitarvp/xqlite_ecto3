@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`diagnostics_budget_ms` repo option (default 500).** One
+  wall-clock allowance, in milliseconds, for each of the two
+  error-path diagnoses: the unique-index-name lookup and the
+  foreign-key replay. Both read the database back on a statement that
+  already failed while the caller waits, so the allowance is checked
+  before every read and the diagnosis stops as soon as it is spent —
+  degrading to what the adapter knew without it, never masking the
+  original error. `0` turns both diagnoses off. Anything but a
+  non-negative integer is a structured connect error
+  (`:invalid_diagnostics_budget_ms`).
+
+- **`[:xqlite_ecto3, :unique_index_names]` telemetry span.** The
+  unique-index-name lookup is timed on its own instead of adding
+  invisible time to `handle_execute`. `:start` carries `conn`, `table`
+  and `columns`; `:stop` adds `candidate_count`, `index_reads` and
+  `lookup_status`. It does not fire when `diagnostics_budget_ms` is
+  `0`.
+
 - **`XqliteEcto3.Types.ExactDecimal`.** An opt-in `Ecto.Type` that
   stores a decimal as canonical text over a `:string`/TEXT column,
   keeping every digit and the scale you wrote. It binds text rather
@@ -125,6 +143,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A pooled private in-memory database is refused when the repo
+  starts.** `database: ":memory:"`, the empty string, and any `file:`
+  URI that opens an in-memory database without `cache=shared` — the
+  path `:memory:`, or `mode=memory`, which names one — give every
+  pooled connection its own empty database, so writes land on one
+  connection and reads scatter over the others. With a `pool_size` above 1 that
+  configuration now raises `ArgumentError` from
+  `XqliteEcto3.Connection.child_spec/1`, naming the two ways out:
+  `pool_size: 1`, or the shared-cache URI `file::memory:?cache=shared`,
+  which every connection in the pool opens as the same database. This
+  is the adapter's own choice and stricter than ecto_sqlite3, which
+  raises from `storage_up/1` (the `mix ecto.create` path) and never on
+  `Repo.start_link/1`.
+
+- **The adapter's `pool_size: 5` default is gone.** It never applied:
+  Ecto merges its own default of 10 into the repo configuration before
+  the adapter's defaults are consulted, so every repo that set nothing
+  already got 10. The docs say so now instead of repeating a number
+  that was never in force.
+
+- **The unique-index-name lookup no longer takes its allowance from
+  `PRAGMA busy_timeout`.** That read could not tell a deliberate
+  `busy_timeout: 0` from a busy policy or observer holding the
+  connection's busy slot, and fell back to a fixed 500 ms for all
+  three. The allowance is `diagnostics_budget_ms`, read at connect and
+  carried on the connection, and the pragma read is gone: the lookup
+  costs 1 + N reads (one `index_list`, one `index_info` per unique
+  index) rather than 2 + N. The foreign-key replay, which had no time
+  bound at all, takes the same allowance.
+
 - **Datetimes are stored in SQLite's own form.** `:utc_datetime` and
   `:naive_datetime` values (and their `_usec` twins) are written as
   `YYYY-MM-DD HH:MM:SS[.ffffff]` — space separator, no trailing `Z`.
@@ -209,6 +257,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **UUID case is documented for all three paths.**
+  `XqliteEcto3.Types.UUID` lower-cases on the way in, `Ecto.UUID`
+  stores as written and lower-cases on the way out, and `:binary_id`
+  over `:string` storage passes case through untouched in both
+  directions. No behaviour changed; the third rule had no
+  documentation and no test, and `=` on a TEXT column is
+  case-sensitive, so two spellings of one UUID are two values to
+  SQLite.
 
 - **A `Decimal` of any width or exponent gets an answer instead of a
   `Decimal` exception.** The precision guard used to write the value

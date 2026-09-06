@@ -15,6 +15,9 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.Constraint
 
+  # What a repo gets when it sets no :diagnostics_budget_ms of its own.
+  @budget_ms 500
+
   defmodule Item do
     use Ecto.Schema
 
@@ -514,11 +517,6 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_051)
   end
 
-  test "a zero-reported busy timeout gets the fixed budget, not zero and not unlimited" do
-    assert XqliteEcto3.UniqueIndexNames.lookup_budget_ms(0) == 500
-    assert XqliteEcto3.UniqueIndexNames.lookup_budget_ms(2_000) == 2_000
-  end
-
   # ---------------------------------------------------------------------------
   # Degradation
   # ---------------------------------------------------------------------------
@@ -526,7 +524,7 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   test "an unusable connection degrades to the conventional derived name" do
     conn = closed_conn("degrade")
 
-    resolved = XqliteEcto3.UniqueIndexNames.resolve(vanished_table_error(), conn)
+    resolved = XqliteEcto3.UniqueIndexNames.resolve(vanished_table_error(), conn, @budget_ms)
 
     assert %Constraint{
              subtype: :constraint_unique,
@@ -541,13 +539,13 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   test "a table that no longer exists degrades to the conventional derived name" do
     conn = open_conn("vanished")
 
-    resolved = XqliteEcto3.UniqueIndexNames.resolve(vanished_table_error(), conn)
+    resolved = XqliteEcto3.UniqueIndexNames.resolve(vanished_table_error(), conn, @budget_ms)
 
     assert %Constraint{unique_index_names: []} = resolved.details
     assert Conn.to_constraints(resolved, []) == [unique: "gone_v_index"]
   end
 
-  test "busy_timeout 0 never degrades the lookup, across many candidates" do
+  test "a zero busy_timeout leaves the configured budget alone, across many candidates" do
     conn = open_conn("zero_budget")
 
     decoy_cols = Enum.map_join(0..11, ", ", fn i -> "d#{i} TEXT" end)
@@ -569,12 +567,73 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     {:ok, _} = XqliteNIF.set_pragma(conn, "busy_timeout", 0)
 
     for _ <- 1..30 do
-      resolved = XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn)
+      resolved = XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn, @budget_ms)
 
       assert %Constraint{unique_index_lookup: :ok, unique_index_names: ["zb_items_real"]} =
                resolved.details
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Telemetry
+  # ---------------------------------------------------------------------------
+
+  test "a lookup that runs reports a span carrying its candidates and its reads" do
+    handler_id = "uix-span-#{:erlang.unique_integer([:positive])}"
+    test_pid = self()
+
+    :telemetry.attach_many(
+      handler_id,
+      [
+        [:xqlite_ecto3, :unique_index_names, :start],
+        [:xqlite_ecto3, :unique_index_names, :stop]
+      ],
+      &__MODULE__.forward_lookup_span/4,
+      %{pid: test_pid, table: "uix_items"}
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "span"}))
+
+    assert {:error, %Error{}} = Repo.query("INSERT INTO uix_items(v) VALUES ('span')", [])
+
+    assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :start], _measurements,
+                    start_metadata}
+
+    assert start_metadata.table == "uix_items"
+    assert start_metadata.columns == ["v"]
+    assert start_metadata.conn != nil
+
+    assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], measurements,
+                    metadata}
+
+    assert is_integer(measurements.duration)
+    # Three unique indexes live on the table (v, w, and the autoindex
+    # behind UNIQUE(sku)), so three index_info reads; only the one over
+    # the violated column is a candidate.
+    assert metadata.lookup_status == :ok
+    assert metadata.candidate_count == 1
+    assert metadata.index_reads == 3
+
+    # :stop keeps everything :start announced, so a handler bound to the
+    # table or the connection survives the closing event.
+    assert metadata.conn == start_metadata.conn
+    assert metadata.table == start_metadata.table
+    assert metadata.columns == start_metadata.columns
+  end
+
+  @doc false
+  def forward_lookup_span(
+        name,
+        measurements,
+        %{table: table} = metadata,
+        %{table: table} = config
+      ) do
+    send(config.pid, {:lookup_span, name, measurements, metadata})
+  end
+
+  def forward_lookup_span(_name, _measurements, _metadata, _config), do: :ok
 
   defp zero_budget_error do
     Error.wrap(

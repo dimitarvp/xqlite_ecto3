@@ -118,9 +118,22 @@ defmodule XqliteEcto3.Telemetry do
   `violations_total` the real number), or `:unavailable` (the diagnosis
   failed; the original error is surfaced regardless).
   Fires only when `rich_fk_diagnostics: true` and a foreign-key
-  violation triggered the replay. The unique-index-name lookup (the
-  sibling error-path read) has no span of its own today; its cost lands
-  inside `handle_execute`.
+  violation triggered the replay, and not at all when
+  `diagnostics_budget_ms` is `0`.
+
+      [:xqlite_ecto3, :unique_index_names, :start | :stop | :exception]
+        measurements: %{monotonic_time, duration}
+        metadata:     %{conn, table, columns}; on :stop also
+                      %{candidate_count, index_reads, lookup_status}
+
+  `candidate_count` is how many unique indexes covered the violated
+  columns, `index_reads` how many `PRAGMA index_info` reads the lookup
+  made before it stopped, and `lookup_status` is `:ok` or
+  `:unavailable` (a read failed, the table carried more unique indexes
+  than the cap allows, or the `diagnostics_budget_ms` allowance ran
+  out — the conventional derived index name is emitted in all three
+  cases). Fires on every UNIQUE violation that names only a table and
+  columns, and not at all when `diagnostics_budget_ms` is `0`.
 
   ### Statement cache
 

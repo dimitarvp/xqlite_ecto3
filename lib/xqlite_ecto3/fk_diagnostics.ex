@@ -43,12 +43,19 @@ defmodule XqliteEcto3.FkDiagnostics do
   to diff against, so pre-existing orphans anywhere in the database
   will appear among the reported violations on this path.
 
+  Every step is preceded by a clock reading against
+  `:diagnostics_budget_ms` from the repo configuration (500 ms unless
+  set), so the whole chain costs at most that allowance plus the one
+  step already in flight; a spent allowance degrades the diagnosis to
+  `{:unavailable, {:diagnostics_budget_exceeded, elapsed_ms}}`. An
+  allowance of `0` skips the replay altogether
+  (`{:unavailable, :diagnostics_disabled}`).
+
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
-  write lock. With another writer holding the database, the replay
-  can block for up to a full `busy_timeout` on top of the failing
-  statement's own busy wait before degrading — the diagnosed error
-  path then costs roughly two busy waits. Cost in table size:
+  write lock. With another writer holding the database, one step of
+  the replay can block for up to a full `busy_timeout` on top of the
+  failing statement's own busy wait before degrading. Cost in table size:
   `foreign_key_check` scans every FK-bearing table in the database,
   and the replay runs it twice (the baseline and the post-statement
   read), so the diagnosed error path is linear in total rows —
@@ -87,36 +94,55 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   Non-FK reasons wrap exactly as `XqliteEcto3.Error.wrap/1` would.
   """
-  @spec wrap_with_replay(term(), Xqlite.conn(), String.t(), list()) :: Error.t()
+  @spec wrap_with_replay(term(), Xqlite.conn(), String.t(), list(), non_neg_integer()) ::
+          Error.t()
   def wrap_with_replay(
         {:constraint_violation, :constraint_foreign_key, _} = reason,
         conn,
         sql,
-        params
+        params,
+        budget_ms
       ) do
-    enrich(Error.wrap(reason), fn -> replay(conn, sql, params) end, conn, :replay)
+    collect_fun = fn deadline -> replay(conn, sql, params, deadline) end
+
+    enrich(Error.wrap(reason), collect_fun, conn, :replay, budget_ms)
   end
 
-  def wrap_with_replay(reason, _conn, _sql, _params), do: Error.wrap(reason)
+  def wrap_with_replay(reason, _conn, _sql, _params, _budget_ms), do: Error.wrap(reason)
 
   @doc """
   Wraps a commit-time `reason`, enriching FK constraint violations by
   reading the still-open transaction's state directly — the violating
   rows exist until the rollback, so no replay is needed.
   """
-  @spec wrap_at_commit(term(), Xqlite.conn()) :: Error.t()
-  def wrap_at_commit({:constraint_violation, :constraint_foreign_key, _} = reason, conn) do
-    enrich(Error.wrap(reason), fn -> collect_violations(conn) end, conn, :in_transaction)
+  @spec wrap_at_commit(term(), Xqlite.conn(), non_neg_integer()) :: Error.t()
+  def wrap_at_commit(
+        {:constraint_violation, :constraint_foreign_key, _} = reason,
+        conn,
+        budget_ms
+      ) do
+    collect_fun = fn deadline -> collect_violations(conn, deadline) end
+
+    enrich(Error.wrap(reason), collect_fun, conn, :in_transaction, budget_ms)
   end
 
-  def wrap_at_commit(reason, _conn), do: Error.wrap(reason)
+  def wrap_at_commit(reason, _conn, _budget_ms), do: Error.wrap(reason)
 
-  defp enrich(%Error{details: %Constraint{} = details} = error, collect_fun, conn, mode) do
+  defp enrich(%Error{details: %Constraint{} = details} = error, collect_fun, conn, mode, budget) do
+    %{error | details: diagnose(details, collect_fun, conn, mode, budget)}
+  end
+
+  defp diagnose(details, _collect_fun, _conn, _mode, 0) do
+    %{details | fk_diagnostics: {:unavailable, :diagnostics_disabled}}
+  end
+
+  defp diagnose(details, collect_fun, conn, mode, budget_ms) do
     start_md = %{conn: conn, mode: mode}
+    deadline = {System.monotonic_time(:millisecond), budget_ms}
 
     {status, violations} =
       span_with_stop_metadata [:xqlite_ecto3, :fk_diagnostics], start_md do
-        {status, violations} = run_collect(collect_fun)
+        {status, violations} = run_collect(collect_fun, deadline)
 
         stop_md =
           Map.merge(start_md, %{
@@ -128,13 +154,26 @@ defmodule XqliteEcto3.FkDiagnostics do
         {{status, violations}, stop_md}
       end
 
-    %{error | details: %{details | fk_violations: violations, fk_diagnostics: status}}
+    %{details | fk_violations: violations, fk_diagnostics: status}
   end
 
-  defp run_collect(collect_fun) do
-    case collect_fun.() do
+  defp run_collect(collect_fun, deadline) do
+    case collect_fun.(deadline) do
       {:error, reason} -> {{:unavailable, reason}, []}
       {status, violations} -> {status, violations}
+    end
+  end
+
+  # The diagnosis is a chain of reads and each one can block on another
+  # connection's write lock, so the clock is read before every step: the
+  # whole chain then costs at most the allowance plus the one read that
+  # was already in flight.
+  defp within_budget({started_at_ms, budget_ms}) do
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
+
+    case elapsed_ms <= budget_ms do
+      true -> :ok
+      false -> {:error, {:diagnostics_budget_exceeded, elapsed_ms}}
     end
   end
 
@@ -149,13 +188,15 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp violations_total({:truncated, total}, _violations), do: total
   defp violations_total(_status, violations), do: length(violations)
 
-  defp replay(conn, sql, params) do
+  defp replay(conn, sql, params, deadline) do
     result =
       with :ok <- NIF.savepoint(conn, @diag_savepoint),
            {:ok, _} <- NIF.set_pragma(conn, "defer_foreign_keys", true),
+           :ok <- within_budget(deadline),
            {:ok, %{rows: baseline}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
+           :ok <- within_budget(deadline),
            {:ok, _} <- NIF.query_with_changes(conn, sql, params) do
-        collect_violations(conn, MapSet.new(baseline))
+        collect_violations(conn, deadline, MapSet.new(baseline))
       end
 
     cleanup(conn)
@@ -175,11 +216,12 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   @violation_cap 24
 
-  defp collect_violations(conn, baseline \\ MapSet.new()) do
-    with {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
+  defp collect_violations(conn, deadline, baseline \\ MapSet.new()) do
+    with :ok <- within_budget(deadline),
+         {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
          {kept, status} = cap_rows(check_rows, baseline),
          :ok <- unmasked(kept, check_rows),
-         {:ok, fk_defs} <- fk_definitions(conn, kept) do
+         {:ok, fk_defs} <- fk_definitions(conn, deadline, kept) do
       violations =
         kept
         |> Enum.map(fn row -> build_violation(row, fk_defs) end)
@@ -210,10 +252,10 @@ defmodule XqliteEcto3.FkDiagnostics do
   # One foreign_key_list call per distinct child table; fkid maps to
   # that pragma's `id` column. Multi-column FKs span several rows that
   # share an id and are ordered by seq.
-  defp fk_definitions(conn, check_rows) do
+  defp fk_definitions(conn, deadline, check_rows) do
     with {:ok, child_tables} <- child_tables(check_rows) do
       Enum.reduce_while(child_tables, {:ok, %{}}, fn child_table, {:ok, acc} ->
-        case fk_definitions_of(conn, child_table) do
+        case fk_definitions_of(conn, deadline, child_table) do
           {:ok, grouped} -> {:cont, {:ok, Map.put(acc, child_table, grouped)}}
           {:error, reason} -> {:halt, {:error, reason}}
         end
@@ -221,10 +263,11 @@ defmodule XqliteEcto3.FkDiagnostics do
     end
   end
 
-  defp fk_definitions_of(conn, child_table) do
+  defp fk_definitions_of(conn, deadline, child_table) do
     sql = "PRAGMA foreign_key_list(#{quote_ident(child_table)})"
 
-    with {:ok, %{rows: rows}} <- NIF.query(conn, sql, []) do
+    with :ok <- within_budget(deadline),
+         {:ok, %{rows: rows}} <- NIF.query(conn, sql, []) do
       group_fk_rows(rows)
     end
   end
