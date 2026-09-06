@@ -303,11 +303,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline is already inside that reserve — so a `:timeout` under
   500 ms no longer costs a changeset the real index name, and a
   declared `unique_constraint(:field, name: ...)` keeps converting.
-  The foreign-key replay keeps skipping whenever the deadline leaves
-  less than the whole allowance: one of its reads scans every table in
-  the database, so its cost follows the size of the file and no small
-  reserve covers it. A statement with no timeout is never skipped, and
-  an allowance of `0` is still off.
+  The foreign-key replay follows the same rule (see the entry below on
+  what bounds its reads). A statement with no timeout is never skipped,
+  and an allowance of `0` is still off.
 
 - **A rollback with no transaction left answers the transaction
   status.** Raw `COMMIT`, `END` or `ROLLBACK` in your own SQL ends the
@@ -519,6 +517,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **A short `:timeout` no longer costs a foreign-key changeset error.**
+  The rich foreign-key diagnosis used to be skipped whole whenever the
+  failed statement's deadline left less than the whole
+  `diagnostics_budget_ms`, so at `timeout: 400` a declared
+  `foreign_key_constraint(:field)` stopped converting and
+  `Repo.insert/2` re-raised the raw `%XqliteEcto3.Error{}`. It now
+  spends the smaller of the allowance and what the deadline leaves once
+  a 20 ms reserve is set aside — the rule the unique-index-name lookup
+  already follows — and is skipped only for an allowance of `0` or a
+  deadline already inside that reserve. What kept the skip in place was
+  the cost of `PRAGMA foreign_key_check`, which scans every table in
+  the database; every read of the diagnosis now runs under a cancel
+  token fired at the allowance instead, so a scan too slow to finish
+  stops mid-scan and reports `{:unavailable, :operation_cancelled}`.
+  The replayed statement itself carries no token: it is the caller's
+  own write, and SQLite rolls the whole transaction back when it
+  interrupts a write. One wait the token does not shorten is another
+  connection's lock, where the call ends on `busy_timeout` — the
+  wall-clock allowance is still what stops the chain there.
+
+- **A diagnosis that ends the transaction is reported as a
+  disconnect.** The error path took its "is this connection's
+  transaction still open" verdict before running the two diagnoses and
+  never again, so a foreign-key replay whose write SQLite answered by
+  rolling back (a full database, for one) left the driver believing a
+  transaction was open: the transaction body carried on in autocommit
+  and its later writes committed durably inside a transaction that
+  reported failure. The verdict is now taken again after the diagnosis,
+  and a transaction that was open and is gone drops the connection.
+
+- **A savepoint commit or rollback with no savepoint says so.** Raw
+  transaction control in a test body — a `COMMIT`, `END` or `ROLLBACK`
+  run through `Repo.query!/2` inside an `Ecto.Adapters.SQL.Sandbox`
+  test — ends the savepoints the adapter opened without moving the
+  counter it names them from, and the next close then asked SQLite for
+  `xqlite_sp_<prefix>_-1`, a savepoint that never existed, reporting a
+  generic `type: :sqlite_failure`. Both closing callbacks now read the
+  live transaction status first: with no transaction left the close
+  raises `type: :savepoint_without_transaction`, and with a transaction
+  open and no managed savepoint it raises the new
+  `type: :savepoint_counter_underflow`, both carrying the counter in
+  `details`. Both still drop the connection, as before. A counter above
+  `0` whose savepoints a raw `RELEASE` or `ROLLBACK TO` removed keeps
+  `type: :sqlite_failure`: no side-effect-free read tells that case
+  apart from a healthy one.
 
 - **`Repo.stream/2` honours `:timeout`.** Each batch the stream fetches
   now runs under the deadline given to `Repo.stream/2`, or under the

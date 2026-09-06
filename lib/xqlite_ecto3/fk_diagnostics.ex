@@ -45,32 +45,43 @@ defmodule XqliteEcto3.FkDiagnostics do
   to diff against, so pre-existing orphans anywhere in the database
   will appear among the reported violations on this path.
 
-  Every step is preceded by a clock reading against
-  `:diagnostics_budget_ms` from the repo configuration (500 ms unless
-  set), so the whole chain costs at most that allowance plus the one
-  step already in flight; a spent allowance degrades the diagnosis to
-  `{:unavailable, {:diagnostics_budget_exceeded, elapsed_ms}}`. An
-  allowance of `0` skips the replay altogether
-  (`{:unavailable, :diagnostics_disabled}`), and so does a statement
-  whose own timeout has less left than the allowance would spend
-  (`{:unavailable, {:deadline_near, remaining_ms}}`) — the caller is
-  waiting on that timeout, and nothing cancels a step once it blocks.
+  The allowance is the smaller of `:diagnostics_budget_ms` from the
+  repo configuration (500 ms unless set) and what the failed
+  statement's own `:timeout` leaves once a 20 ms reserve is set aside
+  for the error path that follows. An allowance of `0` skips the
+  diagnosis altogether (`{:unavailable, :diagnostics_disabled}`), and
+  so does a deadline already inside that reserve
+  (`{:unavailable, {:deadline_near, remaining_ms}}`).
+
+  Two things hold the chain to that allowance. Every step is preceded
+  by a clock reading, so a chain of finished steps stops as soon as
+  the allowance is spent, degrading to
+  `{:unavailable, {:diagnostics_budget_exceeded, elapsed_ms}}`. And
+  every READ of the chain runs under a cancel token fired at the
+  allowance, so a single read too slow to finish inside it — one
+  `foreign_key_check` scan of a large database — stops where it is and
+  the diagnosis degrades to `{:unavailable, :operation_cancelled}`.
+
+  The replayed statement is deliberately left out of that: it is the
+  caller's own WRITE, and SQLite rolls the caller's whole transaction
+  back when it interrupts a write, so cancelling it would destroy the
+  work the caller is still holding and tell nobody.
 
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
-  write lock. With another writer holding the database, one step of
-  the replay can block for up to a full `busy_timeout` on top of the
-  failing statement's own busy wait before degrading — the allowance
-  does not bound a step that has already started, so the operation can
-  outstay its own `:timeout`, and through a pool DBConnection's
-  checkout deadline then drops the connection with nothing said to the
-  caller. Cost in table size:
-  `foreign_key_check` scans every FK-bearing table in the database,
-  and the replay runs it twice (the baseline and the post-statement
-  read), so the diagnosed error path is linear in total rows —
-  measured ~36 ms at 200k child rows against ~0.1 ms with the flag
-  off. This runs only after a violation and only under
-  `rich_fk_diagnostics: true`.
+  write lock. A step waiting on another connection's lock is the one
+  case the token does not bound — a blocked call sits inside SQLite's
+  busy handler, where the progress handler a cancel signals never
+  runs — so it waits up to a full `busy_timeout` (a read as well as a
+  write, on a rollback-journal database), the operation can outstay
+  its own `:timeout`, and through a pool DBConnection's checkout
+  deadline then drops the connection with nothing said to the caller.
+  Cost in table size: `foreign_key_check` scans every FK-bearing table
+  in the database, and the replay runs it twice (the baseline and the
+  post-statement read), so the diagnosed error path is linear in total
+  rows — measured ~36 ms at 200k child rows against ~0.1 ms with the
+  flag off — up to the allowance, where the cancel ends it. This runs
+  only after a violation and only under `rich_fk_diagnostics: true`.
 
   One side effect survives the replay: SQLite does not undo
   `last_insert_rowid()` on rollback, so after a replay the connection
@@ -89,6 +100,7 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
 
+  alias XqliteEcto3.Cancellation
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.{Constraint, FkViolation}
   alias XqliteNIF, as: NIF
@@ -96,6 +108,11 @@ defmodule XqliteEcto3.FkDiagnostics do
   # Reserved name, never collides with the driver's managed stack
   # ("xqlite_sp_<random prefix>_<n>") or plausible user savepoints.
   @diag_savepoint "xqlite_fk_diag"
+
+  # Left of the statement's deadline for what runs after the diagnosis:
+  # not the error path itself, which costs tens of microseconds, but the
+  # checkout queue and the scheduling jitter around it.
+  @deadline_reserve_ms 20
 
   @doc """
   Wraps `reason` into an `XqliteEcto3.Error`, enriching FK constraint
@@ -182,24 +199,30 @@ defmodule XqliteEcto3.FkDiagnostics do
   end
 
   # The diagnosis bills its reads and its replay write to the caller
-  # who is still waiting on the statement that failed, so a deadline
-  # with less left than the allowance would spend buys nothing.
+  # who is still waiting on the statement that failed, so it spends
+  # what that caller's deadline leaves rather than the whole configured
+  # allowance. A deadline already inside the reserve buys nothing and
+  # is not started.
   defp runnable({0, _remaining_ms}), do: {:skip, :diagnostics_disabled}
 
-  defp runnable({budget_ms, remaining_ms})
-       when is_integer(remaining_ms) and remaining_ms < budget_ms do
-    {:skip, {:deadline_near, remaining_ms}}
+  defp runnable({budget_ms, remaining_ms}) when is_integer(remaining_ms) do
+    spendable(remaining_ms, min(budget_ms, remaining_ms - @deadline_reserve_ms))
   end
 
   defp runnable({budget_ms, _remaining_ms}), do: {:run, budget_ms}
 
+  defp spendable(remaining_ms, spend_ms) when spend_ms <= 0 do
+    {:skip, {:deadline_near, remaining_ms}}
+  end
+
+  defp spendable(_remaining_ms, spend_ms), do: {:run, spend_ms}
+
   defp spanned(details, collect_fun, conn, mode, budget_ms) do
     start_md = %{conn: conn, mode: mode}
-    deadline = {System.monotonic_time(:millisecond), budget_ms}
 
     {status, violations} =
       span_with_stop_metadata [:xqlite_ecto3, :fk_diagnostics], start_md do
-        {status, violations} = run_collect(collect_fun, deadline)
+        {status, violations} = bounded_collect(collect_fun, budget_ms)
 
         stop_md =
           Map.merge(start_md, %{
@@ -214,6 +237,28 @@ defmodule XqliteEcto3.FkDiagnostics do
     %{details | fk_violations: violations, fk_diagnostics: status}
   end
 
+  # One token for the whole chain, fired at the allowance: the reads
+  # carry it, the replayed write does not. A token that cannot even be
+  # created degrades the diagnosis like any other failed step, rather
+  # than running the chain with nothing to stop it.
+  defp bounded_collect(collect_fun, budget_ms) do
+    case NIF.create_cancel_token() do
+      {:ok, token} -> collect_under_token(collect_fun, budget_ms, token)
+      {:error, reason} -> {{:unavailable, reason}, []}
+    end
+  end
+
+  defp collect_under_token(collect_fun, budget_ms, token) do
+    canceller = Cancellation.spawn_canceller(token, budget_ms)
+    deadline = {System.monotonic_time(:millisecond), budget_ms, [token]}
+
+    try do
+      run_collect(collect_fun, deadline)
+    after
+      send(canceller, :stop)
+    end
+  end
+
   defp run_collect(collect_fun, deadline) do
     case collect_fun.(deadline) do
       {:error, reason} -> {{:unavailable, reason}, []}
@@ -225,7 +270,7 @@ defmodule XqliteEcto3.FkDiagnostics do
   # connection's write lock, so the clock is read before every step: the
   # whole chain then costs at most the allowance plus the one read that
   # was already in flight.
-  defp within_budget({started_at_ms, budget_ms}) do
+  defp within_budget({started_at_ms, budget_ms, _tokens}) do
     elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
 
     case elapsed_ms <= budget_ms do
@@ -245,12 +290,15 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp violations_total({:truncated, total}, _violations), do: total
   defp violations_total(_status, violations), do: length(violations)
 
-  defp replay(conn, sql, params, deadline) do
+  # The middle step is the caller's own write and takes no token: see
+  # the moduledoc on what cancelling it would cost.
+  defp replay(conn, sql, params, {_started_at_ms, _budget_ms, tokens} = deadline) do
     result =
       with :ok <- NIF.savepoint(conn, @diag_savepoint),
            {:ok, _} <- NIF.set_pragma(conn, "defer_foreign_keys", true),
            :ok <- within_budget(deadline),
-           {:ok, %{rows: baseline}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
+           {:ok, %{rows: baseline}} <-
+             NIF.query_cancellable(conn, "PRAGMA foreign_key_check", [], tokens),
            :ok <- within_budget(deadline),
            {:ok, _} <- NIF.query_with_changes(conn, sql, params) do
         collect_violations(conn, deadline, baseline)
@@ -273,13 +321,14 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   @violation_cap 24
 
-  defp collect_violations(conn, deadline, baseline \\ []) do
+  defp collect_violations(conn, {_started_at_ms, _budget_ms, tokens} = deadline, baseline \\ []) do
     with :ok <- within_budget(deadline),
-         {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
+         {:ok, %{rows: check_rows}} <-
+           NIF.query_cancellable(conn, "PRAGMA foreign_key_check", [], tokens),
          fresh = fresh_rows(check_rows, baseline),
          :ok <- unmasked(fresh, check_rows),
          {kept, status} = cap_rows(fresh),
-         {:ok, fk_defs} <- fk_definitions(conn, deadline, kept) do
+         {:ok, fk_defs} <- fk_definitions(conn, deadline, tokens, kept) do
       violations =
         kept
         |> Enum.map(fn row -> build_violation(row, fk_defs) end)
@@ -349,10 +398,10 @@ defmodule XqliteEcto3.FkDiagnostics do
   # One foreign_key_list call per distinct child table; fkid maps to
   # that pragma's `id` column. Multi-column FKs span several rows that
   # share an id and are ordered by seq.
-  defp fk_definitions(conn, deadline, check_rows) do
+  defp fk_definitions(conn, deadline, tokens, check_rows) do
     with {:ok, child_tables} <- child_tables(check_rows) do
       Enum.reduce_while(child_tables, {:ok, %{}}, fn child_table, {:ok, acc} ->
-        case fk_definitions_of(conn, deadline, child_table) do
+        case fk_definitions_of(conn, deadline, tokens, child_table) do
           {:ok, grouped} -> {:cont, {:ok, Map.put(acc, child_table, grouped)}}
           {:error, reason} -> {:halt, {:error, reason}}
         end
@@ -360,11 +409,11 @@ defmodule XqliteEcto3.FkDiagnostics do
     end
   end
 
-  defp fk_definitions_of(conn, deadline, child_table) do
+  defp fk_definitions_of(conn, deadline, tokens, child_table) do
     sql = "PRAGMA foreign_key_list(#{quote_ident(child_table)})"
 
     with :ok <- within_budget(deadline),
-         {:ok, %{rows: rows}} <- NIF.query(conn, sql, []) do
+         {:ok, %{rows: rows}} <- NIF.query_cancellable(conn, sql, [], tokens) do
       group_fk_rows(rows)
     end
   end

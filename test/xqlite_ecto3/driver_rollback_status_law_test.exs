@@ -109,10 +109,14 @@ defmodule XqliteEcto3.DriverRollbackStatusLawTest do
     assert real_status(rolled_back) == :idle
   end
 
-  test "a savepoint rollback with no enclosing transaction keeps today's answer", %{state: state} do
+  # A savepoint-mode close is not covered by the status answer above:
+  # DBConnection's contract carries no savepoint, and the savepoint this
+  # close names is gone with the transaction that held it.
+  test "a savepoint rollback with no enclosing transaction names the missing transaction",
+       %{state: state} do
     idle = reset_to_autocommit(state)
 
-    assert {:disconnect, %XqliteEcto3.Error{}, _state} =
+    assert {:disconnect, %XqliteEcto3.Error{type: :savepoint_without_transaction}, _state} =
              Driver.handle_rollback([mode: :savepoint], idle)
   end
 

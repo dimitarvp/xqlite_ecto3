@@ -37,7 +37,8 @@ defmodule XqliteEcto3.TelemetryErrorReasonLawTest do
     :database_busy_or_locked,
     :sqlite_failure,
     :invalid_transaction_mode,
-    :savepoint_without_transaction
+    :savepoint_without_transaction,
+    :savepoint_counter_underflow
   ]
 
   @statuses %{transaction: "transaction_already_started", idle: "transaction_not_started"}

@@ -5,6 +5,7 @@ defmodule XqliteEcto3.Driver do
 
   import XqliteEcto3.Telemetry, only: [emit: 3, span_with_stop_metadata: 3]
 
+  alias XqliteEcto3.Cancellation
   alias XqliteNIF, as: NIF
 
   defstruct [
@@ -526,12 +527,9 @@ defmodule XqliteEcto3.Driver do
       result =
         case mode do
           :savepoint ->
-            case NIF.release_savepoint(state.conn, savepoint_name(state, state.savepoint - 1)) do
-              :ok ->
-                {:ok, nil, released_savepoint_state(state)}
-
-              {:error, reason} ->
-                {:disconnect, wrap_commit_error(reason, state), state}
+            case savepoint_to_close(state) do
+              {:ok, name} -> release_savepoint(name, state)
+              {:error, error} -> {:disconnect, error, state}
             end
 
           _mode ->
@@ -545,6 +543,13 @@ defmodule XqliteEcto3.Driver do
         end
 
       classify_dbc(result, start_md)
+    end
+  end
+
+  defp release_savepoint(name, state) do
+    case NIF.release_savepoint(state.conn, name) do
+      :ok -> {:ok, nil, released_savepoint_state(state)}
+      {:error, reason} -> {:disconnect, wrap_commit_error(reason, state), state}
     end
   end
 
@@ -566,13 +571,9 @@ defmodule XqliteEcto3.Driver do
       result =
         case mode do
           :savepoint ->
-            name = savepoint_name(state, state.savepoint - 1)
-
-            with :ok <- NIF.rollback_to_savepoint(state.conn, name),
-                 :ok <- NIF.release_savepoint(state.conn, name) do
-              {:ok, nil, released_savepoint_state(state)}
-            else
-              {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+            case savepoint_to_close(state) do
+              {:ok, name} -> rollback_savepoint(name, state)
+              {:error, error} -> {:disconnect, error, state}
             end
 
           _mode ->
@@ -581,6 +582,63 @@ defmodule XqliteEcto3.Driver do
 
       classify_dbc(result, start_md)
     end
+  end
+
+  defp rollback_savepoint(name, state) do
+    with :ok <- NIF.rollback_to_savepoint(state.conn, name),
+         :ok <- NIF.release_savepoint(state.conn, name) do
+      {:ok, nil, released_savepoint_state(state)}
+    else
+      {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
+    end
+  end
+
+  # A savepoint-mode close names the savepoint its matching begin
+  # opened, counting from a number the driver keeps — and raw
+  # transaction control in the caller's own SQL ends savepoints without
+  # touching that number. So the connection is asked first, with the
+  # same side-effect-free read handle_rollback/2 answers the status
+  # from. Both refusals disconnect: what the counter describes is gone,
+  # so nothing further can run on that connection.
+  defp savepoint_to_close(state) do
+    case NIF.transaction_status(state.conn) do
+      {:ok, false} -> {:error, savepoint_without_transaction_error(state)}
+      _open_or_unreadable -> named_savepoint(state)
+    end
+  end
+
+  defp named_savepoint(%__MODULE__{savepoint: n} = state) when n > 0 do
+    {:ok, savepoint_name(state, n - 1)}
+  end
+
+  defp named_savepoint(%__MODULE__{savepoint: n}) do
+    {:error, savepoint_counter_underflow_error(n)}
+  end
+
+  # handle_begin/2's refusal of the same type tells the caller to open a
+  # transaction first, which is not the remedy on the closing side.
+  defp savepoint_without_transaction_error(%__MODULE__{savepoint: n}) do
+    %XqliteEcto3.Error{
+      type: :savepoint_without_transaction,
+      message:
+        "mode: :savepoint close with no transaction open on this connection — the " <>
+          "savepoint it would close ended with the transaction that held it. Under " <>
+          "Ecto.Adapters.SQL.Sandbox this state means raw SQL (COMMIT, END or ROLLBACK) " <>
+          "in the test body ended the sandbox's transaction.",
+      details: %{mode: :savepoint, transaction_status: :idle, savepoint: n}
+    }
+  end
+
+  defp savepoint_counter_underflow_error(n) do
+    %XqliteEcto3.Error{
+      type: :savepoint_counter_underflow,
+      message:
+        "mode: :savepoint close with no managed savepoint open — the driver has #{n} of " <>
+          "them, so this close would name a savepoint that was never opened. Raw " <>
+          "transaction control in the caller's own SQL ends the savepoints the driver " <>
+          "counts without telling it.",
+      details: %{mode: :savepoint, savepoint: n}
+    }
   end
 
   # DBConnection's contract for a rollback the transaction status
@@ -707,10 +765,17 @@ defmodule XqliteEcto3.Driver do
   # transaction back still reads, so it keeps the enrichment on its way
   # out; one whose own status could not be read cannot be read at all,
   # and its error carries what SQLite gave, unenriched.
+  #
+  # A transaction still open when the diagnosis starts can be gone by
+  # the time it ends: the FK replay runs the caller's own statement
+  # again as a write, and a write SQLite answers by rolling back takes
+  # the transaction with it. So the verdict is taken again afterwards.
   defp execute_error(reason, sql, params, state, remaining_ms) do
     case transaction_verdict(state) do
       :keep ->
-        {:error, wrap_execute_error(reason, sql, params, state, remaining_ms), state}
+        reason
+        |> wrap_execute_error(sql, params, state, remaining_ms)
+        |> disconnect_if_rolled_back(state)
 
       :rolled_back ->
         {:disconnect, wrap_execute_error(reason, sql, params, state, remaining_ms), state}
@@ -935,7 +1000,7 @@ defmodule XqliteEcto3.Driver do
 
   defp step_to_completion(conn, stmt, total_before, timeout) when is_integer(timeout) do
     {:ok, token} = NIF.create_cancel_token()
-    canceller = spawn_canceller(token, timeout)
+    canceller = Cancellation.spawn_canceller(token, timeout)
 
     try do
       collect_rows(conn, stmt, total_before, [token], [])
@@ -1146,7 +1211,7 @@ defmodule XqliteEcto3.Driver do
 
   defp fetch_with_cancel(handle, batch_size, timeout) when is_integer(timeout) do
     {:ok, token} = NIF.create_cancel_token()
-    canceller = spawn_canceller(token, timeout)
+    canceller = Cancellation.spawn_canceller(token, timeout)
 
     try do
       NIF.stream_fetch_cancellable(handle, batch_size, [token])
@@ -1198,38 +1263,13 @@ defmodule XqliteEcto3.Driver do
 
   defp execute_with_cancel(conn, sql, params, timeout) when is_integer(timeout) do
     {:ok, token} = NIF.create_cancel_token()
-    canceller = spawn_canceller(token, timeout)
+    canceller = Cancellation.spawn_canceller(token, timeout)
 
     try do
       NIF.query_with_changes_cancellable(conn, sql, params, [token])
     after
       send(canceller, :stop)
     end
-  end
-
-  # The dirty NIF blocks this process, so Process.send_after(self(), ...)
-  # would never deliver. A separate process is required.
-  defp spawn_canceller(token, timeout) do
-    parent = self()
-    ref = make_ref()
-
-    spawn(fn ->
-      send(parent, {ref, :ready})
-
-      receive do
-        :stop -> :ok
-      after
-        max(timeout, 0) ->
-          _ = NIF.cancel_operation(token)
-      end
-    end)
-    |> tap(fn _pid ->
-      receive do
-        {^ref, :ready} -> :ok
-      after
-        1_000 -> :ok
-      end
-    end)
   end
 
   defp classify({:ok, _state} = result, start_md) do

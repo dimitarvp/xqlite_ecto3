@@ -10,6 +10,7 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
   use ExUnit.Case, async: true
 
   alias XqliteEcto3.Connection, as: Conn
+  alias XqliteEcto3.Driver
   alias XqliteEcto3.Error
   alias XqliteEcto3.Error.{Constraint, FkViolation}
 
@@ -74,9 +75,19 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     assert [%FkViolation{child_table: "wr", child_rowid: nil, fk_id: 0}] = d.fk_violations
   end
 
-  test "a statement timeout below the allowance skips the diagnosis", %{pid: pid} do
+  test "a statement timeout past the reserve still diagnoses the violation", %{pid: pid} do
     assert {:error, %Error{details: %Constraint{} = d}} =
              Conn.query(pid, "INSERT INTO ch VALUES (1, 999)", [], timeout: 50)
+
+    assert d.fk_diagnostics == :ok
+    assert [%FkViolation{child_table: "ch", parent_table: "p", fk_id: 0}] = d.fk_violations
+  end
+
+  # 20 ms is the reserve the diagnosis leaves for the error path that
+  # follows it, so a deadline no larger than that leaves nothing to spend.
+  test "a statement timeout inside the reserve skips the diagnosis", %{pid: pid} do
+    assert {:error, %Error{details: %Constraint{} = d}} =
+             Conn.query(pid, "INSERT INTO ch VALUES (1, 999)", [], timeout: 20)
 
     assert {:unavailable, {:deadline_near, remaining_ms}} = d.fk_diagnostics
     assert is_integer(remaining_ms)
@@ -458,6 +469,77 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
       # :conn must survive this event, not be detached by :telemetry for raising.
       assert metadata.mode == :replay
       assert metadata.conn == conn
+    end
+  end
+
+  describe "a diagnosis that ends the transaction" do
+    setup do
+      path = tmp_db("replay_rollback")
+
+      {:ok, state} =
+        Driver.connect(
+          database: path,
+          journal_mode: :memory,
+          busy_timeout: 1_000,
+          rich_fk_diagnostics: true
+        )
+
+      on_exit(fn ->
+        Driver.disconnect(:normal, state)
+        for ext <- ["", "-wal", "-shm"], do: File.rm(path <> ext)
+      end)
+
+      {:ok, state: state}
+    end
+
+    # The replay's middle step is the caller's own write run again under
+    # deferred enforcement, and a write SQLite answers by rolling back
+    # takes the caller's transaction with it. The verdict the error path
+    # took before the diagnosis is stale by then: read it again, or the
+    # transaction body carries on in autocommit and commits durably
+    # inside a transaction that reports failure.
+    test "a replay whose write rolls the transaction back disconnects", %{state: state} do
+      state = run!(state, "CREATE TABLE p(id INTEGER PRIMARY KEY)")
+
+      state =
+        run!(
+          state,
+          "CREATE TABLE ch(id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id), b BLOB)"
+        )
+
+      state = run!(state, "INSERT INTO p(id) VALUES (1)")
+      {state, %{rows: [[pages]]}} = run(state, "PRAGMA page_count")
+
+      # A page ceiling two pages above the file: the violating statement
+      # never writes a page (SQLite refuses it before the insert), while
+      # the replay, with enforcement deferred, writes the row and runs
+      # out of pages.
+      state = run!(state, "PRAGMA max_page_count = #{pages + 2}")
+
+      {:ok, nil, state} = Driver.handle_begin([], state)
+      state = run!(state, "INSERT INTO p(id) VALUES (2)")
+
+      violating = %XqliteEcto3.Query{
+        statement: "INSERT INTO ch(id, p_id, b) VALUES (1, 999, zeroblob(4000000))"
+      }
+
+      assert {:disconnect, %Error{type: :constraint_violation, details: details}, _state} =
+               Driver.handle_execute(violating, [], [], state)
+
+      assert %Constraint{subtype: :constraint_foreign_key} = details
+      assert {:ok, false} = XqliteNIF.transaction_status(state.conn)
+    end
+
+    defp run(state, sql) do
+      {:ok, _query, result, state} =
+        Driver.handle_execute(%XqliteEcto3.Query{statement: sql}, [], [], state)
+
+      {state, result}
+    end
+
+    defp run!(state, sql) do
+      {state, _result} = run(state, sql)
+      state
     end
   end
 end

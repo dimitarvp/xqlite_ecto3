@@ -23,7 +23,9 @@ read out of the file it names. Paths are relative to `lib/xqlite_ecto3/`.
   transaction-state sync. `query.ex` holds `%XqliteEcto3.Query{}` and its
   `DBConnection.Query` implementation, whose `encode/3` converts every
   parameter; `raw_conn.ex` is the sentinel query that hands `with_xqlite/3` the
-  raw xqlite connection reference.
+  raw xqlite connection reference. `cancellation.ex` holds
+  `spawn_canceller/2`, the process every deadline-bounded call arms before it
+  enters a dirty NIF that would block a timer of its own.
 - `data_type.ex` — `column_type/2`, `sqlite_affinity/1`, `bare_typename?/1`,
   `json_default/2`, `unsupported_default!/3`; `decimal_precision.ex` —
   `bind_form/1`, `representable?/1`. Between them they define
@@ -172,12 +174,14 @@ keeping the structured details SQLite gave with
 returns `[{:unique, name}]`, `[{:foreign_key, name}, ...]`, `[{:check, name}]`
 or `[]` — an empty list makes ecto_sql re-raise the structured error, which is
 what NOT NULL and unnamed foreign-key violations do.
-`UniqueIndexNames.resolve/4` spends the smaller of the repo's
-`:diagnostics_budget_ms` and what the statement's remaining deadline
-leaves less a 20 ms reserve, and is skipped only for a budget of `0` or a
-deadline already inside that reserve; `FkDiagnostics` keeps the wholesale
-skip whenever the deadline leaves less than the whole budget, its
-`foreign_key_check` read being a scan of every table. The lookup
+`UniqueIndexNames.resolve/4` and `FkDiagnostics` both spend the smaller
+of the repo's `:diagnostics_budget_ms` and what the statement's remaining
+deadline leaves less a 20 ms reserve, and are skipped only for a budget of
+`0` or a deadline already inside that reserve. `FkDiagnostics` additionally
+runs every read of its chain under a cancel token fired at that allowance,
+its `foreign_key_check` read being a scan of every table; the replayed
+statement itself is a write and stays uncancelled, because SQLite rolls
+the caller's whole transaction back when it interrupts one. The lookup
 counts the message's separators against the parsed
 names, reads `pragma_table_list` to find the table's schema (more than one
 schema degrades), then runs `PRAGMA index_list` and `PRAGMA index_info` per
@@ -312,13 +316,17 @@ error, `{:disconnect, error}`, `{:transaction_status, status}`, or
 | `:transaction` | begin, not savepoint | `{:transaction, state}` | `handle_begin/2` |
 | `:transaction` | commit, rollback | `:idle` | those callbacks |
 | no transaction open | rollback, not savepoint | `{:idle, state}` | `handle_rollback/2` |
+| no transaction open | commit or rollback, savepoint | disconnect | `savepoint_to_close/1` |
 | any | column-less control SQL | from SQLite | `sync_after_...` |
 | any | status asked | from SQLite | `handle_status/2` |
 | `:transaction` | statement error | disconnect unless still open | the guard |
 
 "From SQLite" means `NIF.transaction_status/1` decides. The guard
 (`disconnect_if_rolled_back/2`) keeps the connection only when that read comes
-back `true`; both a `false` and a failed read disconnect.
+back `true`; both a `false` and a failed read disconnect. The error path reads
+it twice, once before the diagnoses and once after: the FK replay runs the
+caller's own write again, and a write SQLite answers by rolling back ends the
+transaction while the diagnosis is in flight.
 
 Neither status answer moves the flag: the callback ran no statement at
 all. DBConnection reads them
@@ -337,15 +345,28 @@ that really did commit.
 | State | Event | Next | Moved by |
 | --- | --- | --- | --- |
 | `n`, in transaction | begin, savepoint | `n + 1` | `handle_begin/2` |
-| `n > 0` | commit, savepoint | `n - 1` | `released_savepoint_state/1` |
-| `n > 0` | rollback, savepoint | `n - 1` | `released_savepoint_state/1` |
+| `n > 0`, in transaction | commit, savepoint | `n - 1` | `released_savepoint_state/1` |
+| `n > 0`, in transaction | rollback, savepoint | `n - 1` | `released_savepoint_state/1` |
+| `n`, no transaction | commit or rollback, savepoint | disconnect | `savepoint_to_close/1` |
+| `0`, in transaction | commit or rollback, savepoint | disconnect | `savepoint_to_close/1` |
 | `n` | full commit or rollback | `0` | commit, rollback callbacks |
 | `n` | SQLite reports autocommit | `0` | `refresh_transaction_status/1` |
 
+Both closing callbacks read `NIF.transaction_status/1` before they name a
+savepoint, because the counter and the connection can disagree: raw
+transaction control in the caller's own SQL ends savepoints the driver
+opened. No transaction left is `:savepoint_without_transaction`, a
+transaction with the counter at `0` is `:savepoint_counter_underflow`, and
+both disconnect. A counter above `0` whose savepoints a raw `RELEASE` or
+`ROLLBACK TO` removed cannot be told apart from a healthy one by any
+side-effect-free read, so it keeps SQLite's own `:sqlite_failure`.
+
 Under `Ecto.Adapters.SQL.Sandbox` the wrapper transaction opens with `mode:
-:transaction` (`deps/ecto_sql/lib/ecto/adapters/sql/sandbox.ex:659`) and every
-nested `Repo.transaction` arrives as `mode: :savepoint` (line 361), so the
-counter is the test's own nesting depth.
+:transaction` (`deps/ecto_sql/lib/ecto/adapters/sql/sandbox.ex:659`) and a
+`Repo.transaction` in the test body arrives as `mode: :savepoint` (line 361).
+A `Repo.transaction` nested inside that one opens no savepoint at all —
+DBConnection runs a nested body inside the transaction already open — so the
+counter is `0` or `1`, not the test's nesting depth.
 
 ### Statement cache (per connection)
 
@@ -377,13 +398,13 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `decimal-numeric-bind` | A `Decimal` of any width or exponent binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
 | `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the dumper/loader chain, the migration column type and the query-parameter `CAST` together. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"` |
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
-| `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: the lookup spends the smaller of the two less a 20 ms reserve and skips only inside that reserve, the replay skips whole whenever the deadline leaves less than the budget. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
+| `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: each spends the smaller of the two less a 20 ms reserve and skips only inside that reserve. The replay's reads also carry a cancel token fired at the allowance, so a read that outlives it is cancelled — except one waiting on another connection's lock, which ends on `busy_timeout`; the replayed write carries no token. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
 | `with-xqlite-fresh-checkout` | `with_xqlite/3` always starts its own checkout, so it must never be nested inside a transaction, a checkout, or itself. | `xqlite_ecto3.ex:with_xqlite/3` | unpinned |
-| `transaction-status-source` | `NIF.transaction_status/1` is the only answer to whether a transaction is open; the driver field caches it. | `driver.ex:refresh_transaction_status/1` | `driver_transaction_state_test.exs: "stale :idle cache is corrected to :transaction after raw BEGIN"` |
+| `transaction-status-source` | `NIF.transaction_status/1` is the only answer to whether a transaction is open; the driver field caches it. Every decision that turns on the answer reads it live: the rollback status answer, the error path before and after its diagnoses, and both savepoint-mode closes. | `driver.ex:refresh_transaction_status/1`, `savepoint_to_close/1` | `driver_transaction_state_test.exs: "stale :idle cache is corrected to :transaction after raw BEGIN"` |
 | `transaction-control-keywords` | `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, found past whitespace, both comment forms, semicolons and a UTF-8 BOM. | `driver.ex:leading_keyword/1` | `driver_transaction_state_test.exs: "a BOM-prefixed BEGIN updates the cached flag"` |
 | `savepoint-names` | Managed savepoints are `xqlite_sp_<4-byte hex prefix>_<n>`; three other savepoint names are reserved constants. | `driver.ex:savepoint_name/2` | `driver_transaction_state_test.exs: "raw SAVEPOINT xqlite_sp_0 by user does not collide with managed stack"` |
 | `changes-need-total-changes` | A changed-row count is reported only when `sqlite3_total_changes()` moved, because `sqlite3_changes()` is sticky. | `driver.ex:changes_since/2` | `driver_statement_cache_test.exs: "DDL after a DML through the cache reports zero, not the stale change count"` |
-| `error-type-atom` | Every adapter error is one `%XqliteEcto3.Error{}` with a typed `:type` atom and a per-class `:details` struct; classification never reads message text. | `error.ex:wrap/1` | `error_wrap_test.exs: "handles every constraint subtype atom"` |
+| `error-type-atom` | Every adapter error is one `%XqliteEcto3.Error{}` with a typed `:type` atom and a per-class `:details` struct; classification never reads message text. The driver builds four types of its own outside `wrap/1`: `:invalid_transaction_mode`, `:savepoint_without_transaction`, `:savepoint_counter_underflow`, and the connect refusals. | `error.ex:wrap/1`, `driver.ex` | `error_wrap_test.exs: "handles every constraint subtype atom"` |
 | `error-path-cap-24` | Both error-path reads stop at 24 items: 24 FK violations materialized, 24 unique indexes examined. | `fk_diagnostics.ex:@violation_cap`, `unique_index_names.ex:@max_candidate_lookups` | `unique_index_names_test.exs: "more named unique indexes than the lookup cap degrade to the derived name"` |
 | `unique-index-emission-rule` | A real index name is emitted only for a single non-autoindex candidate; anything else falls back to `"<table>_<cols>_index"`. | `connection.ex:unique_constraints/1` | `unique_index_names_test.exs: "ambiguous candidates are recorded but the derived name is emitted"` |
 | `fk-name-convention` | A foreign-key constraint name is `"<table>_<col>[_<col>...]_fkey"`, Ecto's default for `references/3`. | `fk_diagnostics.ex:synthesize_name/2`, `connection.ex:reference_name/3` | `fk_diagnostics_test.exs: "compound FK reports both columns and a joined name"` |

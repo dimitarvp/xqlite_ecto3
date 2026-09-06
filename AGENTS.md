@@ -148,6 +148,7 @@ and the typed error structs in `data_type.ex`, `decimal_precision.ex`,
 - `lib/xqlite_ecto3/connection.ex` — SQL and DDL generation, constraints
 - `data_type.ex`, `query.ex`, `decimal_precision.ex` — types and parameters
 - `error.ex`, `fk_diagnostics.ex`, `unique_index_names.ex` — error paths
+- `cancellation.ex` — the canceller process every deadline-bounded call arms
 - `rebuild_verification.ex`, `types/`, `migration.ex`, `uuid_v7.ex`, `url.ex`
 - `telemetry.ex`, `telemetry/open_telemetry.ex`, `lib/mix/tasks/test_seq.ex`
 - Unprefixed names above are under `lib/xqlite_ecto3/`.

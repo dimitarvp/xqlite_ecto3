@@ -337,6 +337,48 @@ defmodule XqliteEcto3.DriverTransactionStateTest do
       assert {:disconnect, %XqliteEcto3.Error{type: :savepoint_without_transaction}, _state} =
                Driver.handle_begin([mode: :savepoint], state)
     end
+
+    # Raw transaction control in the caller's own SQL ends the sandbox's
+    # transaction and every savepoint with it, so the counter no longer
+    # describes the connection. Closing a savepoint the counter says is
+    # there would name index -1.
+    test "savepoint commit with no transaction open is refused", %{state: state} do
+      assert {:disconnect,
+              %XqliteEcto3.Error{
+                type: :savepoint_without_transaction,
+                details: %{mode: :savepoint, savepoint: 0}
+              }, _state} = Driver.handle_commit([mode: :savepoint], state)
+    end
+
+    test "savepoint rollback with no transaction open is refused", %{state: state} do
+      assert {:disconnect,
+              %XqliteEcto3.Error{
+                type: :savepoint_without_transaction,
+                details: %{mode: :savepoint, savepoint: 0}
+              }, _state} = Driver.handle_rollback([mode: :savepoint], state)
+    end
+
+    test "savepoint commit with a transaction open and no savepoint is refused",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      assert {:disconnect,
+              %XqliteEcto3.Error{
+                type: :savepoint_counter_underflow,
+                details: %{mode: :savepoint, savepoint: 0}
+              }, _state} = Driver.handle_commit([mode: :savepoint], state)
+    end
+
+    test "savepoint rollback with a transaction open and no savepoint is refused",
+         %{state: state} do
+      {:ok, _result, state} = Driver.handle_begin([], state)
+
+      assert {:disconnect,
+              %XqliteEcto3.Error{
+                type: :savepoint_counter_underflow,
+                details: %{mode: :savepoint, savepoint: 0}
+              }, _state} = Driver.handle_rollback([mode: :savepoint], state)
+    end
   end
 
   describe "handle_status/2 caches the state field" do

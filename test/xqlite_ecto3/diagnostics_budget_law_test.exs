@@ -25,20 +25,26 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   so a diagnosis can overrun by at most the one read that was already
   in flight — never by one read per candidate.
 
-  ## 3. The statement's own deadline caps what the lookup may spend
+  ## 3. The statement's own deadline caps what a diagnosis may spend
 
   Both diagnoses bill their reads to a caller who is still waiting on
   the statement that failed, so what is left of that statement's
-  timeout caps the allowance: the unique-index-name lookup spends the
-  smaller of the configured allowance and what the deadline leaves
-  once a fixed reserve is set aside for the error path that follows.
-  Only a deadline already inside that reserve skips the lookup whole.
-  A configured allowance of `0` still means off, deadline or no
+  timeout caps the allowance: each spends the smaller of the
+  configured allowance and what the deadline leaves once a fixed
+  reserve is set aside for the error path that follows. Only a
+  deadline already inside that reserve skips a diagnosis whole. A
+  configured allowance of `0` still means off, deadline or no
   deadline.
 
-  The foreign-key replay keeps the wholesale skip instead: one of its
-  reads scans every table in the database, so its cost follows the
-  size of the file and no fixed reserve can cover it.
+  ## 4. A read the allowance outlives is cancelled
+
+  The foreign-key replay's reads run under a cancel token fired at the
+  allowance, so a `PRAGMA foreign_key_check` that scans a large
+  database stops where it is and the diagnosis reports
+  `{:unavailable, :operation_cancelled}`. The one wait the token does
+  not shorten is another connection's write lock: SQLite's busy
+  handler never runs the progress handler a cancel signals, so the
+  read waits the lock out and only then reports the cancel.
 
   The contended properties run a real second connection that takes
   `BEGIN EXCLUSIVE` on the same rollback-journal database, holds it
@@ -66,6 +72,13 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
 
   @uncontended_runs 2000
   @contended_runs 30
+
+  # How many child rows make one PRAGMA foreign_key_check scan outlive a
+  # few milliseconds, and how many runs the property that needs a real
+  # partial scan gets: every run pays a slice of that scan, which no
+  # amount of generated variety makes cheaper.
+  @scan_rows 500_000
+  @scan_runs 30
 
   # What the lookup leaves of the statement's deadline for the error
   # path that follows it.
@@ -187,18 +200,23 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
-  property "a contended foreign-key replay stops at its allowance plus the read in flight",
+  # The allowance is generous enough here that the clock reading before
+  # the first read always passes and the read really starts; what it
+  # meets is another connection's write lock. The token fires while the
+  # read sits in SQLite's busy handler, where the progress handler a
+  # cancel signals never runs, so the read still waits the lock out —
+  # and then reports the cancel rather than a spent allowance.
+  property "a contended foreign-key replay reports the cancel after waiting the lock out",
            context do
-    check all(budget <- integer(1..15), max_runs: @contended_runs) do
+    check all(budget <- integer(25..45), max_runs: @contended_runs) do
       {error, elapsed_ms} =
         under_write_lock(context.writer, fn -> replay(context.conn, budget) end)
 
       assert %Constraint{
                fk_violations: [],
-               fk_diagnostics: {:unavailable, {:diagnostics_budget_exceeded, spent_ms}}
+               fk_diagnostics: {:unavailable, :operation_cancelled}
              } = error.details
 
-      assert spent_ms > budget
       assert elapsed_ms <= budget + @hold_ms + @slack_ms
 
       assert error.type == :constraint_violation
@@ -274,15 +292,23 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
-  # The replay's cost follows the size of the database, not the depth of
-  # the reference chain: one PRAGMA foreign_key_check scans every table,
-  # and no reserve small enough to be worth keeping covers that. So this
-  # diagnosis keeps the wholesale skip the lookup no longer has.
-  property "the foreign-key replay skips whenever the deadline leaves less than the allowance",
+  property "a zero allowance skips the foreign-key replay whatever the deadline leaves",
+           context do
+    check all(remaining_ms <- integer(1..2_000), max_runs: @uncontended_runs) do
+      error = replay(context.conn, 0, remaining_ms)
+
+      assert %Constraint{
+               fk_violations: [],
+               fk_diagnostics: {:unavailable, :diagnostics_disabled}
+             } = error.details
+    end
+  end
+
+  property "a deadline inside the reserve skips the foreign-key replay whatever the allowance",
            context do
     check all(
-            budget <- integer(@ample_ms..1_000),
-            remaining_ms <- integer(1..(@ample_ms - 1)),
+            budget <- integer(1..1_000),
+            remaining_ms <- integer(1..@reserve_ms),
             max_runs: @uncontended_runs
           ) do
       error = replay(context.conn, budget, remaining_ms)
@@ -291,6 +317,109 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
                fk_violations: [],
                fk_diagnostics: {:unavailable, {:deadline_near, ^remaining_ms}}
              } = error.details
+    end
+  end
+
+  property "a deadline past the reserve diagnoses the foreign-key violation", context do
+    check all(
+            budget <- integer(@ample_ms..1_000),
+            remaining_ms <- integer((@ample_ms + @reserve_ms)..2_000),
+            max_runs: @uncontended_runs
+          ) do
+      error = replay(context.conn, budget, remaining_ms)
+
+      assert %Constraint{fk_diagnostics: :ok, fk_violations: [violation]} = error.details
+      assert violation.child_table == "bud_children"
+      assert violation.parent_table == "bud_parents"
+    end
+  end
+
+  # --- 4. a read the allowance outlives is cancelled --------------------------
+
+  # A database big enough that one PRAGMA foreign_key_check outlives a
+  # small allowance. Nothing in the chain is waiting on another
+  # connection here, so the cancel token — not the clock reading taken
+  # before each read — is what stops the scan.
+  describe "a replay whose scan outlives its allowance" do
+    setup do
+      path =
+        Path.join(
+          System.tmp_dir!(),
+          "xqlite_ecto3_budget_scan_#{:erlang.unique_integer([:positive])}.db"
+        )
+
+      remove_database(path)
+      {:ok, conn} = XqliteNIF.open(path)
+
+      on_exit(fn ->
+        XqliteNIF.close(conn)
+        remove_database(path)
+      end)
+
+      {:ok, _} = XqliteNIF.set_pragma(conn, "foreign_keys", true)
+      {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE bud_parents (id INTEGER PRIMARY KEY)", [])
+
+      {:ok, _} =
+        XqliteNIF.query(
+          conn,
+          "CREATE TABLE bud_children (id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES bud_parents(id))",
+          []
+        )
+
+      {:ok, _} = XqliteNIF.query(conn, "INSERT INTO bud_parents (id) VALUES (1)", [])
+
+      {:ok, _} =
+        XqliteNIF.query(
+          conn,
+          "INSERT INTO bud_children(id, p_id) SELECT x + 1000000, 1 FROM (WITH RECURSIVE " <>
+            "c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT #{@scan_rows}) SELECT x FROM c)",
+          []
+        )
+
+      {:ok, scan_conn: conn, scan_path: path}
+    end
+
+    property "the cancel ends the replay and the connection answers the next query",
+             context do
+      check all(budget <- integer(1..5), max_runs: @scan_runs) do
+        started_at_ms = System.monotonic_time(:millisecond)
+        error = replay(context.scan_conn, budget)
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
+
+        assert %Constraint{
+                 fk_violations: [],
+                 fk_diagnostics: {:unavailable, :operation_cancelled}
+               } = error.details
+
+        assert elapsed_ms <= budget + @slack_ms
+        assert {:ok, %{rows: [[1]]}} = XqliteNIF.query(context.scan_conn, "SELECT 1", [])
+        assert {:ok, false} = XqliteNIF.transaction_status(context.scan_conn)
+      end
+    end
+
+    # Through a pool the caller's own deadline is also DBConnection's
+    # checkout deadline: a diagnosis that outstayed it would cost the
+    # connection and report nothing about the violation.
+    test "the caller gets the violation's error, not the pool's deadline", context do
+      {:ok, pid} =
+        DBConnection.start_link(
+          XqliteEcto3.Driver,
+          database: context.scan_path,
+          pool_size: 1,
+          rich_fk_diagnostics: true,
+          show_sensitive_data_on_connection_error: true
+        )
+
+      insert = "INSERT INTO bud_children (id, p_id) VALUES (7, 999)"
+
+      assert {:error, %Error{details: %Constraint{} = details}} =
+               XqliteEcto3.Connection.query(pid, insert, [], timeout: 30)
+
+      assert details.subtype == :constraint_foreign_key
+      assert details.fk_diagnostics == {:unavailable, :operation_cancelled}
+
+      assert {:ok, %{rows: [[1]]}} =
+               XqliteEcto3.Connection.query(pid, "SELECT 1", [], [])
     end
   end
 

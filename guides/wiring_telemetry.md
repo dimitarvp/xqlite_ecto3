@@ -57,12 +57,10 @@ true
 | `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
 
 Both error-path spans stay silent when their diagnosis does not run:
-neither fires when `diagnostics_budget_ms` is `0`, the unique-index
-lookup does not fire when the failed statement's own deadline is
-already inside the reserve the lookup leaves, and the foreign-key
-replay does not fire whenever that deadline leaves less than its whole
-allowance. Missing spans on a repo with a short `:timeout` are that,
-not a lost event. The index lookup also covers both forms a UNIQUE
+neither fires when `diagnostics_budget_ms` is `0`, and neither fires
+when the failed statement's own deadline is already inside the 20 ms
+reserve each one leaves for the error path that follows it. Missing
+spans on a repo with a short `:timeout` are that, not a lost event. The index lookup also covers both forms a UNIQUE
 violation message takes: on the form that names the index rather than
 the table and columns, `:start` carries `table: nil` and `columns: []`
 and `:stop` carries the table and columns the lookup read back.
