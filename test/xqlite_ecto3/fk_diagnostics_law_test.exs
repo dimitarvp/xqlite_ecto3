@@ -9,14 +9,30 @@ defmodule XqliteEcto3.FkDiagnosticsLawTest do
   exception. The property drives rows of every length from empty to eight
   columns, with `nil` allowed in any position, and the examples beside it
   pin the shapes the pragma really produces today.
+
+  A second rule covers what the replay reports: `PRAGMA
+  foreign_key_check` scans the whole database, so the replay subtracts
+  a baseline scan taken before the statement runs again. A `WITHOUT
+  ROWID` child reports a `nil` rowid for every violation of its, so its
+  rows are byte-identical and only their number moves — the subtraction
+  therefore counts rows per `{child table, fk id}` instead of matching
+  them one by one. Whatever orphans the database already held, only the
+  statement's own violation is reported.
   """
 
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  alias XqliteEcto3.Error.FkViolation
   alias XqliteEcto3.FkDiagnostics
 
   @law_runs 2000
+
+  # Each baseline run creates its own database, seeds it and replays a
+  # statement under a savepoint, so its runs cost real work; the domain
+  # is small on purpose and the assertion is exact.
+  @baseline_runs 2000
+  @baseline_budget_ms 500
 
   # id, seq, parent table, from, to — plus the three columns
   # (on_update, on_delete, match) the grouping never reads.
@@ -94,6 +110,63 @@ defmodule XqliteEcto3.FkDiagnosticsLawTest do
   test "one short row among good ones refuses the whole group" do
     assert FkDiagnostics.group_fk_rows([@full_row, [0]]) ==
              {:error, {:unexpected_fk_row, [0]}}
+  end
+
+  # --- the baseline diff ------------------------------------------------------
+
+  property "only the statement's own violation is reported, whatever the baseline holds" do
+    check all(
+            elsewhere <- integer(0..3),
+            here <- integer(0..2),
+            max_runs: @baseline_runs
+          ) do
+      conn = orphan_database(elsewhere, here)
+      sql = "INSERT INTO wr(k, p_id) VALUES ('victim', 998)"
+      {:error, reason} = XqliteNIF.query(conn, sql, [])
+
+      error = FkDiagnostics.wrap_with_replay(reason, conn, sql, [], @baseline_budget_ms)
+
+      assert error.details.fk_diagnostics == :ok
+
+      assert [%FkViolation{child_table: "wr", child_rowid: nil, fk_id: 0}] =
+               error.details.fk_violations
+
+      :ok = XqliteNIF.close(conn)
+    end
+  end
+
+  # A parent with one row, a WITHOUT ROWID child that reports a nil
+  # rowid for every violation of its, and a rowid child holding the
+  # orphans the statement is not answerable for.
+  defp orphan_database(elsewhere, here) do
+    {:ok, conn} = Xqlite.open_in_memory()
+
+    Enum.each(
+      [
+        "PRAGMA foreign_keys = 0",
+        "CREATE TABLE p(id INTEGER PRIMARY KEY)",
+        "CREATE TABLE al(id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id))",
+        "CREATE TABLE wr(k TEXT PRIMARY KEY, p_id INTEGER REFERENCES p(id)) WITHOUT ROWID",
+        "INSERT INTO p(id) VALUES (1)"
+      ],
+      fn sql -> {:ok, _} = XqliteNIF.query(conn, sql, []) end
+    )
+
+    seed_orphans(conn, "INSERT INTO al(id, p_id) VALUES (?, 900)", Enum.to_list(1..elsewhere//1))
+
+    seed_orphans(
+      conn,
+      "INSERT INTO wr(k, p_id) VALUES (?, 901)",
+      Enum.map(1..here//1, fn n -> "orphan_#{n}" end)
+    )
+
+    {:ok, _} = XqliteNIF.query(conn, "PRAGMA foreign_keys = 1", [])
+
+    conn
+  end
+
+  defp seed_orphans(conn, sql, keys) do
+    Enum.each(keys, fn key -> {:ok, _} = XqliteNIF.query(conn, sql, [key]) end)
   end
 
   defp group(rows) do

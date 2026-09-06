@@ -274,13 +274,19 @@ structured error is raised instead.) The replay diffs
 `foreign_key_check` against a baseline taken inside the savepoint, so
 rows that already violated before the statement — orphans written
 under `foreign_keys: false` or by another tool — are not blamed on
-it; when the statement's own violations cannot be told apart from
-such rows (every violation in a `WITHOUT ROWID` child table reports
-a `nil` rowid; a reused rowid reproduces the orphan's row) the
-diagnosis reports `fk_diagnostics: {:unavailable, :masked_by_baseline}`
-rather than an empty list; at most 24 violations are attached, more
-setting `fk_diagnostics: {:truncated, total}`. A deferred violation
-surfacing at a raw `COMMIT` is diagnosed in place, without a replay. Zero cost on the happy path —
+it. The diff counts violations per `{child table, fk id}` rather than
+matching rows one by one, which recovers the `WITHOUT ROWID` case
+(every violation in such a table reports a `nil` rowid, so its rows
+are identical and only their number moves); when no group grew — a
+rowid reused after its orphan was replaced reproduces the orphan's
+row exactly — the diagnosis reports
+`fk_diagnostics: {:unavailable, :masked_by_baseline}` rather than an
+empty list; at most 24 violations are attached, more setting
+`fk_diagnostics: {:truncated, total}`. A deferred violation surfacing
+at a `COMMIT` is diagnosed in place, without a replay — and with no
+baseline to subtract, since there is no pre-transaction scan, so on
+that path pre-existing orphans of any table are reported beside the
+transaction's own. Zero cost on the happy path —
 the replay runs only after a violation, and any diagnostic failure
 degrades to the original error
 (`fk_diagnostics: {:unavailable, reason}`), never masking it.
@@ -299,23 +305,34 @@ error still classifies as `:constraint_foreign_key`, with
 ### Real unique index names
 
 On a unique violation the adapter reads the table's unique index
-names back (`PRAGMA index_list` + `index_info`) and reports the real
-name when exactly one index covers the violated columns — so
+names back (one `pragma_table_list` read, then `PRAGMA index_list` +
+`index_info`) and reports the real name when exactly one index covers
+the violated columns — so
 `unique_constraint(:email, name: :users_email_uniq)` converts against
 a custom-named index, exactly like PostgreSQL. Indexes with Ecto's
 default `<table>_<columns>_index` names and `UNIQUE` column
 constraints keep matching a bare `unique_constraint(:email)`; with
 several candidate indexes the derived name is reported and every
-candidate lands in `e.details.unique_index_names`. Postgres parity
+candidate lands in `e.details.unique_index_names`. An index built
+over an expression is the one case SQLite names in the message
+itself: that name is emitted, and the lookup fills in the table and
+the columns the message left out. Such an index matches no column
+list, so a table carrying one beside another unique index can never
+be narrowed to a single candidate — `e.details.unique_index_lookup`
+then reports `{:ambiguous, names}` and the name SQLite gave, or the
+derived one, is emitted. Postgres parity
 cuts both ways: a bare `unique_constraint/1` against a custom-named
 index raises `Ecto.ConstraintError` — declare the real name (this is
 the one changeset difference from ecto_sqlite3, which always derives
 the conventional name). The lookup runs only on the error path, costs
-one `index_list` read plus one `index_info` read per unique index on
-the table, and stops as soon as its `diagnostics_budget_ms` allowance
-is spent; a failed read, a spent allowance and an allowance of `0` all
-degrade to the derived name — `e.details.unique_index_lookup` says
-which happened. Its cost is its own
+one schema read plus one `index_list` read and one `index_info` read
+per unique index on the table, and stops as soon as its
+`diagnostics_budget_ms` allowance is spent; a failed read, a spent
+allowance, an allowance of `0`, a statement whose own timeout has
+less left than the allowance, a table name that a second schema also
+holds, and a violation message a `.` or a `, ` inside a name garbled
+all degrade to the derived name — `e.details.unique_index_lookup`
+says which happened. Its cost is its own
 `[:xqlite_ecto3, :unique_index_names]` telemetry span, not time hidden
 inside the statement. Streamed DML skips the lookup the same way
 (`unique_index_lookup: :not_run`). Full contract in the

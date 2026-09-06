@@ -143,6 +143,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A unique violation SQLite reports as `index 'name'` now carries a
+  table and columns.** That form — the one an index built over an
+  expression produces — used to leave `table: nil` and `columns: []`
+  on the error, and the name lookup skipped it entirely
+  (`unique_index_lookup: :not_run`). It now reads the index's table
+  from `sqlite_schema` and its columns from `PRAGMA index_info`, so
+  both fields are filled; the columns are `nil`, because an indexed
+  expression has no column name. The emitted constraint name is
+  unchanged: it is still the name SQLite reported.
+
+- **A table carrying an expression unique index reports the ambiguity
+  instead of naming one index.** An expression index matches no column
+  list, so nothing can rule it in or out, and which of the two message
+  forms a violation takes depends on the order the indexes were
+  created in rather than on the schema. When such an index sits beside
+  another unique index on the violated table, the lookup now records
+  every candidate and reports `unique_index_lookup: {:ambiguous,
+  names}`; the constraint mapping emits the name SQLite named, or the
+  conventional derived one, and never picks a candidate. A changeset
+  on such a table needs one `unique_constraint/3` per name it wants
+  converted.
+
+- **The unique-index lookup refuses a violation message that a name
+  garbled.** SQLite quotes nothing in `UNIQUE constraint failed:
+  <table>.<column>`, so a table or column name holding a `.` or a `, `
+  splits somewhere else, and the pieces could name a real, unrelated
+  table whose index the lookup would then report as the violated one.
+  The lookup now counts the separators the parsed table and columns
+  account for, and reads nothing when the count does not match or when
+  the parsed table exists in no schema: `{:unavailable,
+  {:unparseable_violation_table, message}}`, with the conventional
+  derived name emitted. This also degrades a parse that happened to be
+  right, such as a column name holding a `.`.
+
+- **The unique-index lookup qualifies its pragmas with the violated
+  table's schema.** `PRAGMA index_list` ran unqualified, so an
+  attached database or the temp schema holding a table of the same
+  name could answer with the wrong table's indexes. One
+  `pragma_table_list` read now says which schema holds it; two rows
+  degrade to `{:unavailable, {:ambiguous_schema, schemas}}`.
+
+- **Both error-path diagnoses skip when the statement has nearly spent
+  its timeout.** They read the database back on the connection the
+  caller is still waiting on, and nothing cancels a read once it
+  blocks on another connection's write lock. A statement with less of
+  its own timeout left than `diagnostics_budget_ms` would spend now
+  gets `{:unavailable, {:deadline_near, remaining_ms}}` instead of a
+  diagnosis. A statement with no timeout is never skipped.
+
+- **The foreign-key replay subtracts its baseline by group count.** It
+  compared the two `PRAGMA foreign_key_check` scans row by row, which
+  cannot see a new violation in a `WITHOUT ROWID` child table: every
+  violation there reports a `nil` rowid, so the new row is
+  byte-identical to a pre-existing one and the diagnosis degraded to
+  `{:unavailable, :masked_by_baseline}`. The scans are now compared by
+  counting violations per `{child table, fk id}`, which recovers that
+  case exactly. A rowid reused after its orphan was replaced still
+  reports `:masked_by_baseline`, since no group grew.
+
+- **`[:xqlite_ecto3, :unique_index_names]` counts the `index_list`
+  read.** `index_reads` on the `:stop` event reported only the
+  `index_info` reads; it now reports 1 + one per unique index on the
+  table, and `lookup_status` gained `:ambiguous`.
+
 - **A connect error now names the repo option it refused.** Every
   validator that rejects a repo configuration value carries the key and
   the value together, and `XqliteEcto3.Error.wrap/1` puts them in

@@ -179,6 +179,16 @@ defmodule XqliteEcto3.Connection do
   # primary key fired. SQLite reserves the sqlite_ prefix, so no user
   # index can carry this name — and no changeset declares it, so the
   # conventional derived name applies.
+  # An expression index on the table matches no column list, so the
+  # lookup could rule nothing out. Emitting one of its candidates would
+  # be a guess; the index SQLite itself named, or the derived name,
+  # applies instead.
+  defp unique_constraints(
+         %XqliteEcto3.Error.Constraint{unique_index_lookup: {:ambiguous, _names}} = d
+       ) do
+    named_or_empty(:unique, unique_index_name(d))
+  end
+
   defp unique_constraints(
          %XqliteEcto3.Error.Constraint{unique_index_names: ["sqlite_autoindex_" <> _]} = d
        ) do

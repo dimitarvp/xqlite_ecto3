@@ -18,6 +18,10 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   # What a repo gets when it sets no :diagnostics_budget_ms of its own.
   @budget_ms 500
 
+  # Small enough that a mutant inflating the elapsed-time arithmetic
+  # spends it, wide enough that three uncontended pragma reads never do.
+  @small_budget_ms 10
+
   defmodule Item do
     use Ecto.Schema
 
@@ -489,15 +493,17 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     assert opts[:constraint_name] == "expr_lower_unique"
   end
 
-  test "an expression unique index needs no lookup" do
+  test "an expression unique index recovers its table and its nameless column" do
     {:ok, _} = Repo.insert(Expr.changeset(%Expr{}, %{v: "SHAPE"}))
 
     assert {:error, %Error{} = err} = Repo.query("INSERT INTO uix_exprs(v) VALUES ('shape')", [])
 
     assert %Constraint{
              index_name: "expr_lower_unique",
-             unique_index_names: [],
-             unique_index_lookup: :not_run
+             table: "uix_exprs",
+             columns: [nil],
+             unique_index_names: ["expr_lower_unique"],
+             unique_index_lookup: :ok
            } = err.details
 
     assert Conn.to_constraints(err, []) == [unique: "expr_lower_unique"]
@@ -515,6 +521,89 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
 
   test "elapsed time over the budget is out" do
     refute XqliteEcto3.UniqueIndexNames.within_budget?(1_000, 50, 1_051)
+  end
+
+  test "a small positive allowance still resolves an uncontended lookup" do
+    conn = open_conn("small_budget")
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE sb_items (id INTEGER PRIMARY KEY, v TEXT)", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX sb_items_real ON sb_items (v)", [])
+
+    resolved =
+      XqliteEcto3.UniqueIndexNames.resolve(small_budget_error(), conn, @small_budget_ms)
+
+    assert %Constraint{unique_index_lookup: :ok, unique_index_names: ["sb_items_real"]} =
+             resolved.details
+  end
+
+  # ---------------------------------------------------------------------------
+  # The statement's remaining deadline
+  # ---------------------------------------------------------------------------
+
+  test "a deadline shorter than the allowance skips the lookup" do
+    conn = open_conn("deadline_near")
+
+    resolved =
+      XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn, @budget_ms, 10)
+
+    assert %Constraint{
+             unique_index_names: [],
+             unique_index_lookup: {:unavailable, {:deadline_near, 10}}
+           } = resolved.details
+  end
+
+  test "a deadline longer than the allowance runs the lookup" do
+    conn = open_conn("deadline_far")
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE zb_items (id INTEGER PRIMARY KEY, v TEXT)", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX zb_items_real ON zb_items (v)", [])
+
+    resolved =
+      XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn, @budget_ms, @budget_ms)
+
+    assert %Constraint{unique_index_lookup: :ok, unique_index_names: ["zb_items_real"]} =
+             resolved.details
+  end
+
+  test "a statement timeout below the allowance skips the lookup" do
+    {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "deadline"}))
+
+    assert {:error, %Error{} = err} =
+             Repo.query("INSERT INTO uix_items(v) VALUES ('deadline')", [], timeout: 50)
+
+    assert %Constraint{
+             unique_index_names: [],
+             unique_index_lookup: {:unavailable, {:deadline_near, remaining_ms}}
+           } = err.details
+
+    assert is_integer(remaining_ms)
+    assert Conn.to_constraints(err, []) == [unique: "uix_items_v_index"]
+  end
+
+  # ---------------------------------------------------------------------------
+  # Another schema's table of the same name
+  # ---------------------------------------------------------------------------
+
+  test "a same-named table in an attached schema degrades on the ambiguity" do
+    conn = open_conn("attached")
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE shared (col TEXT)", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX main_shared_idx ON shared (col)", [])
+    {:ok, _} = XqliteNIF.query(conn, "ATTACH DATABASE ':memory:' AS other", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE other.shared (col TEXT)", [])
+
+    {:ok, _} =
+      XqliteNIF.query(conn, "CREATE UNIQUE INDEX other.other_shared_idx ON shared (col)", [])
+
+    resolved = XqliteEcto3.UniqueIndexNames.resolve(shared_error(), conn, @budget_ms)
+
+    assert %Constraint{
+             unique_index_names: [],
+             unique_index_lookup: {:unavailable, {:ambiguous_schema, schemas}}
+           } = resolved.details
+
+    assert Enum.sort(schemas) == ["main", "other"]
+    assert Conn.to_constraints(resolved, []) == [unique: "shared_col_index"]
   end
 
   # ---------------------------------------------------------------------------
@@ -610,11 +699,11 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
 
     assert is_integer(measurements.duration)
     # Three unique indexes live on the table (v, w, and the autoindex
-    # behind UNIQUE(sku)), so three index_info reads; only the one over
-    # the violated column is a candidate.
+    # behind UNIQUE(sku)), so one index_list read and three index_info
+    # reads; only the one over the violated column is a candidate.
     assert metadata.lookup_status == :ok
     assert metadata.candidate_count == 1
-    assert metadata.index_reads == 3
+    assert metadata.index_reads == 4
 
     # :stop keeps everything :start announced, so a handler bound to the
     # table or the connection survives the closing event.
@@ -649,6 +738,20 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     )
   end
 
+  defp small_budget_error do
+    Error.wrap(
+      {:constraint_violation, :constraint_unique,
+       %{message: "UNIQUE constraint failed: sb_items.v", table: "sb_items", columns: ["v"]}}
+    )
+  end
+
+  defp shared_error do
+    Error.wrap(
+      {:constraint_violation, :constraint_unique,
+       %{message: "UNIQUE constraint failed: shared.col", table: "shared", columns: ["col"]}}
+    )
+  end
+
   defp open_conn(tag) do
     path = Path.join(System.tmp_dir!(), "xqlite_uix_#{tag}_#{System.os_time(:nanosecond)}.db")
 
@@ -676,12 +779,14 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
     {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE vt(v TEXT)", [])
     {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX vanish_ix ON vt(v)", [])
 
-    assert {:cont, {:ok, ["vanish_ix"]}} =
-             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, ["v"], "vanish_ix", [])
+    empty = %{matched: [], expression: []}
+
+    assert {:cont, {:ok, %{matched: ["vanish_ix"], expression: []}}} =
+             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, "main", ["v"], "vanish_ix", empty)
 
     {:ok, _} = XqliteNIF.query(conn, "DROP INDEX vanish_ix", [])
 
     assert {:halt, {:error, {:index_vanished, "vanish_ix"}}} =
-             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, ["v"], "vanish_ix", [])
+             XqliteEcto3.UniqueIndexNames.budgeted_match(conn, "main", ["v"], "vanish_ix", empty)
   end
 end

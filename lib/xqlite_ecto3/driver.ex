@@ -613,6 +613,7 @@ defmodule XqliteEcto3.Driver do
     timeout = Keyword.get(opts, :timeout, 15_000)
     sql = IO.iodata_to_binary(query.statement)
     start_md = %{conn: state.conn, query: query, sql: sql}
+    started_at_ms = System.monotonic_time(:millisecond)
 
     span_with_stop_metadata [:xqlite_ecto3, :handle_execute], start_md do
       {exec_result, state} = run_statement(state, sql, params, timeout)
@@ -636,11 +637,20 @@ defmodule XqliteEcto3.Driver do
             {:disconnect, closed_connection_error(), state}
 
           {:error, reason} ->
-            execute_error(reason, sql, params, state)
+            execute_error(reason, sql, params, state, remaining_ms(timeout, started_at_ms))
         end
 
       classify_dbc(result, start_md)
     end
+  end
+
+  # What is left of the statement's own timeout now that it has failed.
+  # The two diagnoses below read the database back on this connection
+  # and bill that work to the same caller, so they need to know.
+  defp remaining_ms(:infinity, _started_at_ms), do: :infinity
+
+  defp remaining_ms(timeout, started_at_ms) when is_integer(timeout) do
+    timeout - (System.monotonic_time(:millisecond) - started_at_ms)
   end
 
   # A statement error can take the whole transaction with it: a constraint
@@ -679,13 +689,13 @@ defmodule XqliteEcto3.Driver do
   # transaction back still reads, so it keeps the enrichment on its way
   # out; one whose own status could not be read cannot be read at all,
   # and its error carries what SQLite gave, unenriched.
-  defp execute_error(reason, sql, params, state) do
+  defp execute_error(reason, sql, params, state, remaining_ms) do
     case transaction_verdict(state) do
       :keep ->
-        {:error, wrap_execute_error(reason, sql, params, state), state}
+        {:error, wrap_execute_error(reason, sql, params, state, remaining_ms), state}
 
       :rolled_back ->
-        {:disconnect, wrap_execute_error(reason, sql, params, state), state}
+        {:disconnect, wrap_execute_error(reason, sql, params, state, remaining_ms), state}
 
       :unusable ->
         wrapped =
@@ -981,33 +991,53 @@ defmodule XqliteEcto3.Driver do
   # A UNIQUE violation names only the table and columns, so the real
   # index name is read back from the database here — bounded read-only
   # pragma lookups on a path that has already failed, always on.
-  defp wrap_execute_error(reason, sql, params, %__MODULE__{rich_fk_diagnostics: true} = state) do
+  defp wrap_execute_error(
+         reason,
+         sql,
+         params,
+         %__MODULE__{rich_fk_diagnostics: true} = state,
+         remaining_ms
+       ) do
     reason
-    |> diagnose_fk(sql, params, state)
-    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn, state.diagnostics_budget_ms)
+    |> diagnose_fk(sql, params, state, remaining_ms)
+    |> XqliteEcto3.UniqueIndexNames.resolve(
+      state.conn,
+      state.diagnostics_budget_ms,
+      remaining_ms
+    )
     |> put_statement(sql)
   end
 
-  defp wrap_execute_error(reason, sql, _params, state) do
+  defp wrap_execute_error(reason, sql, _params, state, remaining_ms) do
     reason
     |> XqliteEcto3.Error.wrap()
-    |> XqliteEcto3.UniqueIndexNames.resolve(state.conn, state.diagnostics_budget_ms)
+    |> XqliteEcto3.UniqueIndexNames.resolve(
+      state.conn,
+      state.diagnostics_budget_ms,
+      remaining_ms
+    )
     |> put_statement(sql)
   end
 
   # A raw COMMIT, END, or RELEASE that fails on a deferred violation leaves
   # the transaction open with the violating rows still present: diagnose
   # in place; replaying transaction control would only reset its pragmas.
-  defp diagnose_fk(reason, sql, params, state) do
+  defp diagnose_fk(reason, sql, params, state, remaining_ms) do
     if leading_keyword(sql) in ["COMMIT", "END", "RELEASE"] do
-      XqliteEcto3.FkDiagnostics.wrap_at_commit(reason, state.conn, state.diagnostics_budget_ms)
+      XqliteEcto3.FkDiagnostics.wrap_at_commit(
+        reason,
+        state.conn,
+        state.diagnostics_budget_ms,
+        remaining_ms
+      )
     else
       XqliteEcto3.FkDiagnostics.wrap_with_replay(
         reason,
         state.conn,
         sql,
         params,
-        state.diagnostics_budget_ms
+        state.diagnostics_budget_ms,
+        remaining_ms
       )
     end
   end

@@ -60,16 +60,27 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     {:ok, pid: pid, path: path}
   end
 
-  test "a WITHOUT ROWID child's masked violation is unavailable, not nothing", %{pid: pid} do
+  test "a WITHOUT ROWID child's fresh violation is counted out of the baseline", %{pid: pid} do
     exec!(pid, "CREATE TABLE wr(k TEXT PRIMARY KEY, p_id INTEGER REFERENCES p(id)) WITHOUT ROWID")
     exec!(pid, "PRAGMA foreign_keys = 0")
     exec!(pid, "INSERT INTO wr(k, p_id) VALUES ('orphan', 999)")
     exec!(pid, "PRAGMA foreign_keys = 1")
 
-    assert {:error, %Error{details: %Constraint{fk_diagnostics: diagnostics}}} =
+    assert {:error, %Error{details: %Constraint{} = d}} =
              exec(pid, "INSERT INTO wr(k, p_id) VALUES ('victim', 998)")
 
-    assert diagnostics == {:unavailable, :masked_by_baseline}
+    assert d.fk_diagnostics == :ok
+
+    assert [%FkViolation{child_table: "wr", child_rowid: nil, fk_id: 0}] = d.fk_violations
+  end
+
+  test "a statement timeout below the allowance skips the diagnosis", %{pid: pid} do
+    assert {:error, %Error{details: %Constraint{} = d}} =
+             Conn.query(pid, "INSERT INTO ch VALUES (1, 999)", [], timeout: 50)
+
+    assert {:unavailable, {:deadline_near, remaining_ms}} = d.fk_diagnostics
+    assert is_integer(remaining_ms)
+    assert d.fk_violations == []
   end
 
   test "a violation at a reused rowid is unavailable, not nothing", %{pid: pid} do

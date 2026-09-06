@@ -21,13 +21,15 @@ defmodule XqliteEcto3.FkDiagnostics do
      database, so without this the statement would be blamed for
      every pre-existing orphan anywhere in the file
   4. Replay the statement, then `PRAGMA foreign_key_check` again —
-     only rows absent from the baseline are the statement's own.
-     When every violation the replay finds is indistinguishable from
-     a pre-existing one — a `WITHOUT ROWID` child table reports a
-     `nil` rowid for all of them, and a rowid reused after its orphan
-     was replaced reproduces the orphan's row — the diagnosis is
-     `{:unavailable, :masked_by_baseline}`, never an empty result.
-     At most 24 violations are materialized; more sets
+     the statement's own violations are what the second scan holds
+     beyond the first, counted per `{child table, fk id}`. A
+     `WITHOUT ROWID` child reports a `nil` rowid for every violation
+     of its, so its rows are byte-identical and only their number
+     moves: counting recovers the new one that matching the rows one
+     by one would hide. When no group grew — a rowid reused after its
+     orphan was replaced reproduces the orphan's row exactly — the
+     diagnosis is `{:unavailable, :masked_by_baseline}`, never an
+     empty result. At most 24 violations are materialized; more sets
      `fk_diagnostics: {:truncated, total}` with the first 24 kept
   5. `PRAGMA foreign_key_list(child)` — resolves each FK index to
      the exact child/parent columns
@@ -49,7 +51,10 @@ defmodule XqliteEcto3.FkDiagnostics do
   step already in flight; a spent allowance degrades the diagnosis to
   `{:unavailable, {:diagnostics_budget_exceeded, elapsed_ms}}`. An
   allowance of `0` skips the replay altogether
-  (`{:unavailable, :diagnostics_disabled}`).
+  (`{:unavailable, :diagnostics_disabled}`), and so does a statement
+  whose own timeout has less left than the allowance would spend
+  (`{:unavailable, {:deadline_near, remaining_ms}}`) — the caller is
+  waiting on that timeout, and nothing cancels a step once it blocks.
 
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
@@ -94,49 +99,91 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   Non-FK reasons wrap exactly as `XqliteEcto3.Error.wrap/1` would.
   """
-  @spec wrap_with_replay(term(), Xqlite.conn(), String.t(), list(), non_neg_integer()) ::
-          Error.t()
+  @spec wrap_with_replay(
+          term(),
+          Xqlite.conn(),
+          String.t(),
+          list(),
+          non_neg_integer(),
+          integer() | :infinity
+        ) :: Error.t()
+  def wrap_with_replay(reason, conn, sql, params, budget_ms, remaining_ms \\ :infinity)
+
   def wrap_with_replay(
         {:constraint_violation, :constraint_foreign_key, _} = reason,
         conn,
         sql,
         params,
-        budget_ms
+        budget_ms,
+        remaining_ms
       ) do
     collect_fun = fn deadline -> replay(conn, sql, params, deadline) end
 
-    enrich(Error.wrap(reason), collect_fun, conn, :replay, budget_ms)
+    enrich(Error.wrap(reason), collect_fun, conn, :replay, {budget_ms, remaining_ms})
   end
 
-  def wrap_with_replay(reason, _conn, _sql, _params, _budget_ms), do: Error.wrap(reason)
+  def wrap_with_replay(reason, _conn, _sql, _params, _budget_ms, _remaining_ms) do
+    Error.wrap(reason)
+  end
 
   @doc """
   Wraps a commit-time `reason`, enriching FK constraint violations by
   reading the still-open transaction's state directly — the violating
   rows exist until the rollback, so no replay is needed.
+
+  This path reports more than the transaction's own violations. The
+  replay path diffs two `PRAGMA foreign_key_check` scans, so it can
+  subtract what the database already held; a commit has no
+  pre-transaction scan to subtract. Every FK violation anywhere in the
+  database is therefore reported here — orphans of any table, written
+  by anything that had `foreign_keys` off, SQLite's own default
+  included — beside the ones the committing transaction really
+  deferred. A baseline taken when the transaction opened would not fix
+  it either: `PRAGMA defer_foreign_keys = ON` is a raw statement the
+  caller runs mid-transaction, so at `BEGIN` there is nothing yet to
+  say a baseline will be needed.
   """
-  @spec wrap_at_commit(term(), Xqlite.conn(), non_neg_integer()) :: Error.t()
+  @spec wrap_at_commit(term(), Xqlite.conn(), non_neg_integer(), integer() | :infinity) ::
+          Error.t()
+  def wrap_at_commit(reason, conn, budget_ms, remaining_ms \\ :infinity)
+
   def wrap_at_commit(
         {:constraint_violation, :constraint_foreign_key, _} = reason,
         conn,
-        budget_ms
+        budget_ms,
+        remaining_ms
       ) do
     collect_fun = fn deadline -> collect_violations(conn, deadline) end
 
-    enrich(Error.wrap(reason), collect_fun, conn, :in_transaction, budget_ms)
+    enrich(Error.wrap(reason), collect_fun, conn, :in_transaction, {budget_ms, remaining_ms})
   end
 
-  def wrap_at_commit(reason, _conn, _budget_ms), do: Error.wrap(reason)
+  def wrap_at_commit(reason, _conn, _budget_ms, _remaining_ms), do: Error.wrap(reason)
 
   defp enrich(%Error{details: %Constraint{} = details} = error, collect_fun, conn, mode, budget) do
     %{error | details: diagnose(details, collect_fun, conn, mode, budget)}
   end
 
-  defp diagnose(details, _collect_fun, _conn, _mode, 0) do
-    %{details | fk_diagnostics: {:unavailable, :diagnostics_disabled}}
+  defp diagnose(details, collect_fun, conn, mode, allowance) do
+    case runnable(allowance) do
+      {:run, budget_ms} -> spanned(details, collect_fun, conn, mode, budget_ms)
+      {:skip, reason} -> %{details | fk_diagnostics: {:unavailable, reason}}
+    end
   end
 
-  defp diagnose(details, collect_fun, conn, mode, budget_ms) do
+  # The diagnosis bills its reads and its replay write to the caller
+  # who is still waiting on the statement that failed, so a deadline
+  # with less left than the allowance would spend buys nothing.
+  defp runnable({0, _remaining_ms}), do: {:skip, :diagnostics_disabled}
+
+  defp runnable({budget_ms, remaining_ms})
+       when is_integer(remaining_ms) and remaining_ms < budget_ms do
+    {:skip, {:deadline_near, remaining_ms}}
+  end
+
+  defp runnable({budget_ms, _remaining_ms}), do: {:run, budget_ms}
+
+  defp spanned(details, collect_fun, conn, mode, budget_ms) do
     start_md = %{conn: conn, mode: mode}
     deadline = {System.monotonic_time(:millisecond), budget_ms}
 
@@ -196,7 +243,7 @@ defmodule XqliteEcto3.FkDiagnostics do
            {:ok, %{rows: baseline}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
            :ok <- within_budget(deadline),
            {:ok, _} <- NIF.query_with_changes(conn, sql, params) do
-        collect_violations(conn, deadline, MapSet.new(baseline))
+        collect_violations(conn, deadline, baseline)
       end
 
     cleanup(conn)
@@ -216,11 +263,12 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   @violation_cap 24
 
-  defp collect_violations(conn, deadline, baseline \\ MapSet.new()) do
+  defp collect_violations(conn, deadline, baseline \\ []) do
     with :ok <- within_budget(deadline),
          {:ok, %{rows: check_rows}} <- NIF.query(conn, "PRAGMA foreign_key_check", []),
-         {kept, status} = cap_rows(check_rows, baseline),
-         :ok <- unmasked(kept, check_rows),
+         fresh = fresh_rows(check_rows, baseline),
+         :ok <- unmasked(fresh, check_rows),
+         {kept, status} = cap_rows(fresh),
          {:ok, fk_defs} <- fk_definitions(conn, deadline, kept) do
       violations =
         kept
@@ -231,21 +279,60 @@ defmodule XqliteEcto3.FkDiagnostics do
     end
   end
 
-  # An empty diff over a non-empty check means every violation the replay
-  # found matches a pre-existing row byte for byte (a WITHOUT ROWID child
-  # reports nil rowids; a reused rowid reproduces the orphan's row), so the
-  # statement's own violation cannot be told apart.
-  defp unmasked([], [_ | _]), do: {:error, :masked_by_baseline}
-  defp unmasked(_kept, _check_rows), do: :ok
+  # What the second scan holds beyond the first, counted per {child
+  # table, fk id}. A WITHOUT ROWID child reports a nil rowid for every
+  # violation of its, so its rows are byte-identical and only their
+  # number moves — matching rows one by one would find nothing new and
+  # hide the statement's own violation. Rows the baseline never held are
+  # taken first, so a rowid reused after its orphan was replaced fills
+  # its group's quota with the pre-existing row and reports nothing.
+  defp fresh_rows(check_rows, baseline) do
+    quotas = surplus_quotas(check_rows, baseline)
+    unseen = MapSet.difference(MapSet.new(check_rows), MapSet.new(baseline))
+    {novel, repeated} = Enum.split_with(check_rows, fn row -> MapSet.member?(unseen, row) end)
+    {rows, _left} = Enum.reduce(novel ++ repeated, {[], quotas}, &take_within_quota/2)
 
-  defp cap_rows(check_rows, baseline) do
-    new_rows = Enum.reject(check_rows, &MapSet.member?(baseline, &1))
-    total = length(new_rows)
+    Enum.reverse(rows)
+  end
+
+  defp surplus_quotas(check_rows, baseline) do
+    baseline_counts = Enum.frequencies_by(baseline, &violation_group/1)
+    check_counts = Enum.frequencies_by(check_rows, &violation_group/1)
+
+    Enum.reduce(check_counts, %{}, fn pair, acc -> put_surplus(pair, baseline_counts, acc) end)
+  end
+
+  defp put_surplus({group, count}, baseline_counts, acc) do
+    Map.put(acc, group, max(count - Map.get(baseline_counts, group, 0), 0))
+  end
+
+  defp take_within_quota(row, {kept, quotas}) do
+    group = violation_group(row)
+
+    case Map.get(quotas, group, 0) do
+      0 -> {kept, quotas}
+      left -> {[row | kept], Map.put(quotas, group, left - 1)}
+    end
+  end
+
+  # foreign_key_check columns: table (child), rowid, parent, fkid. A row
+  # of any other shape is its own group; the reader below reports it.
+  defp violation_group([child_table, _rowid, _parent, fk_id | _]), do: {child_table, fk_id}
+  defp violation_group(row), do: row
+
+  # An empty surplus over a non-empty check means every group the replay
+  # found already held as many violations before the statement ran, so
+  # the statement's own violation cannot be told apart from them.
+  defp unmasked([], [_ | _]), do: {:error, :masked_by_baseline}
+  defp unmasked(_fresh, _check_rows), do: :ok
+
+  defp cap_rows(fresh) do
+    total = length(fresh)
 
     if total > @violation_cap do
-      {Enum.take(new_rows, @violation_cap), {:truncated, total}}
+      {Enum.take(fresh, @violation_cap), {:truncated, total}}
     else
-      {new_rows, :ok}
+      {fresh, :ok}
     end
   end
 
