@@ -457,7 +457,10 @@ defmodule XqliteEcto3.TelemetryTest do
   end
 
   defp atoms_after(text, anchor, terminator) do
-    case String.split(text, anchor, parts: 2) do
+    text
+    |> String.replace("\r\n", "\n")
+    |> String.split(anchor, parts: 2)
+    |> case do
       [_before, rest] ->
         rest
         |> String.split(terminator, parts: 2)

@@ -30,6 +30,12 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   purpose; the number of runs is not what shrinks if the property gets
   slow.
 
+  The file runs on the pool repo, not the sandboxed one: the same
+  `:timeout` also arms DBConnection's own deadline, and when that timer
+  wins the race the connection is dropped and reconnected — under the
+  sandbox that drop takes the test's ownership with it, and the next run
+  fails for want of an owner rather than for the reason under test.
+
   ## The boundaries beside it
 
   `:infinity` asks for no deadline and drains the same slow query to the
@@ -42,8 +48,10 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   the transaction function it leaves the transaction usable.
   """
 
-  use XqliteEcto3.AdapterCase, async: true
+  use ExUnit.Case, async: true
   use ExUnitProperties
+
+  alias Ecto.Integration.PoolRepo, as: Repo
 
   @moduletag timeout: 300_000
 
@@ -64,11 +72,12 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   @fast_sql "SELECT n FROM stream_cancel_rows ORDER BY n"
 
   setup_all do
-    create_table!("stream_cancel_rows", "n INTEGER NOT NULL")
+    Repo.query!("CREATE TABLE IF NOT EXISTS stream_cancel_rows (n INTEGER NOT NULL)")
+    :ok
   end
 
   setup do
-    clear_table!("stream_cancel_rows")
+    Repo.query!("DELETE FROM stream_cancel_rows")
 
     for n <- 1..20 do
       Repo.query!("INSERT INTO stream_cancel_rows (n) VALUES (?)", [n])
