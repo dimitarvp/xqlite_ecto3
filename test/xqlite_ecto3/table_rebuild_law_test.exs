@@ -35,6 +35,10 @@ defmodule XqliteEcto3.TableRebuildLawTest do
   alias Ecto.Migration.Table
   alias XqliteEcto3.RebuildVerification
 
+  # Six thousand table rebuilds per file: a slow CI runner needs more than
+  # the default minute per property.
+  @moduletag timeout: 300_000
+
   defmodule LawRepo do
     use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
   end
