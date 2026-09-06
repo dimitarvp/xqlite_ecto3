@@ -81,6 +81,20 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetryTest do
              Otel.attributes([:xqlite_ecto3, :handle_execute, :stop], %{}, metadata)
   end
 
+  test "a begin refused by an open transaction names that refusal" do
+    metadata = %{result_class: :error, error_reason: {:transaction_status, :transaction}}
+
+    assert %{"error.type" => "transaction_already_started"} =
+             Otel.attributes([:xqlite_ecto3, :handle_begin, :stop], %{}, metadata)
+  end
+
+  test "a rollback refused by a finished transaction names that refusal" do
+    metadata = %{result_class: :error, error_reason: {:transaction_status, :idle}}
+
+    assert %{"error.type" => "transaction_not_started"} =
+             Otel.attributes([:xqlite_ecto3, :handle_rollback, :stop], %{}, metadata)
+  end
+
   test "a wrapped error with no typed field falls back to the struct name" do
     metadata = %{result_class: :error, error_reason: %XqliteEcto3.Error{type: nil}}
 

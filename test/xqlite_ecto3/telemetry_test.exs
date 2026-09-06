@@ -424,4 +424,54 @@ defmodule XqliteEcto3.TelemetryTest do
       )
     end
   end
+
+  # A documented value list a subscriber groups by is a contract, and a
+  # value the code emits without listing it is what breaks a dashboard.
+  # Both surfaces are checked against the emission site itself, in both
+  # builds — the lists are text, and text does not depend on the flag.
+  describe "the documented lookup statuses and the emitted ones agree" do
+    test "the moduledoc lists exactly what the lookup span reports" do
+      assert {:docs_v1, _, _, _, %{"en" => moduledoc}, _, _} =
+               Code.fetch_docs(XqliteEcto3.Telemetry)
+
+      assert atoms_after(moduledoc, "`lookup_status` is ", "\n\n") == emitted_lookup_statuses()
+    end
+
+    test "the telemetry guide lists exactly what the lookup span reports" do
+      guide = File.read!(Path.join([__DIR__, "..", "..", "guides", "wiring_telemetry.md"]))
+
+      assert atoms_after(guide, "`:lookup_status` (", "\n") == emitted_lookup_statuses()
+    end
+  end
+
+  defp emitted_lookup_statuses do
+    source =
+      [__DIR__, "..", "..", "lib", "xqlite_ecto3", "unique_index_names.ex"]
+      |> Path.join()
+      |> File.read!()
+
+    statuses = captures(~r/lookup_status: :([a-z_]+)/, source)
+
+    assert statuses != MapSet.new()
+    statuses
+  end
+
+  defp atoms_after(text, anchor, terminator) do
+    case String.split(text, anchor, parts: 2) do
+      [_before, rest] ->
+        rest
+        |> String.split(terminator, parts: 2)
+        |> hd()
+        |> then(&captures(~r/`:([a-z_]+)`/, &1))
+
+      [_no_anchor] ->
+        MapSet.new()
+    end
+  end
+
+  defp captures(regex, text) do
+    regex
+    |> Regex.scan(text)
+    |> MapSet.new(fn [_match, capture] -> capture end)
+  end
 end

@@ -576,16 +576,34 @@ defmodule XqliteEcto3.Driver do
             end
 
           _mode ->
-            case NIF.rollback(state.conn) do
-              :ok ->
-                {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
-
-              {:error, reason} ->
-                {:disconnect, XqliteEcto3.Error.wrap(reason), state}
-            end
+            rollback_or_status(state)
         end
 
       classify_dbc(result, start_md)
+    end
+  end
+
+  # DBConnection's contract for a rollback the transaction status
+  # forbids: answer the status, run nothing. Raw COMMIT, END or ROLLBACK
+  # in the caller's own SQL ends the transaction underneath the driver,
+  # and this is what makes Ecto's sandbox and DBConnection name that
+  # cause instead of a statement SQLite refused. The status read has to
+  # be live and free of side effects, which is what the contract allows:
+  # a BEGIN that bypassed handle_execute/4 leaves the cached flag stale.
+  defp rollback_or_status(state) do
+    case NIF.transaction_status(state.conn) do
+      {:ok, false} -> {:idle, %{state | transaction_status: :idle, savepoint: 0}}
+      _open_or_unreadable -> rolled_back(state)
+    end
+  end
+
+  defp rolled_back(state) do
+    case NIF.rollback(state.conn) do
+      :ok ->
+        {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
+
+      {:error, reason} ->
+        {:disconnect, XqliteEcto3.Error.wrap(reason), state}
     end
   end
 
@@ -1245,6 +1263,13 @@ defmodule XqliteEcto3.Driver do
       {status, _state} when status in [:idle, :transaction, :error] ->
         {result,
          Map.merge(start_md, %{result_class: :error, error_reason: {:transaction_status, status}})}
+
+      # A callback answer none of the above anticipates is still an
+      # answer: report it as one instead of raising inside the span,
+      # which would turn a wrong return value into an exception event.
+      other ->
+        {other,
+         Map.merge(start_md, %{result_class: :error, error_reason: {:unclassified, other}})}
     end
   end
 end

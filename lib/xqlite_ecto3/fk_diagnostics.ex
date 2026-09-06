@@ -60,7 +60,11 @@ defmodule XqliteEcto3.FkDiagnostics do
   read-only unique-index-name lookup it contends for WAL's single
   write lock. With another writer holding the database, one step of
   the replay can block for up to a full `busy_timeout` on top of the
-  failing statement's own busy wait before degrading. Cost in table size:
+  failing statement's own busy wait before degrading — the allowance
+  does not bound a step that has already started, so the operation can
+  outstay its own `:timeout`, and through a pool DBConnection's
+  checkout deadline then drops the connection with nothing said to the
+  caller. Cost in table size:
   `foreign_key_check` scans every FK-bearing table in the database,
   and the replay runs it twice (the baseline and the post-statement
   read), so the diagnosed error path is linear in total rows —
@@ -142,6 +146,12 @@ defmodule XqliteEcto3.FkDiagnostics do
   it either: `PRAGMA defer_foreign_keys = ON` is a raw statement the
   caller runs mid-transaction, so at `BEGIN` there is nothing yet to
   say a baseline will be needed.
+
+  `remaining_ms` defaults to `:infinity`, and the driver passes it only
+  for a `COMMIT` the caller ran as raw SQL. The commit DBConnection
+  itself issues at the end of `Repo.transaction/2` has no statement
+  deadline to pass, so this diagnosis runs there with the configured
+  allowance alone.
   """
   @spec wrap_at_commit(term(), Xqlite.conn(), non_neg_integer(), integer() | :infinity) ::
           Error.t()

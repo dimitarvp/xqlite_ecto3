@@ -7,7 +7,8 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   each of them, taken from the repo configuration at connect and
   carried on the connection.
 
-  Two rules, one per direction.
+  Three rules: what sets the allowance, what bounds a diagnosis that
+  has started, and what the caller's own deadline leaves for it.
 
   ## 1. The allowance is the configured number
 
@@ -23,6 +24,21 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   connection's write lock. The allowance is checked before each read,
   so a diagnosis can overrun by at most the one read that was already
   in flight — never by one read per candidate.
+
+  ## 3. The statement's own deadline caps what the lookup may spend
+
+  Both diagnoses bill their reads to a caller who is still waiting on
+  the statement that failed, so what is left of that statement's
+  timeout caps the allowance: the unique-index-name lookup spends the
+  smaller of the configured allowance and what the deadline leaves
+  once a fixed reserve is set aside for the error path that follows.
+  Only a deadline already inside that reserve skips the lookup whole.
+  A configured allowance of `0` still means off, deadline or no
+  deadline.
+
+  The foreign-key replay keeps the wholesale skip instead: one of its
+  reads scans every table in the database, so its cost follows the
+  size of the file and no fixed reserve can cover it.
 
   The contended properties run a real second connection that takes
   `BEGIN EXCLUSIVE` on the same rollback-journal database, holds it
@@ -50,6 +66,15 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
 
   @uncontended_runs 2000
   @contended_runs 30
+
+  # What the lookup leaves of the statement's deadline for the error
+  # path that follows it.
+  @reserve_ms 20
+
+  # An allowance this size is never spent by uncontended pragma reads,
+  # so a property asserting that the lookup resolves stays about the
+  # rule rather than about the machine it runs on.
+  @ample_ms 200
 
   setup do
     path =
@@ -181,6 +206,94 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
+  # --- 3. the deadline caps what the lookup may spend -------------------------
+
+  property "a zero allowance skips the index lookup whatever the deadline leaves", context do
+    check all(remaining_ms <- integer(1..2_000), max_runs: @uncontended_runs) do
+      resolved = UniqueIndexNames.resolve(unique_error(), context.conn, 0, remaining_ms)
+
+      assert %Constraint{
+               unique_index_names: [],
+               unique_index_lookup: {:unavailable, :diagnostics_disabled}
+             } = resolved.details
+    end
+  end
+
+  property "a deadline inside the reserve skips the index lookup whatever the allowance",
+           context do
+    check all(
+            budget <- integer(1..1_000),
+            remaining_ms <- integer(1..@reserve_ms),
+            max_runs: @uncontended_runs
+          ) do
+      resolved = UniqueIndexNames.resolve(unique_error(), context.conn, budget, remaining_ms)
+
+      assert %Constraint{
+               unique_index_names: [],
+               unique_index_lookup: {:unavailable, {:deadline_near, ^remaining_ms}}
+             } = resolved.details
+    end
+  end
+
+  property "a deadline past the reserve resolves the index name", context do
+    check all(
+            budget <- integer(@ample_ms..1_000),
+            remaining_ms <- integer((@ample_ms + @reserve_ms)..2_000),
+            max_runs: @uncontended_runs
+          ) do
+      resolved = UniqueIndexNames.resolve(unique_error(), context.conn, budget, remaining_ms)
+
+      assert %Constraint{
+               unique_index_names: ["bud_items_v_uq"],
+               unique_index_lookup: :ok
+             } = resolved.details
+    end
+  end
+
+  # The deadline is the smaller of the two here: a lookup that spent the
+  # configured 500 ms instead would sit through the whole lock hold and
+  # report a resolved name, and the caller's timeout would be long gone.
+  property "a contended lookup stops at what the deadline left, not at the configured allowance",
+           context do
+    check all(
+            remaining_ms <- integer((@reserve_ms + 1)..(@reserve_ms + 15)),
+            max_runs: @contended_runs
+          ) do
+      {resolved, elapsed_ms} =
+        under_write_lock(context.writer, fn ->
+          UniqueIndexNames.resolve(unique_error(), context.conn, 500, remaining_ms)
+        end)
+
+      assert %Constraint{
+               unique_index_names: [],
+               unique_index_lookup: {:unavailable, {:lookup_budget_exceeded, spent_ms}}
+             } = resolved.details
+
+      assert spent_ms > remaining_ms - @reserve_ms
+      assert elapsed_ms <= remaining_ms + @hold_ms + @slack_ms
+    end
+  end
+
+  # The replay's cost follows the size of the database, not the depth of
+  # the reference chain: one PRAGMA foreign_key_check scans every table,
+  # and no reserve small enough to be worth keeping covers that. So this
+  # diagnosis keeps the wholesale skip the lookup no longer has.
+  property "the foreign-key replay skips whenever the deadline leaves less than the allowance",
+           context do
+    check all(
+            budget <- integer(@ample_ms..1_000),
+            remaining_ms <- integer(1..(@ample_ms - 1)),
+            max_runs: @uncontended_runs
+          ) do
+      error = replay(context.conn, budget, remaining_ms)
+
+      assert %Constraint{
+               fk_violations: [],
+               fk_diagnostics: {:unavailable, {:deadline_near, ^remaining_ms}}
+             } = error.details
+    end
+  end
+
   # --- helpers ----------------------------------------------------------------
 
   # Runs `fun` while a second connection holds an exclusive write lock on
@@ -208,14 +321,15 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     {result, elapsed_ms}
   end
 
-  defp replay(conn, budget) do
+  defp replay(conn, budget, remaining_ms \\ :infinity) do
     FkDiagnostics.wrap_with_replay(
       {:constraint_violation, :constraint_foreign_key,
        %{message: "FOREIGN KEY constraint failed"}},
       conn,
       "INSERT INTO bud_children (id, p_id) VALUES (7, 999)",
       [],
-      budget
+      budget,
+      remaining_ms
     )
   end
 

@@ -22,6 +22,10 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   # spends it, wide enough that three uncontended pragma reads never do.
   @small_budget_ms 10
 
+  # What the lookup leaves of the statement's own deadline for the error
+  # path that follows it.
+  @reserve_ms 20
+
   defmodule Item do
     use Ecto.Schema
 
@@ -203,6 +207,15 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       ["CREATE UNIQUE INDEX IF NOT EXISTS autocoll_nocase ON uix_autocolls(v COLLATE NOCASE)"]
     )
 
+    create_table!(
+      "uix_mixes",
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT, w TEXT",
+      [
+        "CREATE UNIQUE INDEX IF NOT EXISTS mix_lower_v ON uix_mixes(lower(v))",
+        "CREATE UNIQUE INDEX IF NOT EXISTS mix_w_unique ON uix_mixes(w)"
+      ]
+    )
+
     cap_columns = Enum.map_join(0..24, ", ", fn i -> "c#{i} TEXT" end)
 
     create_table!(
@@ -223,6 +236,7 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       "uix_colls",
       "uix_autos",
       "uix_autocolls",
+      "uix_mixes",
       "uix_caps"
     ])
   end
@@ -540,7 +554,7 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   # The statement's remaining deadline
   # ---------------------------------------------------------------------------
 
-  test "a deadline shorter than the allowance skips the lookup" do
+  test "a deadline inside the reserve skips the lookup" do
     conn = open_conn("deadline_near")
 
     resolved =
@@ -552,7 +566,19 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
            } = resolved.details
   end
 
-  test "a deadline longer than the allowance runs the lookup" do
+  test "a deadline exactly at the reserve skips the lookup" do
+    conn = open_conn("deadline_edge")
+
+    resolved =
+      XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn, @budget_ms, @reserve_ms)
+
+    assert %Constraint{
+             unique_index_names: [],
+             unique_index_lookup: {:unavailable, {:deadline_near, @reserve_ms}}
+           } = resolved.details
+  end
+
+  test "a deadline past the reserve runs the lookup" do
     conn = open_conn("deadline_far")
 
     {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE zb_items (id INTEGER PRIMARY KEY, v TEXT)", [])
@@ -565,19 +591,49 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
              resolved.details
   end
 
-  test "a statement timeout below the allowance skips the lookup" do
+  # The deadline, not the configured allowance, is what is left to spend
+  # here: 100 ms of statement timeout minus the reserve.
+  test "a deadline shorter than the configured allowance still runs the lookup" do
+    conn = open_conn("deadline_short")
+
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE zb_items (id INTEGER PRIMARY KEY, v TEXT)", [])
+    {:ok, _} = XqliteNIF.query(conn, "CREATE UNIQUE INDEX zb_items_real ON zb_items (v)", [])
+
+    resolved = XqliteEcto3.UniqueIndexNames.resolve(zero_budget_error(), conn, @budget_ms, 100)
+
+    assert %Constraint{unique_index_lookup: :ok, unique_index_names: ["zb_items_real"]} =
+             resolved.details
+  end
+
+  test "a statement timeout below the allowance still names the index" do
     {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "deadline"}))
 
     assert {:error, %Error{} = err} =
              Repo.query("INSERT INTO uix_items(v) VALUES ('deadline')", [], timeout: 50)
 
     assert %Constraint{
-             unique_index_names: [],
-             unique_index_lookup: {:unavailable, {:deadline_near, remaining_ms}}
+             unique_index_names: ["items_v_unique"],
+             unique_index_lookup: :ok
            } = err.details
 
-    assert is_integer(remaining_ms)
-    assert Conn.to_constraints(err, []) == [unique: "uix_items_v_index"]
+    assert Conn.to_constraints(err, []) == [unique: "items_v_unique"]
+  end
+
+  test "a declared index name converts at a timeout below the allowance" do
+    {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "declared"}))
+
+    for timeout <- [400, 200] do
+      result =
+        %Item{}
+        |> Item.changeset(%{v: "declared"})
+        |> unique_constraint(:v, name: "items_v_unique")
+        |> Repo.insert(timeout: timeout)
+
+      assert {:error, changeset} = result
+      assert {_msg, opts} = changeset.errors[:v]
+      assert opts[:constraint] == :unique
+      assert opts[:constraint_name] == "items_v_unique"
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -702,17 +758,47 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
 
       assert is_integer(measurements.duration)
       # Three unique indexes live on the table (v, w, and the autoindex
-      # behind UNIQUE(sku)), so one index_list read and three index_info
-      # reads; only the one over the violated column is a candidate.
+      # behind UNIQUE(sku)), so the schema read, one index_list read and
+      # three index_info reads; only the one over the violated column is
+      # a candidate.
       assert metadata.lookup_status == :ok
       assert metadata.candidate_count == 1
-      assert metadata.index_reads == 4
+      assert metadata.index_reads == 5
 
       # :stop keeps everything :start announced, so a handler bound to the
       # table or the connection survives the closing event.
       assert metadata.conn == start_metadata.conn
       assert metadata.table == start_metadata.table
       assert metadata.columns == start_metadata.columns
+    end
+
+    test "an ambiguous lookup on the index-name form reports the table it resolved" do
+      handler_id = "uix-span-mixed-#{:erlang.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:xqlite_ecto3, :unique_index_names, :stop],
+        &__MODULE__.forward_lookup_span/4,
+        %{pid: self(), table: "uix_mixes"}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      {:ok, _} = Repo.query("INSERT INTO uix_mixes(v, w) VALUES ('Ann', 'a')", [])
+
+      assert {:error, %Error{}} =
+               Repo.query("INSERT INTO uix_mixes(v, w) VALUES ('ann', 'b')", [])
+
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], _measurements,
+                      metadata}
+
+      # SQLite names the index it hit and nothing else, so the span's
+      # start carries no table and no columns; the lookup reads both
+      # back and the closing event carries what it found.
+      assert metadata.table == "uix_mixes"
+      assert metadata.columns == [nil]
+      assert metadata.lookup_status == :ambiguous
+      assert metadata.candidate_count == 2
     end
 
     @doc false

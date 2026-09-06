@@ -25,7 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invisible time to `handle_execute`. `:start` carries `conn`, `table`
   and `columns`; `:stop` adds `candidate_count`, `index_reads` and
   `lookup_status`. It does not fire when `diagnostics_budget_ms` is
-  `0`.
+  `0`, nor when the failed statement's deadline is already inside the
+  reserve the lookup leaves.
 
 - **`XqliteEcto3.Types.ExactDecimal`.** An opt-in `Ecto.Type` that
   stores a decimal as canonical text over a `:string`/TEXT column,
@@ -292,13 +293,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pragma_table_list` read now says which schema holds it; two rows
   degrade to `{:unavailable, {:ambiguous_schema, schemas}}`.
 
-- **Both error-path diagnoses skip when the statement has nearly spent
-  its timeout.** They read the database back on the connection the
+- **The failed statement's own timeout caps both error-path
+  diagnoses.** They read the database back on the connection the
   caller is still waiting on, and nothing cancels a read once it
-  blocks on another connection's write lock. A statement with less of
-  its own timeout left than `diagnostics_budget_ms` would spend now
-  gets `{:unavailable, {:deadline_near, remaining_ms}}` instead of a
-  diagnosis. A statement with no timeout is never skipped.
+  blocks on another connection's write lock. The unique-index-name
+  lookup now spends the smaller of `diagnostics_budget_ms` and what
+  the deadline leaves once a 20 ms reserve is set aside, and reports
+  `{:unavailable, {:deadline_near, remaining_ms}}` only when the
+  deadline is already inside that reserve — so a `:timeout` under
+  500 ms no longer costs a changeset the real index name, and a
+  declared `unique_constraint(:field, name: ...)` keeps converting.
+  The foreign-key replay keeps skipping whenever the deadline leaves
+  less than the whole allowance: one of its reads scans every table in
+  the database, so its cost follows the size of the file and no small
+  reserve covers it. A statement with no timeout is never skipped, and
+  an allowance of `0` is still off.
+
+- **A rollback with no transaction left answers the transaction
+  status.** Raw `COMMIT`, `END` or `ROLLBACK` in your own SQL ends the
+  transaction underneath the driver. The following rollback used to
+  issue a `ROLLBACK` SQLite refuses and report "cannot rollback - no
+  transaction is active"; it now answers DBConnection's
+  `{:idle, state}` instead, read live from SQLite rather than from the
+  driver's cached flag. `Ecto.Adapters.SQL.Sandbox` turns that into its
+  own "the sandbox transaction was already committed/rolled back"
+  diagnostic, and DBConnection into a `DBConnection.TransactionError`
+  carrying the status. The connection is dropped either way, and rows a
+  raw `COMMIT` already committed stay committed — what changes is that
+  the log names the cause. `handle_commit/2` is unchanged.
+
+- **`error_reason` has a documented third shape.** A callback that
+  refuses because of the connection's transaction status reports
+  `error_reason: {:transaction_status, status}` on its `:stop` event —
+  `:transaction` from `handle_begin`, `:idle` from `handle_rollback`.
+  The shape was already emitted; the moduledoc, the telemetry guide and
+  the architecture map said there were two shapes, and a handler
+  written to that contract raised and was detached from the whole VM.
+  `Telemetry.OpenTelemetry` now maps the tuple to one name per status —
+  `"transaction_already_started"` and `"transaction_not_started"` —
+  where it reported the tag `"transaction_status"` for every status.
+  A callback answer no clause anticipates reports
+  `{:unclassified, answer}` instead of raising inside the span.
+
+- **The unique-index-name span reports what it found on both message
+  forms.** `lookup_status: :ambiguous` is now documented beside `:ok`
+  and `:unavailable` (it was always emitted), the span's `:stop` on the
+  form where SQLite names the index carries the table and columns the
+  lookup read back instead of the `nil` and `[]` the message came with,
+  and `index_reads` counts the `pragma_table_list` read that starts the
+  lookup — one more than it reported before.
 
 - **The foreign-key replay subtracts its baseline by group count.** It
   compared the two `PRAGMA foreign_key_check` scans row by row, which

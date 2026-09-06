@@ -95,15 +95,43 @@ defmodule XqliteEcto3.Telemetry do
         measurements: %{monotonic_time, duration}
         metadata:     %{conn, cursor, result_class, error_reason}
 
-  ### Two shapes of error_reason
+  ### Three shapes of error_reason
 
   `error_reason` is normally the error the callback returned. When the
   callback also told DBConnection to drop the connection — a statement
   error that took the whole transaction with it, a failed COMMIT — it is
   `{:disconnect, error}` instead: the same error, plus the fact that the
-  connection is going away. Match both shapes.
-  `XqliteEcto3.Telemetry.OpenTelemetry` looks inside the tuple, so
-  `error.type` names the error either way.
+  connection is going away.
+
+  The third shape is `{:transaction_status, status}`: the callback ran
+  no statement because the connection's transaction status forbids it.
+  `handle_begin` answers `:transaction` when a transaction is already
+  open, and `handle_rollback` answers `:idle` when the caller's own raw
+  `COMMIT`, `END` or `ROLLBACK` already ended the one it was asked to
+  roll back. DBConnection turns either into a
+  `DBConnection.TransactionError` carrying the same status and drops
+  the connection, so the paired `:disconnect` event is where that error
+  shows up — there is no stop event with `{:disconnect, _}` for it.
+  A third status, `:error`, is admitted by the classifier and answered
+  by no callback.
+
+  Match all three, and end the handler in a clause that takes anything:
+
+      def handle_event(_event, _measurements, metadata, _config) do
+        case metadata[:error_reason] do
+          nil -> :ok
+          {:disconnect, error} -> record_disconnect(error)
+          {:transaction_status, status} -> record_status(status)
+          error -> record_error(error)
+        end
+      end
+
+  Read the field as `metadata[:error_reason]`, never
+  `metadata.error_reason`: the `:exception` event carries no such key,
+  and the `KeyError` that follows detaches the handler from the whole
+  VM. `XqliteEcto3.Telemetry.OpenTelemetry` looks inside the disconnect
+  tuple, so `error.type` names the error either way, and gives the
+  status tuple one name per status.
 
   ### Error-path diagnostics
 
@@ -119,7 +147,8 @@ defmodule XqliteEcto3.Telemetry do
   failed; the original error is surfaced regardless).
   Fires only when `rich_fk_diagnostics: true` and a foreign-key
   violation triggered the replay, and not at all when
-  `diagnostics_budget_ms` is `0`.
+  `diagnostics_budget_ms` is `0` or when the failed statement's own
+  timeout has less left than the allowance would spend.
 
       [:xqlite_ecto3, :unique_index_names, :start | :stop | :exception]
         measurements: %{monotonic_time, duration}
@@ -127,13 +156,24 @@ defmodule XqliteEcto3.Telemetry do
                       %{candidate_count, index_reads, lookup_status}
 
   `candidate_count` is how many unique indexes covered the violated
-  columns, `index_reads` how many `PRAGMA index_info` reads the lookup
-  made before it stopped, and `lookup_status` is `:ok` or
-  `:unavailable` (a read failed, the table carried more unique indexes
-  than the cap allows, or the `diagnostics_budget_ms` allowance ran
-  out — the conventional derived index name is emitted in all three
-  cases). Fires on every UNIQUE violation that names only a table and
-  columns, and not at all when `diagnostics_budget_ms` is `0`.
+  columns, and `index_reads` how many PRAGMA reads the lookup made
+  before it stopped.
+
+  `lookup_status` is `:ok` (the candidates were read), `:ambiguous`
+  (several unique indexes could have caused the violation and SQLite
+  does not say which) or `:unavailable` (a read failed, the table
+  carried more unique indexes than the cap allows, the allowance ran
+  out, or the failed statement's own deadline was already inside the
+  reserve the lookup leaves).
+
+  The span covers both forms a UNIQUE violation message takes. On the
+  form naming only a table and columns, `table` and `columns` are the
+  parsed ones on both events. On the form naming the index instead,
+  `:start` carries `table: nil` and `columns: []` — the message holds
+  neither — and `:stop` carries what the lookup read back, so a
+  subscriber grouping by table keeps those rows. It does not fire when
+  `diagnostics_budget_ms` is `0`, nor when the statement's deadline is
+  inside the reserve.
 
   ### Statement cache
 

@@ -89,7 +89,7 @@ Beyond the URL-expressible parameters, the repo configuration also accepts these
 - `custom_pragmas: [{name, value}]` — arbitrary PRAGMAs applied after the adapter's defaults, so explicit configuration always wins. This option is deliberately configuration-only, not URL-exposed. These pragmas are NOT validated: SQLite silently ignores an unknown pragma name and leniently parses values, so typos are yours to catch.
 - `mode: :readonly` — a read-only pool. The adapter skips its default pragmas that need writes, and writes fail with structured `{:read_only_database, _}` errors. For composable read scaling, point a second read-only repo at the same database file.
 - `default_transaction_mode: :deferred | :immediate | :exclusive` — the default is `:immediate`, deliberately: write transactions take their lock up front instead of deadlock-prone mid-transaction lock upgrades. This diverges from ecto_sqlite3's `:deferred` default on purpose. Pass `mode:` to `Repo.transaction/2` for a per-transaction override. `mode: :savepoint` works only inside an open transaction. At top level the adapter refuses it: a lone SAVEPOINT runs the transaction `:deferred` and silently discards `default_transaction_mode`. Do not put a transaction mode in the repo configuration key `mode:` — that key only sets the connection mode. The adapter refuses a transaction mode there at connect, with a structured error of `type: :transaction_mode_as_connection_mode` carrying `details: %{key: :mode, value: :immediate}`. The configuration key for transactions stays `default_transaction_mode:`.
-- `diagnostics_budget_ms: 500` — the wall-clock allowance, in milliseconds, for each of the two error-path diagnoses: the unique-index-name lookup and the foreign-key replay. Both read the database back on a statement that has already failed while the caller waits, so the allowance is checked before every read and the diagnosis stops as soon as it is spent, degrading to what the adapter knew without it. `0` turns both off. Anything but a non-negative integer is a structured connect error.
+- `diagnostics_budget_ms: 500` — the wall-clock allowance, in milliseconds, for each of the two error-path diagnoses: the unique-index-name lookup and the foreign-key replay. Both read the database back on a statement that has already failed while the caller waits, so the allowance is checked before every read and the diagnosis stops as soon as it is spent, degrading to what the adapter knew without it. The failed statement's own `:timeout` caps it: the index lookup spends the smaller of this allowance and what that deadline leaves once a 20 ms reserve is set aside, and is skipped only when the deadline is already inside the reserve; the foreign-key replay is skipped whole whenever the deadline leaves less than this allowance, because one of its reads scans every table in the database and no small reserve covers that. `0` turns both off. Anything but a non-negative integer is a structured connect error.
 - `hooks: [update: MyListener, wal: MyListener, progress: {MyListener, every_n: 500}]` — installs xqlite's connection hooks (update, wal, commit, rollback, progress) on every pooled connection at connect time. One listener then hears every write the pool makes. Subscribers are registered process _names_, so the configuration survives restarts. If a name is not alive when a connection opens, connect fails with a structured error of `type: :hook_subscriber_not_registered` carrying `details: %{key: :hooks, value: name}`. Messages arrive in xqlite's shapes, for example `{:xqlite_update, action, db, table, rowid}`.
 
 Define the repo:
@@ -213,6 +213,8 @@ Scheduler saturation shows up as the first row, only later than you asked for. T
 
 One wait `:timeout` does not bound at all: another connection's write lock. A blocked write sits inside SQLite's busy handler, where the progress handler — the thing a cancel signals — never runs, so the call returns when `busy_timeout` expires (default 5000 ms), however small `:timeout` is, with a structured `%XqliteEcto3.Error{type: :database_busy_or_locked}`. When lock waits must respect your deadline, set `busy_timeout` at or below it. Transaction start waits the same way: with the default `:immediate` mode, `BEGIN` takes the write lock inside the busy handler, so `Repo.transaction/2` can wait a full `busy_timeout` before failing with that error — and the failure keeps the connection rather than recycling it.
 
+`:timeout` also decides how much of the error path the adapter pays for. When a statement fails, the two diagnoses below read the database back on the same connection and the same clock: the unique-index-name lookup spends the smaller of `diagnostics_budget_ms` and what your deadline leaves once a 20 ms reserve is set aside, and only a deadline already inside that reserve skips it; the foreign-key replay is skipped whenever the deadline leaves less than its whole allowance, because one of its reads scans every table in the database. A skipped unique-index lookup reports the derived index name instead of the real one, so a changeset that declares a custom index name and no derived one raises `Ecto.ConstraintError` — see Real unique index names.
+
 Inside an `Ecto.Adapters.SQL.Sandbox` test, a cancelled **write** also destroys that test's sandbox transaction: SQLite rolls the whole thing back when it interrupts the write, and the driver tears the connection down. What follows depends on pool state — the test either loses ownership outright (later queries report `DBConnection.OwnershipError`, `Sandbox.checkin/1` returns `:not_found`) or continues on a replacement connection whose sandbox transaction is **empty**, so everything the test wrote before the cancel is gone. Either way nothing reaches the database file and the next test checks out normally — but the errors you see after the cancel are about missing state or ownership, not about the timeout that caused them.
 
 ### Structured constraint errors
@@ -328,13 +330,20 @@ index raises `Ecto.ConstraintError` — declare the real name (this is
 the one changeset difference from ecto_sqlite3, which always derives
 the conventional name). The lookup runs only on the error path, costs
 one schema read plus one `index_list` read and one `index_info` read
-per unique index on the table, and stops as soon as its
-`diagnostics_budget_ms` allowance is spent; a failed read, a spent
-allowance, an allowance of `0`, a statement whose own timeout has
-less left than the allowance, a table name that a second schema also
+per unique index on the table, and stops as soon as its allowance is
+spent — the smaller of `diagnostics_budget_ms` and what the failed
+statement's own `:timeout` leaves once a 20 ms reserve is set aside
+for the error path that follows. A failed read, a spent allowance, an
+allowance of `0`, a statement whose deadline is already inside that
+reserve, a table name that a second schema also
 holds, and a violation message a `.` or a `, ` inside a name garbled
 all degrade to the derived name — `e.details.unique_index_lookup`
-says which happened. Its cost is its own
+says which happened. One read can still outlast all of it: on a
+rollback-journal database another connection's write lock blocks a
+read for up to `busy_timeout`, and neither the allowance nor the
+reserve interrupts it, so the call can outstay its `:timeout` and
+lose its pooled connection to DBConnection's checkout deadline.
+Its cost is its own
 `[:xqlite_ecto3, :unique_index_names]` telemetry span, not time hidden
 inside the statement. Streamed DML skips the lookup the same way
 (`unique_index_lookup: :not_run`). Full contract in the
@@ -514,6 +523,8 @@ Permanent SQLite constraints (not adapter choices):
 - An **unnamed** `CHECK` constraint cannot be caught with `check_constraint/3`. SQLite puts the constraint's own expression text where the name goes when a violation is reported, so what comes back for `CHECK (price > 0)` is `"price > 0"` — never the `<table>_<field>_check` name Ecto derives, and never a name a changeset could declare. Name every CHECK you intend to convert into a changeset error (`check: %{name: "price_positive", expr: "price > 0"}`) and declare that same name in `check_constraint/3`; an unnamed one raises the structured `XqliteEcto3.Error` instead.
 
 - `mix ecto.dump` shells out to the `sqlite3` command-line program (its `.dump` command); the bundled SQLite library does not include that program, so install it separately where you run the task. Without it the task stops with a structured `{:missing_executable, "sqlite3"}` error. `mix ecto.load` needs nothing extra — it reads the dump file and runs it in-process.
+
+- A raw `COMMIT`, `END` or `ROLLBACK` in an `Ecto.Adapters.SQL.Sandbox` test ends the sandbox's own transaction: everything the test wrote before that statement is committed to the database file for real, and the next test sees those rows. This holds for every Ecto adapter — the sandbox is a transaction like any other, and a statement in the test body can end it. Ecto has a diagnostic for exactly this case ("the sandbox transaction was already committed/rolled back"), and the adapter hands Ecto the transaction status that triggers it, but it is raised inside the sandbox's ownership process: it reaches you as a crash log, not as a failed assertion, and `Sandbox.checkin/1` still returns `:ok`. Nothing at check-in can undo the writes — undo them yourself, or keep transaction control out of the test body.
 
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 

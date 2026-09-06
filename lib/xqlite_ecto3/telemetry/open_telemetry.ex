@@ -45,6 +45,15 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   Adapter errors are `%XqliteEcto3.Error{}` structs, and `error.type`
   carries the struct's typed `:type` atom (`"constraint_violation"`,
   `"database_busy_or_locked"`, …) — never the bare struct name.
+
+  A callback that refused because of the connection's transaction
+  status arrives as `error_reason: {:transaction_status, status}` and
+  gets one name per status: `"transaction_already_started"` for
+  `:transaction` (a begin met an open transaction) and
+  `"transaction_not_started"` for `:idle` (a rollback met a
+  transaction that had already ended). Two predictable values, the way
+  the conventions ask for the name of what failed rather than the name
+  of a state.
   """
   @spec attributes([atom()], map(), map()) :: %{String.t() => String.t()}
   def attributes([:xqlite_ecto3 | _] = event, _measurements, metadata) when is_map(metadata) do
@@ -100,6 +109,12 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   # being dropped. Naming that "disconnect" would file every such error under
   # one name and hide what actually failed, so classify the error inside.
   defp error_type({:disconnect, inner}), do: error_type(inner)
+
+  # A callback that ran no statement because the transaction status
+  # forbade it. The tag alone would file both under one name and report
+  # a state where the attribute wants the failure, so each gets its own.
+  defp error_type({:transaction_status, :transaction}), do: "transaction_already_started"
+  defp error_type({:transaction_status, :idle}), do: "transaction_not_started"
 
   # Every adapter error arrives wrapped as %XqliteEcto3.Error{}; naming the
   # struct would give the attribute exactly one value across the adapter, so

@@ -99,19 +99,25 @@ defmodule XqliteEcto3.UniqueIndexNames do
   allowance, `:diagnostics_budget_ms` from the repo configuration
   (500 ms unless set), checked before every index read
   (`{:unavailable, {:lookup_budget_exceeded, elapsed_ms}}`); and the
-  statement's own remaining timeout, which skips the lookup entirely
-  when less of it is left than the allowance would spend
+  statement's own remaining timeout, which caps that allowance. The
+  lookup spends the smaller of the two, less a 20 ms reserve for
+  everything that runs after it, and is skipped whole only when the
+  deadline is already inside that reserve
   (`{:unavailable, {:deadline_near, remaining_ms}}`). An allowance of
-  `0` turns the lookup off: nothing is read and the result is
-  `{:unavailable, :diagnostics_disabled}`.
+  `0` turns the lookup off whatever the deadline says: nothing is read
+  and the result is `{:unavailable, :diagnostics_disabled}`.
 
   None of that bounds a single read: when another process holds a
   write lock on a rollback-journal database, one read can block for up
   to `busy_timeout` — the same worst case any statement pays under
-  that contention, and nothing cancels it. WAL databases do not block
-  these reads. Past the cap or the allowance the emitted name reverts
-  to the conventional derived one, so a changeset that declares a
-  custom index name on such a table must declare the derived name too.
+  that contention, and nothing cancels it. Neither the allowance nor
+  the reserve covers such a read, so the operation can outstay its own
+  `:timeout`; through a pool that means DBConnection's checkout
+  deadline drops the connection while the caller is told nothing about
+  it. WAL databases do not block these reads. Past the cap or the
+  allowance the emitted name reverts to the conventional derived one,
+  so a changeset that declares a custom index name on such a table
+  must declare the derived name too.
 
   A lookup that reads reports the
   `[:xqlite_ecto3, :unique_index_names]` telemetry span, so its cost
@@ -134,6 +140,11 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @max_candidate_lookups 24
 
+  # Left of the statement's deadline for what runs after the lookup.
+  # Not for the error path itself, which costs tens of microseconds,
+  # but for the checkout queue and the scheduling jitter around it.
+  @deadline_reserve_ms 20
+
   @no_candidates %{matched: [], expression: []}
 
   # sqlite_schema names indexes of the main database only, so the
@@ -148,9 +159,12 @@ defmodule XqliteEcto3.UniqueIndexNames do
 
   @doc """
   Fills in `unique_index_names` on a UNIQUE violation, and `table` and
-  `columns` on the form that carries neither, spending at most
-  `budget_ms` on the reads and skipping them when less than
-  `budget_ms` of the statement's own deadline is left.
+  `columns` on the form that carries neither.
+
+  The reads spend the smaller of `budget_ms` and what
+  `remaining_ms` leaves once a fixed reserve is set aside, and are
+  skipped only when `budget_ms` is `0` or the deadline is already
+  inside that reserve.
 
   Every other error passes through untouched.
   """
@@ -183,8 +197,11 @@ defmodule XqliteEcto3.UniqueIndexNames do
        )
        when is_binary(table) do
     case allowance(budget_ms, remaining_ms) do
-      :run -> recorded(details, from_columns(conn, table, columns, message, budget_ms))
-      {:skip, reason} -> %{details | unique_index_lookup: {:unavailable, reason}}
+      {:run, spend_ms} ->
+        recorded(details, from_columns(conn, table, columns, message, spend_ms))
+
+      {:skip, reason} ->
+        %{details | unique_index_lookup: {:unavailable, reason}}
     end
   end
 
@@ -196,24 +213,33 @@ defmodule XqliteEcto3.UniqueIndexNames do
        )
        when is_binary(index_name) do
     case allowance(budget_ms, remaining_ms) do
-      :run -> recorded(details, from_index(conn, index_name, budget_ms))
-      {:skip, reason} -> %{details | unique_index_lookup: {:unavailable, reason}}
+      {:run, spend_ms} ->
+        recorded(details, from_index(conn, index_name, spend_ms))
+
+      {:skip, reason} ->
+        %{details | unique_index_lookup: {:unavailable, reason}}
     end
   end
 
   defp resolve_details(details, _conn, _budget_ms, _remaining_ms), do: details
 
   # The lookup bills its reads to the caller who is still waiting on
-  # the statement that failed, so a deadline with less left than the
-  # allowance would spend buys nothing and is not started.
+  # the statement that failed, so it spends what that caller's deadline
+  # leaves rather than the whole configured allowance. A deadline
+  # already inside the reserve buys nothing and is not started.
   defp allowance(0, _remaining_ms), do: {:skip, :diagnostics_disabled}
 
-  defp allowance(budget_ms, remaining_ms)
-       when is_integer(remaining_ms) and remaining_ms < budget_ms do
+  defp allowance(budget_ms, remaining_ms) when is_integer(remaining_ms) do
+    spendable(remaining_ms, min(budget_ms, remaining_ms - @deadline_reserve_ms))
+  end
+
+  defp allowance(budget_ms, _remaining_ms), do: {:run, budget_ms}
+
+  defp spendable(remaining_ms, spend_ms) when spend_ms <= 0 do
     {:skip, {:deadline_near, remaining_ms}}
   end
 
-  defp allowance(_budget_ms, _remaining_ms), do: :run
+  defp spendable(_remaining_ms, spend_ms), do: {:run, spend_ms}
 
   defp recorded(details, {:ok, names}) do
     %{details | unique_index_names: names, unique_index_lookup: :ok}
@@ -239,8 +265,13 @@ defmodule XqliteEcto3.UniqueIndexNames do
     end
   end
 
-  defp stop_metadata({:indexed, _table, _columns, status}, index_reads) do
-    stop_metadata(status, index_reads)
+  # The index-name form starts with neither the table nor the columns —
+  # SQLite named only the index — so the closing event carries what the
+  # lookup read back, and a subscriber grouping by table keeps the row.
+  defp stop_metadata({:indexed, table, columns, status}, index_reads) do
+    status
+    |> stop_metadata(index_reads)
+    |> Map.merge(%{table: table, columns: columns})
   end
 
   defp stop_metadata({:ok, names}, index_reads) do
@@ -265,19 +296,28 @@ defmodule XqliteEcto3.UniqueIndexNames do
     started_at_ms = System.monotonic_time(:millisecond)
 
     case violated_schema(conn, table, columns, message) do
-      {:ok, schema} ->
+      {:ok, schema, reads} ->
         read = %{conn: conn, schema: schema, columns: columns, budget_ms: budget_ms}
-        listed_indexes(read, table, started_at_ms)
+        listed_indexes(read, table, started_at_ms, reads)
 
-      {:error, _reason} = err ->
-        {err, 0}
+      {:error, reason, reads} ->
+        {{:error, reason}, reads}
     end
   end
 
+  # A message that does not come apart is refused before anything is
+  # read, so it is the one outcome that carries no read at all.
   defp violated_schema(conn, table, columns, message) do
     case parseable?(message, columns) do
-      true -> table_schema(conn, table, message)
-      false -> {:error, {:unparseable_violation_table, message}}
+      true -> schema_read(conn, table, message)
+      false -> {:error, {:unparseable_violation_table, message}, 0}
+    end
+  end
+
+  defp schema_read(conn, table, message) do
+    case table_schema(conn, table, message) do
+      {:ok, schema} -> {:ok, schema, 1}
+      {:error, reason} -> {:error, reason, 1}
     end
   end
 
@@ -313,31 +353,31 @@ defmodule XqliteEcto3.UniqueIndexNames do
   defp one_schema([], message), do: {:error, {:unparseable_violation_table, message}}
   defp one_schema(schemas, _message), do: {:error, {:ambiguous_schema, schemas}}
 
-  defp listed_indexes(read, table, started_at_ms) do
+  defp listed_indexes(read, table, started_at_ms, reads) do
     case unique_indexes(read.conn, read.schema, table) do
-      {:ok, names} -> capped_matching_indexes(names, read, started_at_ms)
-      {:error, _reason} = err -> {err, 1}
+      {:ok, names} -> capped_matching_indexes(names, read, started_at_ms, reads + 1)
+      {:error, _reason} = err -> {err, reads + 1}
     end
   end
 
   # The lookup bills its cost to the caller's checkout deadline, so the
   # per-index reads must stay bounded no matter what the schema holds.
-  defp capped_matching_indexes(names, read, started_at_ms) do
+  defp capped_matching_indexes(names, read, started_at_ms, reads) do
     count = length(names)
 
     if count > @max_candidate_lookups do
-      {{:error, {:too_many_unique_indexes, count}}, 1}
+      {{:error, {:too_many_unique_indexes, count}}, reads}
     else
-      matching_indexes(names, read, started_at_ms)
+      matching_indexes(names, read, started_at_ms, reads)
     end
   end
 
   # The read tally rides along with the result so the span can report
-  # how many index reads the lookup really made before it stopped; the
-  # index_list read that produced these names is the first of them.
-  defp matching_indexes(names, read, started_at_ms) do
+  # how many pragma reads the lookup really made before it stopped —
+  # the schema read and the index_list read included.
+  defp matching_indexes(names, read, started_at_ms, reads) do
     {result, index_reads} =
-      Enum.reduce_while(names, {{:ok, @no_candidates}, 1}, fn name, acc ->
+      Enum.reduce_while(names, {{:ok, @no_candidates}, reads}, fn name, acc ->
         collect_match(read, name, acc, started_at_ms)
       end)
 

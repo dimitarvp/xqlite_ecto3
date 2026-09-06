@@ -51,10 +51,21 @@ true
 | `[:xqlite_ecto3, :handle_fetch, :*]` | streaming batch fetched | `:cursor` |
 | `[:xqlite_ecto3, :handle_deallocate, :*]` | streaming cursor closed | `:cursor` |
 | `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count` (rows carried, capped), `:violations_total` (the real number), `:diagnostics_status` (`:ok` \| `:truncated` \| `:unavailable`) |
-| `[:xqlite_ecto3, :unique_index_names, :*]` | the real index name behind a UNIQUE violation was read back | `:conn`, `:table`, `:columns`; on `:stop` also `:candidate_count` (unique indexes covering the violated columns), `:index_reads` (`index_info` reads made), `:lookup_status` (`:ok` \| `:unavailable`) |
+| `[:xqlite_ecto3, :unique_index_names, :*]` | the real index name behind a UNIQUE violation was read back | `:conn`, `:table`, `:columns`; on `:stop` also `:candidate_count` (unique indexes covering the violated columns), `:index_reads` (PRAGMA reads made), `:lookup_status` (`:ok` \| `:ambiguous` \| `:unavailable`) |
 | `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
+
+Both error-path spans stay silent when their diagnosis does not run:
+neither fires when `diagnostics_budget_ms` is `0`, the unique-index
+lookup does not fire when the failed statement's own deadline is
+already inside the reserve the lookup leaves, and the foreign-key
+replay does not fire whenever that deadline leaves less than its whole
+allowance. Missing spans on a repo with a short `:timeout` are that,
+not a lost event. The index lookup also covers both forms a UNIQUE
+violation message takes: on the form that names the index rather than
+the table and columns, `:start` carries `table: nil` and `columns: []`
+and `:stop` carries the table and columns the lookup read back.
 
 The three statement-cache events are not spans: each carries
 `monotonic_time` (ns) and `cached_count`, the number of cached
@@ -95,6 +106,16 @@ it came from a cancel it is
 from DBConnection's own checkout-deadline recycle, so use the matching
 `:stop` event's `error_reason` to tell those two apart.
 
+One disconnect has no `{:disconnect, _}` stop event to join to. When a
+callback refuses because of the connection's transaction status, its
+`:stop` event carries `error_reason: {:transaction_status, status}`
+and DBConnection drops the connection itself, so the `:disconnect`
+event's `:reason` is a `%DBConnection.TransactionError{}` carrying the
+same status. That pair — the callback's stop event and the transaction
+error — is the signal; the caller only ever sees
+`{:error, :rollback}`, which is what an ordinary `Repo.rollback/1`
+returns too.
+
 ### The `:exception` phase carries other metadata
 
 A span's `:exception` event carries the `:start` metadata plus `kind`,
@@ -110,15 +131,37 @@ a catch-all clause, as the samples below do. The phase is not
 theoretical: anything that raises inside a span's body (connect
 included) emits it.
 
-### Two shapes of `error_reason`
+### Three shapes of `error_reason`
 
 `error_reason` is normally the error the callback returned. When the
 callback also told DBConnection to drop the connection — a statement
 error that took the whole transaction with it, a failed COMMIT — it is
 `{:disconnect, error}` instead: the same error, plus the fact that the
-connection is going away. Match both shapes.
-`XqliteEcto3.Telemetry.OpenTelemetry` looks inside the tuple, so
-`error.type` carries the wrapped `%XqliteEcto3.Error{}`'s typed `:type` atom (`"constraint_violation"`, `"database_busy_or_locked"`, ...) either way — never the bare struct name.
+connection is going away. The third shape is
+`{:transaction_status, status}`: the callback ran no statement at all
+because the connection's transaction status forbids it.
+`handle_begin` answers `:transaction` when a transaction is already
+open, and `handle_rollback` answers `:idle` when raw SQL in the
+caller's own statements already ended the one it was asked to roll
+back. A third status, `:error`, is admitted by the classifier and
+answered by no callback.
+
+Match all three, and read the field as `metadata[:error_reason]`, not
+`metadata.error_reason` — the `:exception` event carries no such key,
+and the `KeyError` that follows detaches your handler from the whole
+VM:
+
+```elixir
+case metadata[:error_reason] do
+  nil -> :ok
+  {:disconnect, error} -> record_disconnect(error)
+  {:transaction_status, status} -> record_status(status)
+  error -> record_error(error)
+end
+```
+
+`XqliteEcto3.Telemetry.OpenTelemetry` looks inside the disconnect tuple, so
+`error.type` carries the wrapped `%XqliteEcto3.Error{}`'s typed `:type` atom (`"constraint_violation"`, `"database_busy_or_locked"`, ...) either way — never the bare struct name. The status tuple gets one name per status: `"transaction_already_started"` and `"transaction_not_started"`.
 
 ## Composing layers
 
