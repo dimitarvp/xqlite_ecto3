@@ -57,8 +57,9 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
   has produced flaky failures before.
 
   Like `XqliteEcto3.TelemetryTest`, this half only makes sense in the
-  telemetry-enabled build the test config selects. The CI lane that
-  compiles the flag off runs `telemetry_disabled_smoke_test.exs` alone.
+  telemetry-enabled build the test config selects, so it is not compiled
+  into the build that compiles the flag off — which runs this whole file
+  otherwise, and the placeholder half below with it.
 
   ## 2. Reordering the conditions of a query cannot change its answer
 
@@ -81,9 +82,6 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
   use ExUnitProperties
 
   import Ecto.Query
-  import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
-
-  alias XqliteEcto3.Driver
 
   defmodule SpanRepo do
     use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
@@ -92,38 +90,7 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
   # Run counts keep the whole file near ten seconds. A telemetry case runs
   # a handful of small statements and then walks the events it captured; a
   # placeholder case reloads its rows, compiles two queries and runs both.
-  @span_runs 12_000
   @placeholder_runs 10_000
-  @unit_runs 2000
-
-  @unit_family [:xqlite_ecto3, :span_unit_law]
-
-  # The DBConnection callbacks the driver times. Their closing event
-  # reports the outcome as `result_class` and `error_reason`.
-  @callback_span_families [
-    [:xqlite_ecto3, :connect],
-    [:xqlite_ecto3, :handle_begin],
-    [:xqlite_ecto3, :handle_commit],
-    [:xqlite_ecto3, :handle_rollback],
-    [:xqlite_ecto3, :handle_execute],
-    [:xqlite_ecto3, :handle_declare],
-    [:xqlite_ecto3, :handle_fetch],
-    [:xqlite_ecto3, :handle_deallocate]
-  ]
-
-  # The two error-path diagnoses. They run inside a callback that has
-  # already failed, so their closing event reports what the diagnosis
-  # found rather than a result class.
-  @diagnostic_span_families [
-    [:xqlite_ecto3, :fk_diagnostics],
-    [:xqlite_ecto3, :unique_index_names]
-  ]
-
-  @span_families @callback_span_families ++ @diagnostic_span_families
-
-  @span_events for family <- @span_families,
-                   suffix <- [:start, :stop, :exception],
-                   do: family ++ [suffix]
 
   # Reserved so the deliberate-conflict operation always has something to
   # collide with, and so no other operation can take the value from it.
@@ -204,389 +171,430 @@ defmodule XqliteEcto3.TelemetryAndPlaceholderLawTest do
     Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(database <> suffix) end)
   end
 
-  # --- 1. span pairing --------------------------------------------------------
+  # The span half has nothing to assert on in the no-op build; the
+  # placeholder half runs in both. What the span half alone uses lives in
+  # here with it, or the no-op build refuses it as unused.
+  if XqliteEcto3.Telemetry.enabled?() do
+    # --- 1. span pairing --------------------------------------------------------
 
-  property "every timed operation reports a start and exactly one closing event",
-           context do
-    connection = XqliteEcto3.with_xqlite(SpanRepo, fn handle -> handle end)
+    import XqliteEcto3.Telemetry, only: [span_with_stop_metadata: 3]
 
-    handler_id = "span-law-#{:erlang.unique_integer([:positive])}"
-    databases = MapSet.new([context.database, context.missing_database])
+    alias XqliteEcto3.Driver
 
-    :telemetry.attach_many(
-      handler_id,
-      @span_events,
-      &__MODULE__.forward_span_event/4,
-      %{pid: self(), conn: connection, databases: databases}
-    )
+    @span_runs 12_000
+    @unit_runs 2000
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    @unit_family [:xqlite_ecto3, :span_unit_law]
 
-    # Nothing should be waiting yet, but starting from a known-empty
-    # mailbox keeps the first case honest.
-    drain_span_events()
+    # The DBConnection callbacks the driver times. Their closing event
+    # reports the outcome as `result_class` and `error_reason`.
+    @callback_span_families [
+      [:xqlite_ecto3, :connect],
+      [:xqlite_ecto3, :handle_begin],
+      [:xqlite_ecto3, :handle_commit],
+      [:xqlite_ecto3, :handle_rollback],
+      [:xqlite_ecto3, :handle_execute],
+      [:xqlite_ecto3, :handle_declare],
+      [:xqlite_ecto3, :handle_fetch],
+      [:xqlite_ecto3, :handle_deallocate]
+    ]
 
-    check all(
-            operations <- list_of(operation(), min_length: 1, max_length: 5),
-            max_runs: @span_runs
-          ) do
-      opened_at = XqliteEcto3.Telemetry.monotonic_time()
-      Enum.each(operations, fn operation -> run_operation(operation, context) end)
-      closed_at = XqliteEcto3.Telemetry.monotonic_time()
+    # The two error-path diagnoses. They run inside a callback that has
+    # already failed, so their closing event reports what the diagnosis
+    # found rather than a result class.
+    @diagnostic_span_families [
+      [:xqlite_ecto3, :fk_diagnostics],
+      [:xqlite_ecto3, :unique_index_names]
+    ]
 
-      events = drain_span_events()
+    @span_families @callback_span_families ++ @diagnostic_span_families
 
-      assert_span_law(events, %{
-        errors: sum_over(operations, &failing_spans/1),
-        minimum_spans: sum_over(operations, &least_spans/1),
-        window: {opened_at, closed_at}
-      })
+    @span_events for family <- @span_families,
+                     suffix <- [:start, :stop, :exception],
+                     do: family ++ [suffix]
+
+    property "every timed operation reports a start and exactly one closing event",
+             context do
+      connection = XqliteEcto3.with_xqlite(SpanRepo, fn handle -> handle end)
+
+      handler_id = "span-law-#{:erlang.unique_integer([:positive])}"
+      databases = MapSet.new([context.database, context.missing_database])
+
+      :telemetry.attach_many(
+        handler_id,
+        @span_events,
+        &__MODULE__.forward_span_event/4,
+        %{pid: self(), conn: connection, databases: databases}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      # Nothing should be waiting yet, but starting from a known-empty
+      # mailbox keeps the first case honest.
+      drain_span_events()
+
+      check all(
+              operations <- list_of(operation(), min_length: 1, max_length: 5),
+              max_runs: @span_runs
+            ) do
+        opened_at = XqliteEcto3.Telemetry.monotonic_time()
+        Enum.each(operations, fn operation -> run_operation(operation, context) end)
+        closed_at = XqliteEcto3.Telemetry.monotonic_time()
+
+        events = drain_span_events()
+
+        assert_span_law(events, %{
+          errors: sum_over(operations, &failing_spans/1),
+          minimum_spans: sum_over(operations, &least_spans/1),
+          window: {opened_at, closed_at}
+        })
+      end
     end
-  end
 
-  # Telemetry runs handlers in whichever process emitted the event, and
-  # the pool runs the driver callbacks in the caller — so these arrive in
-  # the test's own mailbox before the operation that caused them returns.
-  @doc false
-  def forward_span_event(name, measurements, metadata, config) do
-    if own_event?(metadata, config) do
-      send(config.pid, {:span_event, name, measurements, metadata})
-    else
-      :ok
+    # Telemetry runs handlers in whichever process emitted the event, and
+    # the pool runs the driver callbacks in the caller — so these arrive in
+    # the test's own mailbox before the operation that caused them returns.
+    @doc false
+    def forward_span_event(name, measurements, metadata, config) do
+      if own_event?(metadata, config) do
+        send(config.pid, {:span_event, name, measurements, metadata})
+      else
+        :ok
+      end
     end
-  end
 
-  defp own_event?(%{conn: connection}, %{conn: connection}), do: true
+    defp own_event?(%{conn: connection}, %{conn: connection}), do: true
 
-  defp own_event?(%{database: database}, %{databases: databases}) do
-    MapSet.member?(databases, database)
-  end
-
-  defp own_event?(_metadata, _config), do: false
-
-  defp drain_span_events(acc \\ []) do
-    receive do
-      {:span_event, name, measurements, metadata} ->
-        event = %{
-          family: Enum.drop(name, -1),
-          suffix: List.last(name),
-          measurements: measurements,
-          metadata: metadata
-        }
-
-        drain_span_events([event | acc])
-    after
-      0 -> Enum.reverse(acc)
+    defp own_event?(%{database: database}, %{databases: databases}) do
+      MapSet.member?(databases, database)
     end
-  end
 
-  defp assert_span_law(events, expected) do
-    assert events != []
-    Enum.each(events, fn event -> assert event.family in @span_families end)
+    defp own_event?(_metadata, _config), do: false
 
-    events
-    |> Enum.group_by(fn event -> event.metadata.telemetry_span_context end)
-    |> Enum.each(fn {_span, group} -> assert_one_span(group, expected.window) end)
+    defp drain_span_events(acc \\ []) do
+      receive do
+        {:span_event, name, measurements, metadata} ->
+          event = %{
+            family: Enum.drop(name, -1),
+            suffix: List.last(name),
+            measurements: measurements,
+            metadata: metadata
+          }
 
-    starts = Enum.filter(events, fn event -> event.suffix == :start end)
-    stops = Enum.filter(events, fn event -> event.suffix == :stop end)
-    failed = Enum.filter(stops, fn event -> event.metadata[:result_class] == :error end)
+          drain_span_events([event | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
+    end
 
-    assert length(starts) == length(stops)
-    assert length(starts) >= expected.minimum_spans
-    assert length(failed) == expected.errors
-  end
+    defp assert_span_law(events, expected) do
+      assert events != []
+      Enum.each(events, fn event -> assert event.family in @span_families end)
 
-  # One start, one stop, in that order, and nothing else under the same
-  # span reference. An operation whose closing event never fired leaves a
-  # group of one; a doubled closing event leaves a group of three.
-  defp assert_one_span(group, window) do
-    assert Enum.map(group, fn event -> event.suffix end) == [:start, :stop]
+      events
+      |> Enum.group_by(fn event -> event.metadata.telemetry_span_context end)
+      |> Enum.each(fn {_span, group} -> assert_one_span(group, expected.window) end)
 
-    [start_event, stop_event] = group
+      starts = Enum.filter(events, fn event -> event.suffix == :start end)
+      stops = Enum.filter(events, fn event -> event.suffix == :stop end)
+      failed = Enum.filter(stops, fn event -> event.metadata[:result_class] == :error end)
 
-    assert start_event.family == stop_event.family
-    assert_identity_carried(start_event, stop_event)
-    assert_timings(start_event, stop_event, window)
-    assert_outcome(stop_event)
-  end
+      assert length(starts) == length(stops)
+      assert length(starts) >= expected.minimum_spans
+      assert length(failed) == expected.errors
+    end
 
-  defp assert_identity_carried(start_event, stop_event) do
-    carried = Map.delete(start_event.metadata, :telemetry_span_context)
+    # One start, one stop, in that order, and nothing else under the same
+    # span reference. An operation whose closing event never fired leaves a
+    # group of one; a doubled closing event leaves a group of three.
+    defp assert_one_span(group, window) do
+      assert Enum.map(group, fn event -> event.suffix end) == [:start, :stop]
 
-    assert Map.take(stop_event.metadata, Map.keys(carried)) == carried
-  end
+      [start_event, stop_event] = group
 
-  defp assert_timings(start_event, stop_event, {opened_at, closed_at}) do
-    assert is_integer(start_event.measurements.monotonic_time)
-    assert is_integer(start_event.measurements.system_time)
-    assert is_integer(stop_event.measurements.duration)
-    assert stop_event.measurements.duration >= 0
-    assert stop_event.measurements.monotonic_time >= start_event.measurements.monotonic_time
+      assert start_event.family == stop_event.family
+      assert_identity_carried(start_event, stop_event)
+      assert_timings(start_event, stop_event, window)
+      assert_outcome(stop_event)
+    end
 
-    assert start_event.measurements.monotonic_time >= opened_at
-    assert stop_event.measurements.monotonic_time <= closed_at
-  end
+    defp assert_identity_carried(start_event, stop_event) do
+      carried = Map.delete(start_event.metadata, :telemetry_span_context)
 
-  defp assert_outcome(%{family: [:xqlite_ecto3, :fk_diagnostics], metadata: metadata}) do
-    assert metadata.diagnostics_status in [:ok, :truncated, :unavailable]
-    assert is_integer(metadata.violations_count)
-    assert is_integer(metadata.violations_total)
-  end
+      assert Map.take(stop_event.metadata, Map.keys(carried)) == carried
+    end
 
-  defp assert_outcome(%{family: [:xqlite_ecto3, :unique_index_names], metadata: metadata}) do
-    assert metadata.lookup_status in [:ok, :unavailable]
-    assert is_integer(metadata.candidate_count)
-    assert is_integer(metadata.index_reads)
-  end
+    defp assert_timings(start_event, stop_event, {opened_at, closed_at}) do
+      assert is_integer(start_event.measurements.monotonic_time)
+      assert is_integer(start_event.measurements.system_time)
+      assert is_integer(stop_event.measurements.duration)
+      assert stop_event.measurements.duration >= 0
+      assert stop_event.measurements.monotonic_time >= start_event.measurements.monotonic_time
 
-  defp assert_outcome(%{metadata: %{result_class: :ok, error_reason: reason}}) do
-    assert reason == nil
-  end
+      assert start_event.measurements.monotonic_time >= opened_at
+      assert stop_event.measurements.monotonic_time <= closed_at
+    end
 
-  defp assert_outcome(%{metadata: %{result_class: :error, error_reason: reason}}) do
-    assert reason != nil
-  end
+    defp assert_outcome(%{family: [:xqlite_ecto3, :fk_diagnostics], metadata: metadata}) do
+      assert metadata.diagnostics_status in [:ok, :truncated, :unavailable]
+      assert is_integer(metadata.violations_count)
+      assert is_integer(metadata.violations_total)
+    end
 
-  defp assert_outcome(stop_event) do
-    flunk("closing event reported neither :ok nor :error: #{inspect(stop_event.metadata)}")
-  end
+    defp assert_outcome(%{family: [:xqlite_ecto3, :unique_index_names], metadata: metadata}) do
+      assert metadata.lookup_status in [:ok, :unavailable]
+      assert is_integer(metadata.candidate_count)
+      assert is_integer(metadata.index_reads)
+    end
 
-  defp sum_over(operations, fun) do
-    operations
-    |> Enum.map(fun)
-    |> Enum.sum()
-  end
+    defp assert_outcome(%{metadata: %{result_class: :ok, error_reason: reason}}) do
+      assert reason == nil
+    end
 
-  # --- the operations the property strings together ---------------------------
+    defp assert_outcome(%{metadata: %{result_class: :error, error_reason: reason}}) do
+      assert reason != nil
+    end
 
-  defp operation do
-    one_of([
-      tuple({constant(:select), integer(0..20)}),
-      tuple({constant(:insert), integer(@seeded_ids)}),
-      tuple({constant(:transaction_commit), integer(@seeded_ids)}),
-      tuple({constant(:transaction_rollback), integer(@seeded_ids)}),
-      tuple({constant(:stream), integer(1..8)}),
-      constant({:syntax_error, nil}),
-      constant({:unique_conflict, nil}),
-      constant({:failing_query_in_transaction, nil}),
-      constant({:failed_connect, nil})
-    ])
-  end
+    defp assert_outcome(stop_event) do
+      flunk("closing event reported neither :ok nor :error: #{inspect(stop_event.metadata)}")
+    end
 
-  defp run_operation({:select, threshold}, _context) do
-    query =
-      from(r in "span_rows", where: r.n > ^threshold, order_by: r.id, limit: 5, select: r.id)
+    defp sum_over(operations, fun) do
+      operations
+      |> Enum.map(fun)
+      |> Enum.sum()
+    end
 
-    SpanRepo.all(query)
-  end
+    # --- the operations the property strings together ---------------------------
 
-  defp run_operation({:insert, id}, _context) do
-    SpanRepo.query!(replace_sql(), replace_params(id))
-  end
+    defp operation do
+      one_of([
+        tuple({constant(:select), integer(0..20)}),
+        tuple({constant(:insert), integer(@seeded_ids)}),
+        tuple({constant(:transaction_commit), integer(@seeded_ids)}),
+        tuple({constant(:transaction_rollback), integer(@seeded_ids)}),
+        tuple({constant(:stream), integer(1..8)}),
+        constant({:syntax_error, nil}),
+        constant({:unique_conflict, nil}),
+        constant({:failing_query_in_transaction, nil}),
+        constant({:failed_connect, nil})
+      ])
+    end
 
-  defp run_operation({:transaction_commit, id}, _context) do
-    SpanRepo.transaction(fn -> SpanRepo.query!(replace_sql(), replace_params(id)) end)
-  end
+    defp run_operation({:select, threshold}, _context) do
+      query =
+        from(r in "span_rows", where: r.n > ^threshold, order_by: r.id, limit: 5, select: r.id)
 
-  defp run_operation({:transaction_rollback, id}, _context) do
-    SpanRepo.transaction(fn ->
+      SpanRepo.all(query)
+    end
+
+    defp run_operation({:insert, id}, _context) do
       SpanRepo.query!(replace_sql(), replace_params(id))
-      SpanRepo.rollback(:law)
-    end)
-  end
+    end
 
-  defp run_operation({:stream, batch}, _context) do
-    query = from(r in "span_rows", order_by: r.id, select: r.id)
+    defp run_operation({:transaction_commit, id}, _context) do
+      SpanRepo.transaction(fn -> SpanRepo.query!(replace_sql(), replace_params(id)) end)
+    end
 
-    SpanRepo.transaction(fn ->
-      query
-      |> SpanRepo.stream(max_rows: batch)
-      |> Enum.take(batch)
-    end)
-  end
+    defp run_operation({:transaction_rollback, id}, _context) do
+      SpanRepo.transaction(fn ->
+        SpanRepo.query!(replace_sql(), replace_params(id))
+        SpanRepo.rollback(:law)
+      end)
+    end
 
-  defp run_operation({:syntax_error, nil}, _context) do
-    assert {:error, _reason} = SpanRepo.query("SELEKT law", [])
-  end
+    defp run_operation({:stream, batch}, _context) do
+      query = from(r in "span_rows", order_by: r.id, select: r.id)
 
-  defp run_operation({:unique_conflict, nil}, _context) do
-    assert {:error, _reason} =
-             SpanRepo.query(
-               "INSERT INTO span_rows (id, n, s, u) VALUES (900, 1, 'row', ?)",
-               [@conflict_value]
-             )
-  end
+      SpanRepo.transaction(fn ->
+        query
+        |> SpanRepo.stream(max_rows: batch)
+        |> Enum.take(batch)
+      end)
+    end
 
-  defp run_operation({:failing_query_in_transaction, nil}, _context) do
-    SpanRepo.transaction(fn -> assert {:error, _reason} = SpanRepo.query("SELEKT law", []) end)
-  end
+    defp run_operation({:syntax_error, nil}, _context) do
+      assert {:error, _reason} = SpanRepo.query("SELEKT law", [])
+    end
 
-  defp run_operation({:failed_connect, nil}, context) do
-    assert {:error, _reason} = Driver.connect(database: context.missing_database)
-  end
+    defp run_operation({:unique_conflict, nil}, _context) do
+      assert {:error, _reason} =
+               SpanRepo.query(
+                 "INSERT INTO span_rows (id, n, s, u) VALUES (900, 1, 'row', ?)",
+                 [@conflict_value]
+               )
+    end
 
-  defp replace_sql do
-    "INSERT OR REPLACE INTO span_rows (id, n, s, u) VALUES (?, ?, 'row', ?)"
-  end
+    defp run_operation({:failing_query_in_transaction, nil}, _context) do
+      SpanRepo.transaction(fn -> assert {:error, _reason} = SpanRepo.query("SELEKT law", []) end)
+    end
 
-  defp replace_params(id), do: [id, id, "u#{id}"]
+    defp run_operation({:failed_connect, nil}, context) do
+      assert {:error, _reason} = Driver.connect(database: context.missing_database)
+    end
 
-  # How many closing events each operation is made to fail.
-  defp failing_spans({:syntax_error, _arg}), do: 1
-  defp failing_spans({:unique_conflict, _arg}), do: 1
-  defp failing_spans({:failing_query_in_transaction, _arg}), do: 1
-  defp failing_spans({:failed_connect, _arg}), do: 1
-  defp failing_spans(_operation), do: 0
+    defp replace_sql do
+      "INSERT OR REPLACE INTO span_rows (id, n, s, u) VALUES (?, ?, 'row', ?)"
+    end
 
-  # The fewest spans an operation can possibly open, so a run that
-  # captured nothing (a filter that stopped matching, say) fails loudly
-  # instead of passing on an empty list.
-  defp least_spans({:transaction_commit, _arg}), do: 3
-  defp least_spans({:transaction_rollback, _arg}), do: 3
-  defp least_spans({:failing_query_in_transaction, _arg}), do: 3
-  defp least_spans({:stream, _arg}), do: 5
-  defp least_spans(_operation), do: 1
+    defp replace_params(id), do: [id, id, "u#{id}"]
 
-  property "a span reports nanoseconds whichever shape its block returns" do
-    handler_id = attach_unit_handler()
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+    # How many closing events each operation is made to fail.
+    defp failing_spans({:syntax_error, _arg}), do: 1
+    defp failing_spans({:unique_conflict, _arg}), do: 1
+    defp failing_spans({:failing_query_in_transaction, _arg}), do: 1
+    defp failing_spans({:failed_connect, _arg}), do: 1
+    defp failing_spans(_operation), do: 0
 
-    check all(
-            millis <- integer(1..2),
-            shape <- member_of([:pair, :triple]),
-            max_runs: @unit_runs
-          ) do
+    # The fewest spans an operation can possibly open, so a run that
+    # captured nothing (a filter that stopped matching, say) fails loudly
+    # instead of passing on an empty list.
+    defp least_spans({:transaction_commit, _arg}), do: 3
+    defp least_spans({:transaction_rollback, _arg}), do: 3
+    defp least_spans({:failing_query_in_transaction, _arg}), do: 3
+    defp least_spans({:stream, _arg}), do: 5
+    defp least_spans(_operation), do: 1
+
+    property "a span reports nanoseconds whichever shape its block returns" do
+      handler_id = attach_unit_handler()
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      check all(
+              millis <- integer(1..2),
+              shape <- member_of([:pair, :triple]),
+              max_runs: @unit_runs
+            ) do
+        drain_unit_events()
+
+        opened_at = XqliteEcto3.Telemetry.monotonic_time()
+        wall_before = System.system_time(:nanosecond)
+        assert run_unit_span(millis, shape) == :done
+        wall_after = System.system_time(:nanosecond)
+        closed_at = XqliteEcto3.Telemetry.monotonic_time()
+
+        assert [start_event, stop_event] = drain_unit_events()
+        assert start_event.suffix == :start
+        assert stop_event.suffix == :stop
+
+        assert is_reference(start_event.metadata.telemetry_span_context)
+
+        assert start_event.metadata.telemetry_span_context ==
+                 stop_event.metadata.telemetry_span_context
+
+        assert start_event.metadata.shape == shape
+        assert stop_event.metadata.outcome == :ok
+
+        assert start_event.measurements.monotonic_time >= opened_at
+        assert start_event.measurements.system_time >= wall_before
+        assert start_event.measurements.system_time <= wall_after
+        assert stop_event.measurements.monotonic_time <= closed_at
+
+        assert stop_event.measurements.duration >= millis * 1_000_000
+        assert stop_event.measurements.duration <= (millis + 2_000) * 1_000_000
+
+        assert_stop_extras(shape, stop_event.measurements)
+      end
+    end
+
+    test "a raising block closes the span with an exception event and re-raises" do
+      handler_id = attach_unit_handler()
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      drain_unit_events()
+
+      assert_raise RuntimeError, fn -> run_raising_span() end
+
+      assert [start_event, exception_event] = drain_unit_events()
+      assert exception_event.suffix == :exception
+      assert exception_event.metadata.kind == :error
+      assert %RuntimeError{} = exception_event.metadata.reason
+      assert is_list(exception_event.metadata.stacktrace)
+
+      assert exception_event.metadata.telemetry_span_context ==
+               start_event.metadata.telemetry_span_context
+
+      assert exception_event.measurements.duration >= 0
+    end
+
+    test "the span runner reports the same three events when called directly" do
+      handler_id = attach_unit_handler()
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
       drain_unit_events()
 
       opened_at = XqliteEcto3.Telemetry.monotonic_time()
-      wall_before = System.system_time(:nanosecond)
-      assert run_unit_span(millis, shape) == :done
-      wall_after = System.system_time(:nanosecond)
+
+      value =
+        XqliteEcto3.Telemetry.run_span(@unit_family, %{shape: :direct}, fn ->
+          Process.sleep(2)
+          {:done, %{shape: :direct, outcome: :ok}}
+        end)
+
       closed_at = XqliteEcto3.Telemetry.monotonic_time()
 
+      assert value == :done
       assert [start_event, stop_event] = drain_unit_events()
-      assert start_event.suffix == :start
-      assert stop_event.suffix == :stop
-
-      assert is_reference(start_event.metadata.telemetry_span_context)
-
-      assert start_event.metadata.telemetry_span_context ==
-               stop_event.metadata.telemetry_span_context
-
-      assert start_event.metadata.shape == shape
-      assert stop_event.metadata.outcome == :ok
-
       assert start_event.measurements.monotonic_time >= opened_at
-      assert start_event.measurements.system_time >= wall_before
-      assert start_event.measurements.system_time <= wall_after
       assert stop_event.measurements.monotonic_time <= closed_at
-
-      assert stop_event.measurements.duration >= millis * 1_000_000
-      assert stop_event.measurements.duration <= (millis + 2_000) * 1_000_000
-
-      assert_stop_extras(shape, stop_event.measurements)
+      assert stop_event.measurements.duration >= 2_000_000
+      assert stop_event.metadata.outcome == :ok
     end
-  end
 
-  test "a raising block closes the span with an exception event and re-raises" do
-    handler_id = attach_unit_handler()
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    drain_unit_events()
-
-    assert_raise RuntimeError, fn -> run_raising_span() end
-
-    assert [start_event, exception_event] = drain_unit_events()
-    assert exception_event.suffix == :exception
-    assert exception_event.metadata.kind == :error
-    assert %RuntimeError{} = exception_event.metadata.reason
-    assert is_list(exception_event.metadata.stacktrace)
-
-    assert exception_event.metadata.telemetry_span_context ==
-             start_event.metadata.telemetry_span_context
-
-    assert exception_event.measurements.duration >= 0
-  end
-
-  test "the span runner reports the same three events when called directly" do
-    handler_id = attach_unit_handler()
-    on_exit(fn -> :telemetry.detach(handler_id) end)
-
-    drain_unit_events()
-
-    opened_at = XqliteEcto3.Telemetry.monotonic_time()
-
-    value =
-      XqliteEcto3.Telemetry.run_span(@unit_family, %{shape: :direct}, fn ->
-        Process.sleep(2)
-        {:done, %{shape: :direct, outcome: :ok}}
-      end)
-
-    closed_at = XqliteEcto3.Telemetry.monotonic_time()
-
-    assert value == :done
-    assert [start_event, stop_event] = drain_unit_events()
-    assert start_event.measurements.monotonic_time >= opened_at
-    assert stop_event.measurements.monotonic_time <= closed_at
-    assert stop_event.measurements.duration >= 2_000_000
-    assert stop_event.metadata.outcome == :ok
-  end
-
-  defp run_unit_span(millis, :pair) do
-    span_with_stop_metadata @unit_family, %{shape: :pair} do
-      Process.sleep(millis)
-      {:done, %{shape: :pair, outcome: :ok}}
+    defp run_unit_span(millis, :pair) do
+      span_with_stop_metadata @unit_family, %{shape: :pair} do
+        Process.sleep(millis)
+        {:done, %{shape: :pair, outcome: :ok}}
+      end
     end
-  end
 
-  defp run_unit_span(millis, :triple) do
-    span_with_stop_metadata @unit_family, %{shape: :triple} do
-      Process.sleep(millis)
-      {:done, %{rows: 3}, %{shape: :triple, outcome: :ok}}
+    defp run_unit_span(millis, :triple) do
+      span_with_stop_metadata @unit_family, %{shape: :triple} do
+        Process.sleep(millis)
+        {:done, %{rows: 3}, %{shape: :triple, outcome: :ok}}
+      end
     end
-  end
 
-  defp run_raising_span do
-    span_with_stop_metadata @unit_family, %{shape: :raising} do
-      raise "the block gave up"
+    defp run_raising_span do
+      span_with_stop_metadata @unit_family, %{shape: :raising} do
+        raise "the block gave up"
+      end
     end
-  end
 
-  defp assert_stop_extras(:pair, measurements) do
-    assert Enum.sort(Map.keys(measurements)) == [:duration, :monotonic_time]
-  end
+    defp assert_stop_extras(:pair, measurements) do
+      assert Enum.sort(Map.keys(measurements)) == [:duration, :monotonic_time]
+    end
 
-  defp assert_stop_extras(:triple, measurements) do
-    assert measurements.rows == 3
-  end
+    defp assert_stop_extras(:triple, measurements) do
+      assert measurements.rows == 3
+    end
 
-  defp attach_unit_handler do
-    handler_id = "span-unit-law-#{:erlang.unique_integer([:positive])}"
-    events = for suffix <- [:start, :stop, :exception], do: @unit_family ++ [suffix]
+    defp attach_unit_handler do
+      handler_id = "span-unit-law-#{:erlang.unique_integer([:positive])}"
+      events = for suffix <- [:start, :stop, :exception], do: @unit_family ++ [suffix]
 
-    :telemetry.attach_many(handler_id, events, &__MODULE__.forward_unit_event/4, self())
+      :telemetry.attach_many(handler_id, events, &__MODULE__.forward_unit_event/4, self())
 
-    handler_id
-  end
+      handler_id
+    end
 
-  @doc false
-  def forward_unit_event(name, measurements, metadata, pid) do
-    send(pid, {:unit_event, name, measurements, metadata})
-  end
+    @doc false
+    def forward_unit_event(name, measurements, metadata, pid) do
+      send(pid, {:unit_event, name, measurements, metadata})
+    end
 
-  defp drain_unit_events(acc \\ []) do
-    receive do
-      {:unit_event, name, measurements, metadata} ->
-        event = %{
-          suffix: List.last(name),
-          measurements: measurements,
-          metadata: metadata
-        }
+    defp drain_unit_events(acc \\ []) do
+      receive do
+        {:unit_event, name, measurements, metadata} ->
+          event = %{
+            suffix: List.last(name),
+            measurements: measurements,
+            metadata: metadata
+          }
 
-        drain_unit_events([event | acc])
-    after
-      0 -> Enum.reverse(acc)
+          drain_unit_events([event | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
     end
   end
 

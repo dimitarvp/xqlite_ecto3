@@ -143,6 +143,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A `Decimal` inside JSON goes through the precision guard.** A
+  `%Decimal{}` in a `:map` field or an `{:array, :decimal}` field used
+  to reach Jason untouched, which prints one as a quoted string: a
+  value the guard refuses at the top level was stored anyway, and a
+  `:map` field read it back as a `String`. Such a value is now written
+  as the number it binds as — so `{:array, :decimal}` loads each
+  element back as a `Decimal`, and a plain `:map` field, which has no
+  per-value type to load through, gives integers and floats. A decimal
+  with no exact int64 or float64 form raises the same
+  `XqliteEcto3.DecimalPrecisionError` wherever it sits. One knock-on:
+  a `%Decimal{}` too wide for `Decimal`'s own print limit used to
+  surface as `XqliteEcto3.UnencodableParameterError` from inside the
+  JSON encoder and now refuses earlier, as a precision error.
+  `XqliteEcto3.Types.Array` and `XqliteEcto3.Types.ExactDecimal` build
+  their own JSON and text and stay outside this guard on purpose.
+
+- **A wide `Decimal` binds in milliseconds instead of seconds.** The
+  guard compared a value against its float64 round-trip through
+  `Decimal.normalize/1`, which strips trailing zeros sixteen at a time
+  — a coefficient carrying 100_000 of them cost about 350 ms to bind
+  and 500_000 about nine seconds. The trailing zeros now go in one
+  division before anything else reads the coefficient, and a
+  coefficient still wider than 19 significant digits after that is
+  refused outright: no float64 reads back with more, so no such value
+  could ever have been exact. Values that were accepted before are
+  accepted still, and bind about seventy times faster at 100_000
+  zeros. The one behaviour change is at the edge `Decimal`'s own
+  28-digit arithmetic context used to hide: a value like
+  `10.000…0007` written with more than 19 significant digits was
+  accepted and stored as `10.0`, and is now refused rather than
+  silently rounded.
+
+- **A `:decimal` field reads a float back through the same model the
+  guard measured.** The loader used `Decimal.from_float/1`, the
+  shortest printing that round-trips, where the binding guard checks
+  against the digits SQLite actually stores. The two differ for an
+  integral float past 2^53, so a value the guard accepted could load
+  back changed. Both ends now use the storage model.
+
+- **The `:microsecond_precision` exclusion covers four upstream tests
+  instead of five.** The tag also covered `interval.exs:194`, which
+  passes, so that test now runs; the four `datetime_add` tests that
+  cannot pass — SQLite's `strftime %f` is millisecond-precision — are
+  excluded one at a time by location. The vendored-suite anchor moves
+  from 440 passed / 26 excluded to 441 passed / 25 excluded.
+
 - **Adding a column with a `{:fragment, "..."}` default is refused.**
   SQLite computes an added column's default once for every row already
   in the table and takes only a literal there, so the same `alter
@@ -407,6 +453,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **The telemetry-disabled build runs the whole test suite.** The CI
+  lane that compiles telemetry to no-ops ran one smoke file, and 24
+  tests across five files failed in that build without anyone seeing
+  it. The tests that assert on emitted events are now compiled out of
+  that build, together with the helpers only they use, and the lane
+  runs the whole suite. A test whose telemetry assertion is only half
+  of it keeps its other half in both builds.
+
+- **A zoned `DateTime` on the raw-SQL path can no longer write a third
+  text form.** The shift to UTC carried a fallback that wrote
+  offset-carrying ISO 8601, which would have sorted against the
+  adapter's own values by the offset digits. No input reaches it — a
+  shift to `Etc/UTC` needs no time zone database — so the branch is
+  gone and a shift that somehow failed refuses with
+  `XqliteEcto3.UnencodableParameterError` instead.
 
 - **Transaction control sent through `Ecto.Adapters.SQL.stream/4` no
   longer strands the driver's cached transaction flag.** A cursor

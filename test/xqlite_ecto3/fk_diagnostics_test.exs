@@ -161,10 +161,22 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
     assert d.fk_diagnostics == {:truncated, 30}
     assert length(d.fk_violations) == 24
 
-    assert_receive {:fk_stop, metadata}
-    assert metadata.diagnostics_status == :truncated
-    assert metadata.violations_count == 24
-    assert metadata.violations_total == 30
+    assert_truncation_reported()
+  end
+
+  # The truncation holds in both builds; only the event announcing it
+  # depends on the flag, so that assertion is what the flag chooses.
+  if XqliteEcto3.Telemetry.enabled?() do
+    defp assert_truncation_reported do
+      assert_receive {:fk_stop, metadata}
+      assert metadata.diagnostics_status == :truncated
+      assert metadata.violations_count == 24
+      assert metadata.violations_total == 30
+    end
+  else
+    defp assert_truncation_reported do
+      refute_received {:fk_stop, _metadata}
+    end
   end
 
   test "repeated replay of the same violation is byte-identical", %{pid: pid} do
@@ -413,36 +425,39 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
       exec(pid, "INSERT INTO ch VALUES (2, 998)")
   end
 
-  test "fk_diagnostics telemetry span fires with violations_count", %{pid: pid} do
-    handler_id = "fk-diag-#{:erlang.unique_integer([:positive])}"
-    test_pid = self()
+  # Not compiled into the no-op build: no span fires there.
+  if XqliteEcto3.Telemetry.enabled?() do
+    test "fk_diagnostics telemetry span fires with violations_count", %{pid: pid} do
+      handler_id = "fk-diag-#{:erlang.unique_integer([:positive])}"
+      test_pid = self()
 
-    :telemetry.attach_many(
-      handler_id,
-      [[:xqlite_ecto3, :fk_diagnostics, :start], [:xqlite_ecto3, :fk_diagnostics, :stop]],
-      fn name, measurements, metadata, _ ->
-        send(test_pid, {:telemetry_event, name, measurements, metadata})
-      end,
-      nil
-    )
+      :telemetry.attach_many(
+        handler_id,
+        [[:xqlite_ecto3, :fk_diagnostics, :start], [:xqlite_ecto3, :fk_diagnostics, :stop]],
+        fn name, measurements, metadata, _ ->
+          send(test_pid, {:telemetry_event, name, measurements, metadata})
+        end,
+        nil
+      )
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+      on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    {:error, _} = exec(pid, "INSERT INTO ch VALUES (1, 999)")
+      {:error, _} = exec(pid, "INSERT INTO ch VALUES (1, 999)")
 
-    assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :start], _,
-                    %{mode: :replay, conn: conn}}
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :start], _,
+                      %{mode: :replay, conn: conn}}
 
-    assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :stop], measurements,
-                    metadata}
+      assert_receive {:telemetry_event, [:xqlite_ecto3, :fk_diagnostics, :stop], measurements,
+                      metadata}
 
-    assert is_integer(measurements.duration)
-    assert metadata.violations_count == 1
-    assert metadata.diagnostics_status == :ok
+      assert is_integer(measurements.duration)
+      assert metadata.violations_count == 1
+      assert metadata.diagnostics_status == :ok
 
-    # :stop keeps everything :start announced — a handler that binds :mode or
-    # :conn must survive this event, not be detached by :telemetry for raising.
-    assert metadata.mode == :replay
-    assert metadata.conn == conn
+      # :stop keeps everything :start announced — a handler that binds :mode or
+      # :conn must survive this event, not be detached by :telemetry for raising.
+      assert metadata.mode == :replay
+      assert metadata.conn == conn
+    end
   end
 end

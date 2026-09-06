@@ -2667,7 +2667,14 @@ defmodule XqliteEcto3 do
   defp decimal_decode(val) when is_binary(val), do: XqliteEcto3.DecimalPrecision.parse_finite(val)
 
   defp decimal_decode(val) when is_integer(val), do: {:ok, Decimal.new(val)}
-  defp decimal_decode(val) when is_float(val), do: {:ok, Decimal.from_float(val)}
+
+  # The binding guard measures what it accepts against `stored_decimal/1`,
+  # not the shortest printing `Decimal.from_float/1` gives — the two differ
+  # for an integral float past 2^53, so reading a float back any other way
+  # would break the round trip the guard promised.
+  defp decimal_decode(val) when is_float(val),
+    do: {:ok, XqliteEcto3.DecimalPrecision.stored_decimal(val)}
+
   defp decimal_decode(nil), do: {:ok, nil}
   defp decimal_decode(%Decimal{} = val), do: XqliteEcto3.DecimalPrecision.finite(val)
   defp decimal_decode(_val), do: :error

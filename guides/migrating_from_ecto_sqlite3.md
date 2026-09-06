@@ -140,6 +140,32 @@ matches insertion order for both adapters. If your code depends on a
 specific order, add an explicit `ORDER BY` or a `returning:` column set
 that includes your ordering key and re-sort in Elixir.
 
+### 3d. `conflict_target` against a partial or expression index
+
+`conflict_target: [:sku]` renders as a bare column list. SQLite matches
+that only against a UNIQUE constraint or a plain unique index over
+exactly those columns — a **partial** index or an **expression** index
+does not match, and the statement fails with `ON CONFLICT clause does
+not match any PRIMARY KEY or UNIQUE constraint`.
+
+```elixir
+# migration
+create index(:items, [:sku], unique: true, where: "active = 1")
+
+# fails — the target is just (sku)
+Repo.insert_all(Item, rows, on_conflict: :replace_all, conflict_target: [:sku])
+
+# works — the target repeats the index's own definition
+Repo.insert_all(Item, rows,
+  on_conflict: :replace_all,
+  conflict_target: {:unsafe_fragment, "(sku) WHERE active = 1"}
+)
+```
+
+Spell the columns and the `WHERE` clause exactly as the migration
+declared them. The fragment reaches SQLite untouched, so build it from
+literals in your own code, never from user input.
+
 ## Step 4 — migration shapes that change
 
 ### `:binary_id` storage
@@ -263,6 +289,17 @@ end
 ```
 
 Same story for `array_check/2` paired with `XqliteEcto3.Types.Array`.
+
+Name every CHECK you plan to catch in a changeset. When a named CHECK
+fails, SQLite reports the name and `check_constraint(:price, name:
+"price_positive")` matches it. When an **unnamed** one fails, SQLite
+writes the constraint's own expression text in the same place, so what
+comes back for `CHECK (price > 0)` is `"price > 0"` — not the
+`<table>_<field>_check` name Ecto derives, and not anything a changeset
+can declare. An unnamed CHECK therefore always raises the structured
+`XqliteEcto3.Error` rather than converting into a changeset error. The
+helpers above always emit a name; a hand-written `check:` string does
+not.
 
 ### `DELETE` with `JOIN`
 

@@ -190,6 +190,15 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
       assert roundtrip(:dec_field, nil) == nil
     end
 
+    # The sign is gone before SQLite sees the value: the bind form is the
+    # integer 0, and an INTEGER has no negative zero.
+    test "a negative zero comes back positive" do
+      loaded = roundtrip(:dec_field, Decimal.new("-0"))
+
+      assert Decimal.equal?(loaded, Decimal.new("0"))
+      assert loaded.sign == 1
+    end
+
     # Beyond float64's exact precision the value cannot be stored without
     # rounding. The adapter refuses it at the binding boundary rather than
     # writing a silently-wrong number — before this refusal existed, the same
@@ -425,27 +434,52 @@ defmodule XqliteEcto3.TypesRoundtripMatrixTest do
       end
     end
 
-    # JSON-encoded collections carry decimals as strings, so the precision
-    # guard never sees them: exact past float64 in {:array, :decimal}, and
-    # loaded back as a String from a :map.
-    test "JSON-carried decimals bypass the guard, exactly" do
+    # An accepted value is written as a JSON number: a decimal field type
+    # reads it back as a Decimal, an untyped :map as the number itself.
+    test "the precision guard reaches decimals inside JSON" do
+      accepted = Decimal.new("19.99")
       beyond = Decimal.new("12345678901234567890.12345")
 
       {:ok, arr} =
-        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_arr: [beyond, Decimal.new(1)]}))
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_arr: [accepted, Decimal.new(1)]}))
 
       [a, b] = Map.fetch!(Repo.get(EdgeRec, arr.id), :dec_arr)
-      assert Decimal.equal?(a, beyond)
+      assert Decimal.equal?(a, accepted)
       assert Decimal.equal?(b, Decimal.new(1))
 
       {:ok, map} =
-        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_map: %{"amount" => beyond}}))
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_map: %{"amount" => accepted}}))
 
-      assert %{"amount" => "12345678901234567890.12345"} =
-               Map.fetch!(Repo.get(EdgeRec, map.id), :dec_map)
+      assert %{"amount" => 19.99} = Map.fetch!(Repo.get(EdgeRec, map.id), :dec_map)
+
+      assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_arr: [beyond]}))
+      end
+
+      assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+        Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_map: %{"amount" => beyond}}))
+      end
 
       assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
         Repo.insert(Ecto.Changeset.change(%EdgeRec{}, %{dec_num: beyond}))
+      end
+    end
+
+    # The guard's verdict does not depend on how deep the value sits.
+    property "a decimal inside an array follows the guard as a bare one does" do
+      check all(dec <- finite_decimal(), max_runs: 2000) do
+        changeset = Ecto.Changeset.change(%EdgeRec{}, %{dec_arr: [dec]})
+
+        if XqliteEcto3.DecimalPrecision.representable?(dec) do
+          {:ok, rec} = Repo.insert(changeset)
+          [loaded] = Map.fetch!(Repo.get(EdgeRec, rec.id), :dec_arr)
+
+          assert Decimal.equal?(loaded, dec),
+                 "representable Decimal did not round-trip inside an array: " <>
+                   "#{Decimal.to_string(dec, :normal)} loaded as #{inspect(loaded)}"
+        else
+          assert_raise XqliteEcto3.DecimalPrecisionError, fn -> Repo.insert(changeset) end
+        end
       end
     end
   end

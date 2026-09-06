@@ -150,12 +150,11 @@ defmodule XqliteEcto3.MixProject do
         Guides: Path.wildcard("guides/*.md")
       ],
       groups_for_modules: [
+        # Driver, Query and DataType are `@moduledoc false`: ExDoc renders
+        # no page for them, so listing them here would group nothing.
         Adapter: [
           XqliteEcto3,
           XqliteEcto3.Connection,
-          XqliteEcto3.Driver,
-          XqliteEcto3.Query,
-          XqliteEcto3.DataType,
           XqliteEcto3.Error,
           XqliteEcto3.URL,
           XqliteEcto3.URLError

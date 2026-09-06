@@ -667,62 +667,66 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
   # Telemetry
   # ---------------------------------------------------------------------------
 
-  test "a lookup that runs reports a span carrying its candidates and its reads" do
-    handler_id = "uix-span-#{:erlang.unique_integer([:positive])}"
-    test_pid = self()
+  # Not compiled into the no-op build: no event fires there, and the
+  # handler below would then be an unused function the compile refuses.
+  if XqliteEcto3.Telemetry.enabled?() do
+    test "a lookup that runs reports a span carrying its candidates and its reads" do
+      handler_id = "uix-span-#{:erlang.unique_integer([:positive])}"
+      test_pid = self()
 
-    :telemetry.attach_many(
-      handler_id,
-      [
-        [:xqlite_ecto3, :unique_index_names, :start],
-        [:xqlite_ecto3, :unique_index_names, :stop]
-      ],
-      &__MODULE__.forward_lookup_span/4,
-      %{pid: test_pid, table: "uix_items"}
-    )
+      :telemetry.attach_many(
+        handler_id,
+        [
+          [:xqlite_ecto3, :unique_index_names, :start],
+          [:xqlite_ecto3, :unique_index_names, :stop]
+        ],
+        &__MODULE__.forward_lookup_span/4,
+        %{pid: test_pid, table: "uix_items"}
+      )
 
-    on_exit(fn -> :telemetry.detach(handler_id) end)
+      on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "span"}))
+      {:ok, _} = Repo.insert(Item.changeset(%Item{}, %{v: "span"}))
 
-    assert {:error, %Error{}} = Repo.query("INSERT INTO uix_items(v) VALUES ('span')", [])
+      assert {:error, %Error{}} = Repo.query("INSERT INTO uix_items(v) VALUES ('span')", [])
 
-    assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :start], _measurements,
-                    start_metadata}
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :start], _measurements,
+                      start_metadata}
 
-    assert start_metadata.table == "uix_items"
-    assert start_metadata.columns == ["v"]
-    assert start_metadata.conn != nil
+      assert start_metadata.table == "uix_items"
+      assert start_metadata.columns == ["v"]
+      assert start_metadata.conn != nil
 
-    assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], measurements,
-                    metadata}
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], measurements,
+                      metadata}
 
-    assert is_integer(measurements.duration)
-    # Three unique indexes live on the table (v, w, and the autoindex
-    # behind UNIQUE(sku)), so one index_list read and three index_info
-    # reads; only the one over the violated column is a candidate.
-    assert metadata.lookup_status == :ok
-    assert metadata.candidate_count == 1
-    assert metadata.index_reads == 4
+      assert is_integer(measurements.duration)
+      # Three unique indexes live on the table (v, w, and the autoindex
+      # behind UNIQUE(sku)), so one index_list read and three index_info
+      # reads; only the one over the violated column is a candidate.
+      assert metadata.lookup_status == :ok
+      assert metadata.candidate_count == 1
+      assert metadata.index_reads == 4
 
-    # :stop keeps everything :start announced, so a handler bound to the
-    # table or the connection survives the closing event.
-    assert metadata.conn == start_metadata.conn
-    assert metadata.table == start_metadata.table
-    assert metadata.columns == start_metadata.columns
+      # :stop keeps everything :start announced, so a handler bound to the
+      # table or the connection survives the closing event.
+      assert metadata.conn == start_metadata.conn
+      assert metadata.table == start_metadata.table
+      assert metadata.columns == start_metadata.columns
+    end
+
+    @doc false
+    def forward_lookup_span(
+          name,
+          measurements,
+          %{table: table} = metadata,
+          %{table: table} = config
+        ) do
+      send(config.pid, {:lookup_span, name, measurements, metadata})
+    end
+
+    def forward_lookup_span(_name, _measurements, _metadata, _config), do: :ok
   end
-
-  @doc false
-  def forward_lookup_span(
-        name,
-        measurements,
-        %{table: table} = metadata,
-        %{table: table} = config
-      ) do
-    send(config.pid, {:lookup_span, name, measurements, metadata})
-  end
-
-  def forward_lookup_span(_name, _measurements, _metadata, _config), do: :ok
 
   defp zero_budget_error do
     Error.wrap(

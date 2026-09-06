@@ -29,11 +29,16 @@ defmodule XqliteEcto3.Query do
 
     # to_naive/1 alone would keep a zoned value's LOCAL wall clock and
     # silently shift the instant; shifting to UTC first needs no tz
-    # database (the offset arithmetic suffices for Etc/UTC).
-    defp encode_param(%DateTime{} = dt, _index) do
+    # database (the offset arithmetic suffices for Etc/UTC), so the
+    # refusal below is unreachable under any time zone database whose
+    # Etc/UTC keeps its constant zero offset.
+    defp encode_param(%DateTime{} = dt, index) do
       case DateTime.shift_zone(dt, "Etc/UTC") do
-        {:ok, utc} -> utc |> DateTime.to_naive() |> sqlite_datetime()
-        {:error, _} -> DateTime.to_iso8601(dt)
+        {:ok, utc} ->
+          utc |> DateTime.to_naive() |> sqlite_datetime()
+
+        {:error, reason} ->
+          raise XqliteEcto3.UnencodableParameterError, value: dt, index: index, reason: reason
       end
     end
 
@@ -64,16 +69,28 @@ defmodule XqliteEcto3.Query do
       dt |> NaiveDateTime.to_iso8601() |> String.replace("T", " ")
     end
 
+    # The numeric guard applies at every depth: a nested decimal is
+    # replaced by the number it binds as, where Jason would print it as a
+    # quoted string. Any other struct is left for Jason to judge.
+    defp json_form(%Decimal{} = d, index), do: encode_param(d, index)
+    defp json_form(%{__struct__: _} = value, _index), do: value
+    defp json_form(value, index) when is_map(value), do: Map.new(value, &json_pair(&1, index))
+    defp json_form(value, index) when is_list(value), do: Enum.map(value, &json_form(&1, index))
+    defp json_form(value, _index), do: value
+
+    defp json_pair({key, value}, index), do: {key, json_form(value, index)}
+
     # Ecto does not validate what a custom type's dump/1 returns, so a
     # struct can reach this boundary untouched (a :duration field's
     # %Duration{} does). Jason reports invalid input as an error tuple,
     # but a missing Jason.Encoder implementation raises through protocol
-    # dispatch instead, and a %Decimal{} too long for Decimal's own plain
-    # form raises ArgumentError from inside the encoder — the rescue
-    # turns either raise into the same structured refusal, naming the
-    # parameter instead of the protocol or the print limit.
+    # dispatch instead — the rescue turns that raise into the same
+    # structured refusal, naming the parameter instead of the protocol.
     defp encode_json(value, index) do
-      case Jason.encode(value) do
+      value
+      |> json_form(index)
+      |> Jason.encode()
+      |> case do
         {:ok, json} ->
           json
 
@@ -111,12 +128,14 @@ defmodule XqliteEcto3.UnencodableParameterError do
   a custom type's `dump/1` returns, so a struct can reach the driver
   untouched (a `:duration` field's `%Duration{}` does).
 
+  A `%Decimal{}` inside a map or a list never reaches the JSON encoder:
+  it is replaced by the number it binds as first, and one that has no
+  exact number raises `XqliteEcto3.DecimalPrecisionError` instead.
+
   Fields: `value` (the offending parameter), `index` (its 1-based
   position), `reason` (a `%Protocol.UndefinedError{}` for a missing
   `Jason.Encoder`, a `%Jason.EncodeError{}` for input JSON cannot
-  represent, or an `%ArgumentError{}` for a `%Decimal{}` whose plain
-  form — what the JSON encoder prints — is longer than `Decimal`'s own
-  configured print limit, 6178 digits by default).
+  represent, or the reason a `DateTime` could not be shifted to UTC).
   """
 
   defexception [:value, :index, :reason]

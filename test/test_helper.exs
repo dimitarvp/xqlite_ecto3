@@ -136,13 +136,15 @@ excludes = [
   # layer). The sibling parameterized-query cache test passes.
   {:location, {"deps/ecto_sql/integration_test/sql/alter.exs", 44}},
 
-  # logging.exs:74 "cast params" asserts the query-telemetry params for a
-  # UUID field equal Ecto.UUID.dump!/1 — the raw 16-byte binary (Postgres's
-  # binary UUID storage). This adapter stores UUIDs as TEXT by default
+  # (permanent adapter design choice, not a SQLite limit) logging.exs:74
+  # "cast params" asserts the query-telemetry params for a UUID field equal
+  # Ecto.UUID.dump!/1 — the raw 16-byte binary (Postgres's binary UUID
+  # storage). This adapter stores UUIDs as TEXT by default
   # (binary_id_storage: :string), so the bound param is the 36-char string
   # form and metadata.params faithfully reports it. The telemetry handler
   # fires correctly in the sandboxed process (the in-handler assertion runs);
-  # only the storage shape differs, so the params equality can't hold.
+  # only the storage shape differs, so the params equality can't hold. TEXT
+  # is the default on purpose, so this stays excluded rather than tracked.
   {:location, {"deps/ecto_sql/integration_test/sql/logging.exs", 74}},
 
   # type.exs:359 "json_extract_path with primitive values": two SELECT
@@ -173,17 +175,20 @@ excludes = [
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 30}},
   {:location, {"deps/ecto_sql/integration_test/sql/sql.exs", 38}},
 
-  # (permanent SQLite limit) strftime %f gives only millisecond precision.
-  # interval.exs datetime_add tests that add microsecond counts round to
-  # the nearest millisecond. The adapter emits fractional-seconds SQL
-  # correctly; exact-value asserts still fail on nonzero-microsecond
+  # (permanent SQLite limit) strftime %f gives only millisecond precision,
+  # so the interval.exs datetime_add tests that add microsecond counts
+  # round to the nearest millisecond. The adapter emits fractional-seconds
+  # SQL correctly; exact-value asserts still fail on nonzero-microsecond
   # fractions because SQLite cannot compute them. Non-arithmetic
   # microsecond round-trips pass — TEXT storage keeps full precision
   # (see types_test.exs). Not an adapter gap; won't be fixed here.
-  # Over-broad by exactly one — interval.exs:194 passes when
-  # re-enabled; keeping the tag over four location tuples is a
-  # deliberate trade.
-  :microsecond_precision,
+  # Excluded one test at a time rather than by the :microsecond_precision
+  # tag: the tag covers a fifth test, interval.exs:194, which passes, and
+  # a tag wide enough to hide a passing test hides the day it fails.
+  {:location, {"deps/ecto/integration_test/cases/interval.exs", 305}},
+  {:location, {"deps/ecto/integration_test/cases/interval.exs", 321}},
+  {:location, {"deps/ecto/integration_test/cases/interval.exs", 333}},
+  {:location, {"deps/ecto/integration_test/cases/interval.exs", 351}},
 
   # migration.exs:664 "modify foreign key's on_update constraint" is tagged
   # :assigns_id_type but really fails on `modify` with a `references(...)`

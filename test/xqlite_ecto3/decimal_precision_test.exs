@@ -8,6 +8,10 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
   @int64_min -9_223_372_036_854_775_808
   @int64_max 9_223_372_036_854_775_807
 
+  # Wide enough that only a bind walking the coefficient digit by digit
+  # can miss it.
+  @bind_budget_ms 1_000
+
   # Values that survive a float64 round-trip and so store losslessly through
   # a NUMERIC-affinity column: typical money, small magnitudes, and large
   # float-exact integers.
@@ -135,6 +139,17 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
                {:float, 10.0}
     end
 
+    # A zero coefficient is decided before the exponent cutoff can refuse
+    # it; exponent 18 is the last power of ten inside int64.
+    test "the exponent cutoff and the zero coefficient meet at their edges" do
+      assert DecimalPrecision.bind_form(Decimal.new(1, 0, 25)) == {:integer, 0}
+
+      assert DecimalPrecision.bind_form(Decimal.new("1E+18")) ==
+               {:integer, 1_000_000_000_000_000_000}
+
+      assert DecimalPrecision.bind_form(Decimal.new("1E+19")) == {:float, 1.0e19}
+    end
+
     test "a zero binds whatever its exponent" do
       assert DecimalPrecision.bind_form(Decimal.new(1, 0, -100_000)) == {:float, 0.0}
       assert DecimalPrecision.bind_form(Decimal.new(1, 0, -1_000_000_000)) == {:float, 0.0}
@@ -146,6 +161,10 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     property "every finite decimal gets an integer form, a float form, or a refusal that reads" do
       check all(dec <- wide_decimal(), max_runs: 2000) do
         oracle = int64_oracle(dec)
+
+        # The converse of the arms below: they read the oracle from a
+        # form, this reads the form from the oracle.
+        assert integer_arm?(oracle, DecimalPrecision.bind_form(dec))
 
         case DecimalPrecision.bind_form(dec) do
           {:integer, int} ->
@@ -166,7 +185,40 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
         end
       end
     end
+
+    # Padding a coefficient with trailing zeros changes nothing about the
+    # value, and the time is the harder half: stripping them a group at a
+    # time costs more than the digit count grows.
+    property "trailing zeros change neither the bind form nor the time it takes" do
+      check all(
+              sign <- StreamData.member_of([1, -1]),
+              coefficient <- StreamData.integer(1..999_999),
+              exponent <- StreamData.integer(-30..-1),
+              zeros <- StreamData.integer(0..100_000),
+              max_runs: 2000
+            ) do
+        bare = Decimal.new(sign, coefficient, exponent)
+        padded = Decimal.new(sign, coefficient * Integer.pow(10, zeros), exponent - zeros)
+
+        {elapsed_us, form} = :timer.tc(fn -> DecimalPrecision.bind_form(padded) end)
+
+        assert form == DecimalPrecision.bind_form(bare)
+        assert elapsed_us < @bind_budget_ms * 1_000
+      end
+    end
+
+    test "half a million trailing zeros still bind inside the budget" do
+      padded = Decimal.new(1, 3 * Integer.pow(10, 500_000), -499_999)
+
+      {elapsed_us, form} = :timer.tc(fn -> DecimalPrecision.bind_form(padded) end)
+
+      assert form == {:float, 30.0}
+      assert elapsed_us < @bind_budget_ms * 1_000
+    end
   end
+
+  defp integer_arm?({:ok, int}, form), do: form == {:integer, int}
+  defp integer_arm?(:error, _form), do: true
 
   # The judge the integer arm must agree with: the value's own written-out
   # form, with the print limit lifted so even the widest case renders.

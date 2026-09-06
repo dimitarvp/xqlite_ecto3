@@ -54,6 +54,12 @@ defmodule XqliteEcto3.DecimalPrecision do
   The integer check keys on the RENDERED form, not the mathematical value:
   the same digits written "…0.0" render with a decimal point, so the
   float64 model stays the judge for them.
+
+  One value loses information here and cannot be kept: a negative zero
+  binds as the integer 0, and an INTEGER has no negative zero, so it
+  loads back positive. Binding it as the float -0.0 instead would keep
+  the sign at the price of moving that single value to a different
+  storage class, which ordering and range queries would then see.
   """
   @spec bind_form(Decimal.t()) :: {:integer, integer()} | {:float, float()} | :error
   def bind_form(%Decimal{} = d) do
@@ -76,10 +82,25 @@ defmodule XqliteEcto3.DecimalPrecision do
   # literal: `Decimal.to_float/1` builds 10^-exp before it looks at the
   # coefficient, a billion-digit number for a value that is 0.0.
   defp float_bind_form(d) do
-    cond do
-      Decimal.equal?(d, 0) -> {:float, 0.0}
-      out_of_float_range?(d) -> :error
-      true -> exact_float(d)
+    if Decimal.equal?(d, 0) do
+      {:float, 0.0}
+    else
+      narrowed_bind_form(d)
+    end
+  end
+
+  defp narrowed_bind_form(d) do
+    case drop_trailing_zeros(d) do
+      {:ok, narrowed} -> in_range_bind_form(narrowed)
+      :error -> :error
+    end
+  end
+
+  defp in_range_bind_form(d) do
+    if out_of_float_range?(d) do
+      :error
+    else
+      exact_float(d)
     end
   end
 
@@ -106,6 +127,29 @@ defmodule XqliteEcto3.DecimalPrecision do
     Decimal.gt?(abs, @dbl_max) or Decimal.lt?(abs, @dbl_min)
   end
 
+  # A float64 reads back with at most 19 significant digits — 17 from the
+  # shortest printing that round-trips, 19 from an integral value SQLite
+  # demotes to INTEGER — so a coefficient wider than that once its
+  # trailing zeros are gone has nothing exact to equal, and is refused
+  # before the rest of the path reads it. Those zeros go in one division:
+  # `Decimal.normalize/1` walks them sixteen at a time, a third of a
+  # second for 100_000 of them.
+  @exact_digits 19
+
+  defp drop_trailing_zeros(%Decimal{sign: sign, coef: coef, exp: exp} = d) do
+    case digit_count(coef) - @exact_digits do
+      drop when drop <= 0 -> {:ok, d}
+      drop -> divide_out(sign, coef, exp, drop, Integer.pow(10, drop))
+    end
+  end
+
+  defp divide_out(sign, coef, exp, drop, power) do
+    case rem(coef, power) do
+      0 -> {:ok, Decimal.new(sign, div(coef, power), exp + drop)}
+      _too_wide -> :error
+    end
+  end
+
   defp exact_float(d) do
     float = Decimal.to_float(d)
     back = stored_decimal(float)
@@ -116,6 +160,26 @@ defmodule XqliteEcto3.DecimalPrecision do
       :error
     end
   end
+
+  # log10(2) over 2^48. A bignum carries no digit count and writing
+  # 100_000 digits out to count them costs more than the whole bind, so
+  # the count starts from the bit length — byte-rounded, and the fraction
+  # rounds down, so the first guess is only ever too high.
+  @log10_2_num 84_732_411_018_728
+  @log10_2_den 281_474_976_710_656
+
+  defp digit_count(coef) do
+    bits = coef |> :binary.encode_unsigned() |> bit_size()
+    guess = div(bits * @log10_2_num, @log10_2_den) + 1
+
+    settle_digits(coef, guess, Integer.pow(10, guess - 1))
+  end
+
+  defp settle_digits(coef, guess, power) when coef < power do
+    settle_digits(coef, guess - 1, div(power, 10))
+  end
+
+  defp settle_digits(_coef, guess, _power), do: guess
 
   # Decimal's defaults stop a parse at 34 significant digits and an exponent
   # of 6144. A number someone stored is data, so both are lifted here and a

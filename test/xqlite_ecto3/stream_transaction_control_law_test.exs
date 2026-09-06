@@ -66,6 +66,22 @@ defmodule XqliteEcto3.StreamTransactionControlLawTest do
       end
     end
 
+    # A control statement returns no rows, so its very first fetch halts:
+    # the branch that carries no row re-reads the flag too.
+    test "a stream that halts on its first fetch still re-reads the flag", %{state: state} do
+      idle = reset_to_autocommit(state)
+      query = %Query{statement: "BEGIN"}
+
+      {:ok, _query, cursor, declared} = Driver.handle_declare(query, [], [], idle)
+      assert declared.transaction_status == :idle
+
+      assert {:halt, %{num_rows: 0}, fetched} = Driver.handle_fetch(query, cursor, [], declared)
+      assert fetched.transaction_status == :transaction
+      assert real_status(fetched) == :transaction
+
+      {:ok, _result, _state} = Driver.handle_deallocate(query, cursor, [], fetched)
+    end
+
     test "a row written after a streamed BEGIN survives the next begin", %{
       state: state,
       db_path: db_path

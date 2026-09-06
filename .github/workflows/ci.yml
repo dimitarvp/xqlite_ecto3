@@ -237,10 +237,13 @@ jobs:
   telemetry_disabled:
     name: Telemetry disabled (no-op build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     needs: format_and_lint
     # Production default: telemetry compiles to no-ops. CI otherwise only
-    # ever builds the enabled config, so this lane covers the disabled path.
+    # ever builds the enabled config, so this lane covers the disabled
+    # path — with the whole suite, not a smoke file: the tests that assert
+    # on emitted events are compiled out here, and everything else has to
+    # behave the same in both builds.
     env:
       XQLITE_ECTO3_TELEMETRY: "off"
     steps:
@@ -272,5 +275,5 @@ jobs:
         env:
           MIX_ENV: test
 
-      - name: Smoke-test the no-op telemetry path
-        run: mix test test/xqlite_ecto3/telemetry_disabled_smoke_test.exs
+      - name: Run tests
+        run: mix xqlite_ecto3.test.seq

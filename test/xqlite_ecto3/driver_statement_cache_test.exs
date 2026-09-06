@@ -110,57 +110,61 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
     end
   end
 
-  describe "cache telemetry" do
-    test "miss, hit, and eviction events fire with counts" do
-      handler_id = "cache-telemetry-#{System.unique_integer([:positive])}"
-      me = self()
+  # The no-op build emits nothing to assert on, so this does not compile
+  # into it; that build's own coverage is the smoke file.
+  if XqliteEcto3.Telemetry.enabled?() do
+    describe "cache telemetry" do
+      test "miss, hit, and eviction events fire with counts" do
+        handler_id = "cache-telemetry-#{System.unique_integer([:positive])}"
+        me = self()
 
-      :ok =
-        :telemetry.attach_many(
-          handler_id,
-          [
-            [:xqlite_ecto3, :statement_cache, :hit],
-            [:xqlite_ecto3, :statement_cache, :miss],
-            [:xqlite_ecto3, :statement_cache, :evicted]
-          ],
-          fn event, measurements, metadata, _ ->
-            send(me, {:cache_tel, event, measurements, metadata})
-          end,
-          nil
-        )
+        :ok =
+          :telemetry.attach_many(
+            handler_id,
+            [
+              [:xqlite_ecto3, :statement_cache, :hit],
+              [:xqlite_ecto3, :statement_cache, :miss],
+              [:xqlite_ecto3, :statement_cache, :evicted]
+            ],
+            fn event, measurements, metadata, _ ->
+              send(me, {:cache_tel, event, measurements, metadata})
+            end,
+            nil
+          )
 
-      on_exit(fn -> :telemetry.detach(handler_id) end)
+        on_exit(fn -> :telemetry.detach(handler_id) end)
 
-      state = seeded!(statement_cache_size: 1)
+        state = seeded!(statement_cache_size: 1)
 
-      {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [1])
+        {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [1])
 
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], m1,
-                      %{conn: miss_conn, sql: "SELECT x FROM t WHERE x = ?1"}}
+        assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], m1,
+                        %{conn: miss_conn, sql: "SELECT x FROM t WHERE x = ?1"}}
 
-      # The cache is per connection; :conn is the discriminator.
-      assert miss_conn == state.conn
-      assert m1.cached_count == 0
-      assert is_integer(m1.monotonic_time)
+        # The cache is per connection; :conn is the discriminator.
+        assert miss_conn == state.conn
+        assert m1.cached_count == 0
+        assert is_integer(m1.monotonic_time)
 
-      {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [2])
+        {_r, state} = execute!(state, "SELECT x FROM t WHERE x = ?1", [2])
 
-      # Handlers are process-global: filter to this cache's own events by SQL,
-      # else a concurrent connection's hit is measured instead of this one's.
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :hit], m2,
-                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+        # Handlers are process-global: filter to this cache's own events by SQL,
+        # else a concurrent connection's hit is measured instead of this one's.
+        assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :hit], m2,
+                        %{sql: "SELECT x FROM t WHERE x = ?1"}}
 
-      assert m2.cached_count == 1
+        assert m2.cached_count == 1
 
-      {_r, _state} = execute!(state, "SELECT x FROM t ORDER BY x", [])
+        {_r, _state} = execute!(state, "SELECT x FROM t ORDER BY x", [])
 
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], _m3,
-                      %{sql: "SELECT x FROM t ORDER BY x"}}
+        assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :miss], _m3,
+                        %{sql: "SELECT x FROM t ORDER BY x"}}
 
-      assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :evicted], m4,
-                      %{sql: "SELECT x FROM t WHERE x = ?1"}}
+        assert_receive {:cache_tel, [:xqlite_ecto3, :statement_cache, :evicted], m4,
+                        %{sql: "SELECT x FROM t WHERE x = ?1"}}
 
-      assert m4.cached_count == 2
+        assert m4.cached_count == 2
+      end
     end
   end
 

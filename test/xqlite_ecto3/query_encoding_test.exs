@@ -32,6 +32,26 @@ defmodule XqliteEcto3.QueryEncodingTest do
       assert encode([dt]) == ["2024-06-15 14:30:45"]
     end
 
+    # Never an offset-carrying form: that would sort against the adapter's
+    # own values by the offset digits.
+    test "a zoned DateTime encodes in the stored UTC text form" do
+      dt = %DateTime{
+        year: 2024,
+        month: 6,
+        day: 15,
+        hour: 14,
+        minute: 30,
+        second: 45,
+        microsecond: {0, 0},
+        time_zone: "America/New_York",
+        zone_abbr: "EST",
+        utc_offset: -18_000,
+        std_offset: 0
+      }
+
+      assert encode([dt]) == ["2024-06-15 19:30:45"]
+    end
+
     test "Date encodes to ISO 8601" do
       assert encode([~D[2024-06-15]]) == ["2024-06-15"]
     end
@@ -228,39 +248,44 @@ defmodule XqliteEcto3.QueryEncodingTest do
       assert encode([%{a: 1}]) == [~s({"a":1})]
     end
 
-    test "a decimal JSON cannot print refuses structurally, carrying the parameter" do
-      param = %{"amount" => Decimal.new(1, 1, 7000)}
+    test "a decimal with no exact numeric form refuses inside a map, carrying itself" do
+      dec = Decimal.new(1, 1, 7000)
 
       err =
-        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
-          encode([param])
+        assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+          encode([%{"amount" => dec}])
         end
 
-      assert err.value == param
+      assert err.value == dec
       assert err.index == 1
-      assert %ArgumentError{} = err.reason
     end
 
-    # Jason prints a %Decimal{} in its plain form, which Decimal itself
-    # refuses past its digit limit. Whatever the exponent, a map or list
-    # parameter either encodes or refuses with the structured error —
-    # never with another exception. (A bare %Decimal{} parameter never
-    # reaches JSON at all: it binds through the numeric guard above.)
-    property "a nested decimal encodes or refuses structurally, whatever its exponent" do
+    test "an accepted decimal reaches JSON as a number, not a quoted string" do
+      assert encode([%{"amount" => Decimal.new("19.99")}]) == [~s({"amount":19.99})]
+      assert encode([[Decimal.new("1E+18")]]) == ["[1000000000000000000]"]
+    end
+
+    # Whatever the exponent, the parameter either encodes carrying that
+    # number or raises the precision error — never another exception, and
+    # never a quoted string that would come back as text.
+    property "a nested decimal follows the same numeric guard as a bare one" do
       check all(
               exponent <- StreamData.integer(-8_000..8_000),
               coefficient <- StreamData.integer(1..999),
               nesting <- StreamData.member_of([:map, :list, :deep]),
               max_runs: 2000
             ) do
-        param = nest(Decimal.new(1, coefficient, exponent), nesting)
+        dec = Decimal.new(1, coefficient, exponent)
+        param = nest(dec, nesting)
 
         case encode_outcome([param]) do
           {:ok, [json]} ->
-            assert is_binary(json)
+            assert XqliteEcto3.DecimalPrecision.representable?(dec)
+            assert Jason.decode!(json) == nest(bound_number(dec), nesting)
 
-          {:raised, %XqliteEcto3.UnencodableParameterError{} = err} ->
-            assert err.value == param
+          {:raised, %XqliteEcto3.DecimalPrecisionError{} = err} ->
+            refute XqliteEcto3.DecimalPrecision.representable?(dec)
+            assert err.value == dec
             assert err.index == 1
 
           other ->
@@ -282,6 +307,14 @@ defmodule XqliteEcto3.QueryEncodingTest do
   defp nest(value, :map), do: %{"v" => value}
   defp nest(value, :list), do: [value]
   defp nest(value, :deep), do: %{"outer" => [%{"inner" => value}]}
+
+  defp bound_number(dec) do
+    case XqliteEcto3.DecimalPrecision.bind_form(dec) do
+      {:integer, int} -> int
+      {:float, float} -> float
+      :error -> :no_bind_form
+    end
+  end
 
   defp encode_outcome(params) do
     {:ok, encode(params)}

@@ -23,7 +23,7 @@ exclusions, then the two whole-file skips. Bundled SQLite version:
 | `:like_match_blob` | supported | bundled SQLite 3.53.2 is NOT built with `SQLITE_LIKE_DOESNT_MATCH_BLOBS`; `LIKE` matches BLOB operands, so both tagged `type.exs` tests pass un-excluded. (`:binary` columns are declared BLOB — no affinity — and the storage class follows the value: text for valid UTF-8, blob otherwise; LIKE matches both) |
 | `:lock_for_migrations` | excluded | our `lock_for_migrations/3` is a deliberate no-op passthrough (single-writer SQLite needs no advisory migration lock), so Ecto never raises the pool-size-below-2 `MigrationError` that `migrator.exs:198` asserts on |
 | `:map_type_schemaless` | excluded | JSON stored as TEXT; without schema Ecto cannot invoke the JSON decoder |
-| `:microsecond_precision` | excluded (permanent, 4/5-justified) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. Disclosure: the tag is over-broad by exactly one — `interval.exs:194` (`datetime_add with microsecond`) passes when re-enabled; keeping the tag over four location tuples is a recorded deliberate trade. |
+| `:microsecond_precision` | supported (1/5, four permanent location exclusions) | SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds. Non-arithmetic µs round-trips via TEXT storage work fine (see types_test.exs). Not an adapter gap. The tag itself is NOT excluded, because it is over-broad by exactly one: `interval.exs:194` (`datetime_add with microsecond`) passes and now runs. The four tests that genuinely cannot pass are location-excluded instead (`interval.exs:305`, `321`, `333`, `351`) |
 | `:modify_column` | supported (opt-in) | full SQLite table-rebuild dance behind `support_alter_via_table_rebuild: true` repo config; batches all changes in one alter block into a single rebuild. A `modify` that would move a populated column's affinity and rewrite stored values refuses pre-flight (see the README's type-rendering details) |
 | `:multicolumn_distinct` | supported | SQLite DISTINCT applies to full rows |
 | `:on_delete_default_all` | supported | SQLite supports `ON DELETE SET DEFAULT` |
@@ -50,7 +50,11 @@ full rationales live next to each tuple in `test/test_helper.exs`.
 |-----------|-----|
 | `ecto_sql .../sql/transaction.exs:161` | fails from two adapter-suite settings (test pool_size 1 + the driver's BEGIN IMMEDIATE default), not a SQLite limit — passes at pool ≥ 2 with `:deferred` mode |
 | `ecto_sql .../sql/alter.exs:44` | a schemaless SELECT after `modify :numeric` returns the storage value (INTEGER 1), never `%Decimal{}` — types live at the Ecto schema layer by design |
-| `ecto_sql .../sql/logging.exs:74` | UUIDs are stored as TEXT by default, so query-telemetry params carry the 36-char string, not Postgres's 16-byte binary |
+| `ecto_sql .../sql/logging.exs:74` | UUIDs are stored as TEXT by default, so query-telemetry params carry the 36-char string, not Postgres's 16-byte binary — a permanent adapter design choice, not a SQLite limit |
+| `ecto .../cases/interval.exs:305` | `datetime_add with naive_datetime_usec`: `strftime %f` is millisecond-precision, so microsecond-exact arithmetic rounds |
+| `ecto .../cases/interval.exs:321` | `datetime_add with naive_datetime_usec and decimal increment`: same millisecond-precision limit |
+| `ecto .../cases/interval.exs:333` | `datetime_add with utc_datetime_usec`: same millisecond-precision limit |
+| `ecto .../cases/interval.exs:351` | `datetime_add uses utc_datetime_usec with decimal increment`: same millisecond-precision limit |
 | `ecto .../cases/type.exs:359` | untyped boolean SELECT returns 1/0 (no load hook on untyped selects); use `type(..., :boolean)` |
 | `ecto_sql .../sql/migration.exs:664` | `modify` with a `references(...)` type — the up-front reference refusal, not a SQLite limit |
 | `ecto .../cases/repo.exs:864` | uneven `insert_all` rows: the NULL Ecto pads in suppresses the column DEFAULT |
