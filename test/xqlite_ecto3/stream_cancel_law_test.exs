@@ -28,7 +28,10 @@ defmodule XqliteEcto3.StreamCancelLawTest do
 
   The deadline is what a run costs, so the generated range is small on
   purpose; the number of runs is not what shrinks if the property gets
-  slow.
+  slow. The range's top is measured, not assumed: one uncancelled first
+  batch is timed where the file runs, and no deadline in the file goes
+  above a tenth of it — a runner ten times faster than the machine that
+  wrote this still sees every batch outlive its deadline.
 
   The file runs on the pool repo, not the sandboxed one: the same
   `:timeout` also arms DBConnection's own deadline, and when that timer
@@ -81,8 +84,31 @@ defmodule XqliteEcto3.StreamCancelLawTest do
 
   setup_all do
     Repo.query!("CREATE TABLE IF NOT EXISTS stream_cancel_rows (n INTEGER NOT NULL)")
-    :ok
+    {:ok, first_batch_ms: first_batch_ms()}
   end
+
+  # The one number the whole file hangs on, measured where the file
+  # runs: how long the slow query takes to hand back its first batch
+  # with no deadline at all. Every deadline below is at most a tenth of
+  # it, so a batch outlives its deadline on the fastest runner as
+  # surely as on the slowest, and a cancelled run still costs only its
+  # deadline.
+  defp first_batch_ms do
+    started = System.monotonic_time(:millisecond)
+
+    {:ok, _} =
+      Repo.transaction(fn ->
+        Repo
+        |> Ecto.Adapters.SQL.stream(@slow_sql, [], max_rows: 1, timeout: :infinity)
+        |> Enum.take(1)
+      end)
+
+    max(System.monotonic_time(:millisecond) - started, 10)
+  end
+
+  defp deadline_cap(%{first_batch_ms: ms}), do: min(20, div(ms, 10))
+
+  defp short_deadline(context), do: max(deadline_cap(context), 1)
 
   setup do
     Repo.query!("DELETE FROM stream_cancel_rows")
@@ -95,10 +121,10 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   end
 
   describe "the deadline on a batch" do
-    property "a batch that outlives its :timeout ends in the deadline error" do
+    property "a batch that outlives its :timeout ends in the deadline error", context do
       check all(
               batch_size <- integer(1..20),
-              timeout <- integer(-5..20),
+              timeout <- integer(-5..deadline_cap(context)),
               max_runs: @law_runs
             ) do
         started = System.monotonic_time(:millisecond)
@@ -117,10 +143,12 @@ defmodule XqliteEcto3.StreamCancelLawTest do
       end
     end
 
-    test "a slow stream under a 50 ms timeout raises instead of draining" do
+    test "a slow stream under a short deadline raises instead of draining", context do
+      timeout = short_deadline(context)
+
       error =
         assert_raise DBConnection.ConnectionError, fn ->
-          Repo.transaction(fn -> drain(@slow_sql, max_rows: 500, timeout: 50) end)
+          Repo.transaction(fn -> drain(@slow_sql, max_rows: 500, timeout: timeout) end)
         end
 
       assert error.reason == :error
@@ -167,12 +195,14 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   end
 
   describe "the deadline inside a transaction" do
-    test "left alone it rolls the transaction back and comes out of it" do
+    test "left alone it rolls the transaction back and comes out of it", context do
+      timeout = short_deadline(context)
+
       error =
         assert_raise DBConnection.ConnectionError, fn ->
           Repo.transaction(fn ->
             Repo.query!("INSERT INTO stream_cancel_rows (n) VALUES (99)")
-            drain(@slow_sql, max_rows: 500, timeout: 20)
+            drain(@slow_sql, max_rows: 500, timeout: timeout)
           end)
         end
 
@@ -181,12 +211,14 @@ defmodule XqliteEcto3.StreamCancelLawTest do
       assert Repo.query!("SELECT 1").rows == [[1]]
     end
 
-    test "caught inside the transaction it leaves the transaction usable" do
+    test "caught inside the transaction it leaves the transaction usable", context do
+      timeout = short_deadline(context)
+
       assert {:ok, {reason, rows}} =
                Repo.transaction(fn ->
                  error =
                    assert_raise DBConnection.ConnectionError, fn ->
-                     drain(@slow_sql, max_rows: 500, timeout: 20)
+                     drain(@slow_sql, max_rows: 500, timeout: timeout)
                    end
 
                  Repo.query!("INSERT INTO stream_cancel_rows (n) VALUES (98)")
