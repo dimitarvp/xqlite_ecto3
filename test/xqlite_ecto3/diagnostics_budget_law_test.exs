@@ -386,11 +386,8 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
         error = replay(context.scan_conn, budget)
         elapsed_ms = System.monotonic_time(:millisecond) - started_at_ms
 
-        assert %Constraint{
-                 fk_violations: [],
-                 fk_diagnostics: {:unavailable, :operation_cancelled}
-               } = error.details
-
+        assert %Constraint{fk_violations: [], fk_diagnostics: diagnostics} = error.details
+        assert stopped_inside_the_allowance?(diagnostics)
         assert elapsed_ms <= budget + @slack_ms
         assert {:ok, %{rows: [[1]]}} = XqliteNIF.query(context.scan_conn, "SELECT 1", [])
         assert {:ok, false} = XqliteNIF.transaction_status(context.scan_conn)
@@ -416,7 +413,7 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
                XqliteEcto3.Connection.query(pid, insert, [], timeout: 30)
 
       assert details.subtype == :constraint_foreign_key
-      assert details.fk_diagnostics == {:unavailable, :operation_cancelled}
+      assert stopped_inside_the_allowance?(details.fk_diagnostics)
 
       assert {:ok, %{rows: [[1]]}} =
                XqliteEcto3.Connection.query(pid, "SELECT 1", [], [])
@@ -472,4 +469,12 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   defp remove_database(path) do
     Enum.each(["", "-wal", "-shm"], fn suffix -> File.rm(path <> suffix) end)
   end
+
+  # Two mechanisms bound a replay that outlives its allowance and either
+  # may win: the cancel token ends a read mid-scan, and the wall-clock
+  # check between reads ends the chain when a read finished just past
+  # it — on a machine that schedules the canceller late, the second.
+  defp stopped_inside_the_allowance?({:unavailable, :operation_cancelled}), do: true
+  defp stopped_inside_the_allowance?({:unavailable, {:diagnostics_budget_exceeded, _}}), do: true
+  defp stopped_inside_the_allowance?(_other), do: false
 end
