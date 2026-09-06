@@ -518,6 +518,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A transaction a `with_xqlite/3` callback left open on its way out of
+  a raise no longer confuses the pool.** The callback holds the raw
+  SQLite connection, so a `BEGIN` it runs never passes the adapter's
+  statement path — the one place that noticed transaction control and
+  re-read SQLite's real state. A callback that returns normally with a
+  transaction open is caught by `DBConnection`'s own comparison of the
+  status at checkout and at check-in, but one that raises is not: the
+  connection went back into the pool with the transaction open and the
+  driver still believing none was, and the next `Repo.transaction/2` on
+  it issued a `BEGIN` SQLite refused, raising a generic
+  `XqliteEcto3.Error`. The status is now re-read on both ways out of the
+  callback, so that transaction comes back `{:error, :rollback}` —
+  `DBConnection`'s answer for a transaction already started — and drops
+  the connection, which rolls the forgotten transaction back.
+
 - **A short `:timeout` no longer costs a foreign-key changeset error.**
   The rich foreign-key diagnosis used to be skipped whole whenever the
   failed statement's deadline left less than the whole

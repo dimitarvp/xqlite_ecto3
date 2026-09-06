@@ -46,6 +46,14 @@ defmodule XqliteEcto3.StreamCancelLawTest do
   And the error travels the way `DBConnection` raises it: left alone it
   takes the surrounding `Repo.transaction/1` down with it, caught inside
   the transaction function it leaves the transaction usable.
+
+  ## What the deadline leaves behind
+
+  A finite deadline is a process: a batch cannot time itself out because
+  the fetch blocks the caller for its whole duration. That process must
+  be gone once the batch it guards is over, on the execute path as much
+  as on this one — one left waiting per batch is a process leak the
+  short deadlines above are too short to show.
   """
 
   use ExUnit.Case, async: true
@@ -191,9 +199,61 @@ defmodule XqliteEcto3.StreamCancelLawTest do
     end
   end
 
+  # A batch under a finite deadline arms a process that fires the cancel
+  # token once the deadline passes, and tells it to stand down on the way
+  # out. One that does not stand down waits its whole deadline out, so a
+  # stream leaves one live process per batch — invisible under the few
+  # milliseconds this file generates above, and one process per batch for
+  # fifteen seconds under the deadline callers really get.
+  describe "the process a deadline arms" do
+    test "a drained stream leaves none of them behind" do
+      before = cancellers()
+
+      assert {:ok, 20} =
+               Repo.transaction(fn -> drain(@fast_sql, max_rows: 1, timeout: 60_000) end)
+
+      assert settled_cancellers(before) == []
+    end
+
+    test "an executed statement leaves none of them behind" do
+      before = cancellers()
+
+      for _ <- 1..20 do
+        assert Repo.query!("SELECT 1", [], timeout: 60_000).rows == [[1]]
+      end
+
+      assert settled_cancellers(before) == []
+    end
+  end
+
   defp drain(sql, opts) do
     Repo
     |> Ecto.Adapters.SQL.stream(sql, [], opts)
     |> Enum.reduce(0, fn result, acc -> acc + result.num_rows end)
+  end
+
+  defp cancellers do
+    Enum.filter(Process.list(), fn pid ->
+      match?(
+        {:current_function, {XqliteEcto3.Cancellation, _, _}},
+        Process.info(pid, :current_function)
+      )
+    end)
+  end
+
+  # Wide on purpose: what is under test is that the process goes away at
+  # all, not how soon the scheduler gets to it.
+  defp settled_cancellers(before) do
+    Enum.reduce_while(1..100, [], fn _attempt, _acc ->
+      case Enum.reject(cancellers(), fn pid -> pid in before end) do
+        [] -> {:halt, []}
+        still_waiting -> wait_once(still_waiting)
+      end
+    end)
+  end
+
+  defp wait_once(still_waiting) do
+    Process.sleep(20)
+    {:cont, still_waiting}
   end
 end

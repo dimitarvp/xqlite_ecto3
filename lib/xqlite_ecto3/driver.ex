@@ -679,10 +679,13 @@ defmodule XqliteEcto3.Driver do
 
   # Meta-operation, not a statement: hands `XqliteEcto3.with_xqlite/3` the
   # raw NIF connection. Deliberately outside the handle_execute telemetry
-  # span — nothing runs against the database here.
+  # span — nothing runs against the database here. The status read is why
+  # `with_xqlite/3` asks a second time on the way out of its callback:
+  # transaction control the callback ran on that raw connection reached
+  # SQLite without passing the statement path that keeps the flag true.
   @impl DBConnection
   def handle_execute(%XqliteEcto3.RawConn{} = query, _params, _opts, state) do
-    {:ok, query, state.conn, state}
+    {:ok, query, state.conn, refresh_transaction_status(state)}
   end
 
   def handle_execute(query, params, opts, state) do

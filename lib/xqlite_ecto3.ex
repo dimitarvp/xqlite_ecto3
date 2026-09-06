@@ -354,6 +354,27 @@ defmodule XqliteEcto3 do
   pool users at the application level: statements interleave with
   whatever the pool is running.
 
+  ## Transaction control on the handle
+
+  A `BEGIN`, `SAVEPOINT`, `COMMIT` or `ROLLBACK` the callback runs on
+  the handle takes effect on the pooled connection, and the adapter
+  re-reads SQLite's transaction status on the way out of the callback —
+  on the raising path as well as the returning one — so the driver never
+  goes on believing a transaction status SQLite has left behind. That
+  read is the last one: a handle kept past the callback, or used from
+  another process, moves a status nothing will notice.
+
+  Leaving a transaction open is still yours to undo, and it costs the
+  connection either way. Return normally with one open and `DBConnection`
+  itself refuses the call: it compares the status it read at checkout
+  with the one it reads at check-in and raises
+  `DBConnection.ConnectionError`, dropping the connection, which rolls
+  your transaction back. Raise instead of returning and the connection
+  is checked back in with the transaction still open; the next
+  `Repo.transaction/2` on it is then told the transaction is already
+  started, comes back `{:error, :rollback}` without running its
+  function, and drops the connection, which rolls it back there.
+
   ## Connection-scoped state persists after the callback
 
   Anything you install on the handle outlives `fun` for the life of
@@ -418,7 +439,17 @@ defmodule XqliteEcto3 do
       pool,
       fn conn ->
         handle = DBConnection.execute!(conn, %XqliteEcto3.RawConn{}, [], run_opts)
-        fun.(handle)
+
+        # The second ask is a status read, not a second handle: transaction
+        # control the callback ran on the raw connection never passed the
+        # statement path that keeps the driver's cached status true. It runs
+        # on the raising path too, where DBConnection checks the connection
+        # back in without the status comparison it makes on the other one.
+        try do
+          fun.(handle)
+        after
+          DBConnection.execute!(conn, %XqliteEcto3.RawConn{}, [], run_opts)
+        end
       end,
       run_opts
     )

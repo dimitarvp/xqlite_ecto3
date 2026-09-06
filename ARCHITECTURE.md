@@ -289,7 +289,12 @@ first mismatch — before COMMIT, so the table is unchanged.
 `Ecto.Adapter.lookup_meta/1`, and runs `DBConnection.run/3`; inside it,
 `DBConnection.execute!/4` with a `%XqliteEcto3.RawConn{}` yields the raw xqlite
 connection reference, and `txn_state/2` and `connection_stats/1` are thin
-wrappers over that. `explain_analyze/3` compiles the queryable with
+wrappers over that. The same sentinel runs again on the way out of the
+callback, raising path included, and the driver answers it from a live
+`NIF.transaction_status/1` read: transaction control the callback ran on the
+raw handle reached SQLite without passing the statement path that keeps the
+cached flag true, and a callback that raises is checked back in without the
+status comparison `DBConnection.run/3` makes on the returning path. `explain_analyze/3` compiles the queryable with
 `Ecto.Adapters.SQL.to_sql/3`, encodes parameters through the same
 `DBConnection.Query.encode/3` production uses, and calls
 `Xqlite.explain_analyze/3`; `wrap_in_transaction: true` runs it inside the
@@ -318,6 +323,7 @@ error, `{:disconnect, error}`, `{:transaction_status, status}`, or
 | no transaction open | rollback, not savepoint | `{:idle, state}` | `handle_rollback/2` |
 | no transaction open | commit or rollback, savepoint | disconnect | `savepoint_to_close/1` |
 | any | column-less control SQL | from SQLite | `sync_after_...` |
+| any | `with_xqlite/3` callback over | from SQLite | `handle_execute/4` on `RawConn` |
 | any | status asked | from SQLite | `handle_status/2` |
 | `:transaction` | statement error | disconnect unless still open | the guard |
 
@@ -400,7 +406,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
 | `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: each spends the smaller of the two less a 20 ms reserve and skips only inside that reserve. The replay's reads also carry a cancel token fired at the allowance, so a read that outlives it is cancelled — except one waiting on another connection's lock, which ends on `busy_timeout`; the replayed write carries no token. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
 | `with-xqlite-fresh-checkout` | `with_xqlite/3` always starts its own checkout, so it must never be nested inside a transaction, a checkout, or itself. | `xqlite_ecto3.ex:with_xqlite/3` | unpinned |
-| `transaction-status-source` | `NIF.transaction_status/1` is the only answer to whether a transaction is open; the driver field caches it. Every decision that turns on the answer reads it live: the rollback status answer, the error path before and after its diagnoses, and both savepoint-mode closes. | `driver.ex:refresh_transaction_status/1`, `savepoint_to_close/1` | `driver_transaction_state_test.exs: "stale :idle cache is corrected to :transaction after raw BEGIN"` |
+| `transaction-status-source` | `NIF.transaction_status/1` is the only answer to whether a transaction is open; the driver field caches it. Every decision that turns on the answer reads it live: the rollback status answer, the error path before and after its diagnoses, both savepoint-mode closes, and the way out of a `with_xqlite/3` callback. | `driver.ex:refresh_transaction_status/1`, `savepoint_to_close/1` | `driver_transaction_state_test.exs: "stale :idle cache is corrected to :transaction after raw BEGIN"` |
 | `transaction-control-keywords` | `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, found past whitespace, both comment forms, semicolons and a UTF-8 BOM. | `driver.ex:leading_keyword/1` | `driver_transaction_state_test.exs: "a BOM-prefixed BEGIN updates the cached flag"` |
 | `savepoint-names` | Managed savepoints are `xqlite_sp_<4-byte hex prefix>_<n>`; three other savepoint names are reserved constants. | `driver.ex:savepoint_name/2` | `driver_transaction_state_test.exs: "raw SAVEPOINT xqlite_sp_0 by user does not collide with managed stack"` |
 | `changes-need-total-changes` | A changed-row count is reported only when `sqlite3_total_changes()` moved, because `sqlite3_changes()` is sticky. | `driver.ex:changes_since/2` | `driver_statement_cache_test.exs: "DDL after a DML through the cache reports zero, not the stale change count"` |

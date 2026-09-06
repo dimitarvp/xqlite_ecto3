@@ -217,6 +217,52 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
   end
 
+  # float64 carries 53 bits of significand, and the widest values it
+  # carries read back as 19 significant decimal digits — one more than
+  # the 18 that always fit. Those store and read back digit for digit,
+  # so refusing them would narrow the type for nothing. The refusal is
+  # decided from a digit count taken from the coefficient's bit length
+  # instead of from its written-out digits, so that count has to be
+  # right at the widest accepted value, and has to stay right when
+  # trailing zeros make the coefficient far wider than the number is.
+  describe "bind_form/1 keeps what float64 stores exactly" do
+    # 2^63 - 1024, the largest whole number float64 and int64 both hold
+    # exactly, written with a fraction dot so the integer arm passes on
+    # it. Nineteen significant digits, and every one of them survives.
+    test "the widest whole number both types hold, written with a dot, stores exactly" do
+      d = Decimal.new(1, 92_233_720_368_547_747_840, -1)
+
+      assert {:float, f} = DecimalPrecision.bind_form(d)
+
+      {:ok, conn} = Xqlite.open_in_memory()
+      {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE edge (v NUMERIC)", [])
+      {:ok, _} = XqliteNIF.query(conn, "INSERT INTO edge VALUES (?1)", [f])
+
+      assert {:ok, %{rows: [["integer", 9_223_372_036_854_774_784]]}} =
+               XqliteNIF.query(conn, "SELECT typeof(v), v FROM edge", [])
+
+      assert Decimal.equal?(d, DecimalPrecision.stored_decimal(f))
+
+      :ok = XqliteNIF.close(conn)
+    end
+
+    # One digit past the widest float64 reads back: nothing exact to
+    # equal it, whatever the exponent puts behind the dot.
+    test "twenty significant digits have no exact form" do
+      assert DecimalPrecision.bind_form(Decimal.new(1, 18_446_744_073_709_551_615, -1)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(-1, 18_446_744_073_709_551_615, -4)) == :error
+    end
+
+    property "trailing zeros never turn an exactly-stored value into a refusal" do
+      check all(dec <- float_exact_decimal(), max_runs: 2000) do
+        form = DecimalPrecision.bind_form(dec)
+
+        refute form == :error
+        assert exact_form?(form, dec)
+      end
+    end
+  end
+
   defp integer_arm?({:ok, int}, form), do: form == {:integer, int}
   defp integer_arm?(:error, _form), do: true
 
@@ -266,6 +312,35 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
       Decimal.new(sign, coefficient, exponent)
     end
   end
+
+  # sign * mantissa * 2^shift is a float64 to the digit — 53 bits of
+  # significand times a power of two — and 19 digits wide, the widest a
+  # float64 reads back as. The coefficient then grows by `zeros` trailing
+  # zeros with the exponent moved to match, so the number stays what it
+  # was while its coefficient runs past anything a float64 could carry:
+  # the width count has to strip exactly those zeros and no digit more.
+  defp float_exact_decimal do
+    gen all(
+          sign <- StreamData.member_of([1, -1]),
+          mantissa <- StreamData.integer(4_503_599_627_370_496..9_007_199_254_740_991),
+          shift <- StreamData.integer(8..10),
+          zeros <- StreamData.integer(0..40)
+        ) do
+      base = mantissa * Integer.pow(2, shift)
+      Decimal.new(sign, base * Integer.pow(10, zeros), -zeros)
+    end
+  end
+
+  defp exact_form?({:integer, int}, dec), do: Decimal.equal?(dec, Decimal.new(int))
+
+  defp exact_form?({:float, float}, dec) do
+    Decimal.equal?(
+      Decimal.normalize(dec),
+      Decimal.normalize(DecimalPrecision.stored_decimal(float))
+    )
+  end
+
+  defp exact_form?(:error, _dec), do: false
 
   describe "DecimalPrecisionError" do
     test "carries the offending decimal on the :value field" do
