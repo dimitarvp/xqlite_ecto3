@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- types cycle: fold into the lists below at release time -->
+
+### Changed
+
+- **Breaking, pre-1.0: `XqliteEcto3.Types.Instant` loads the integer
+  nanosecond count, not a `%DateTime{}`.** The old read rounded the
+  stored count down to a whole microsecond, so a value the repo had just
+  returned raised `Ecto.ChangeError` on re-insert, raised `ArgumentError`
+  inside an embedded schema, and matched no rows when pinned in a `where`
+  clause. The field now hands back exactly what it stored. The new
+  `Instant.to_datetime/1` is the conversion for display: an integer
+  becomes a `%DateTime{}` rounded down to a whole microsecond, `nil`
+  passes through, anything else is `:error`. Two consequences worth
+  knowing: assigning a `%DateTime{}` through a changeset or pinning one
+  in a query still rounds down to the whole microsecond, so a row with
+  sub-microsecond digits cannot be reached that way; and an unchanged
+  instant no longer registers as a change in a changeset, where before
+  every UPDATE carried the column. A pinned value near the int64 edges
+  also used to be rejected by the driver with
+  `{:cannot_convert_to_sqlite_value, _}`, because the rounded-down
+  microsecond fell below int64 — that is gone with the integer read.
+
+- **Breaking, pre-1.0: a datetime year outside -9999 to 9999 is
+  refused.** The stored text carries a four-digit year while
+  `to_iso8601/1` writes a wider one unpadded, and no loader can parse it
+  back — one such row made every later read of the table raise. A `Date`,
+  `NaiveDateTime` or `DateTime` outside the range is now refused at the
+  binding boundary with `XqliteEcto3.UnencodableParameterError`
+  (`reason: :year_out_of_range`) and nothing is written, on the
+  parameter path, inside an embedded schema, and from
+  `XqliteEcto3.Types.TimestampTZ.dump/1` (which answers `:error`, so
+  Ecto raises `Ecto.ChangeError`). Both tails are reachable from
+  ordinary arithmetic: `DateTime.add(now, 3_000_000, :day)` and
+  `Date.add(~D[2026-09-17], -5_000_000)`. A row already written that way
+  can no longer be bound, so removing it means binding the stored text
+  yourself: `DELETE FROM t WHERE at = ?` with
+  `"10000-06-07 01:02:03"`.
+
+- **`XqliteEcto3.Types.ExactDecimal` refuses a written-out form past
+  6178 digit characters.** `"1E+8000000"` is ten characters that wrote
+  eight million bytes, because the stored form has no exponent and
+  nothing between the cast and the dump looked at it. The ceiling is
+  `Decimal`'s own default print limit, so every value a plain `:decimal`
+  field accepts is still accepted here, and the width is computed from
+  the coefficient's digit count and the exponent without rendering
+  anything. `cast/1` and `dump/1` both answer `:error`; `load/1` has no
+  ceiling, so a wider row already in a column still reads and only
+  writing it back is refused.
+
+- **Documented: `:binary_id` treats sixteen raw bytes as a UUID.**
+  Sixteen bytes going in are written as the dashed lower-case text under
+  either storage mode; coming out they are expanded only under `:binary`
+  and handed back as raw bytes under `:string`. The moduledoc, the
+  README, the migration guide and `XqliteEcto3.Types.UUID`'s moduledoc
+  all previously said such a value passed through untouched. Behaviour
+  is unchanged — opaque sixteen-byte identifiers belong in a `:binary`
+  field.
+
+- **Documented: an `Ecto.UUID` field does not follow
+  `:binary_id_storage`.** It stores the 36-character text under either
+  setting, so under `:binary` an `Ecto.UUID` column and a `:binary_id`
+  column hold different things and a join across them returns nothing.
+
+### Fixed
+
+- **A UUID inside an embedded schema no longer raises under `:binary`
+  storage.** An `embeds_one` or `embeds_many` field declared
+  `:binary_id` under `:binary` storage, or
+  `XqliteEcto3.Types.UUID, storage: :binary` under either setting,
+  raised `XqliteEcto3.UnencodableParameterError` on every write, because
+  the embed is JSON and raw UUID bytes are not JSON. Sixteen raw bytes
+  that JSON cannot carry are now written into the embed as the dashed
+  text, the same form the column path stores.
+
+- **`XqliteEcto3.Types.UUID` with `storage: :binary` loads a
+  36-character text row.** It answered `:error` where both `Ecto.UUID`
+  and `:binary_id` accept either stored form, so a column written before
+  the storage mode was flipped, or by another tool, could not be read.
+
+- **`XqliteEcto3.UnencodableParameterError` tells its three causes
+  apart.** Its message named a JSON encoding failure whatever the
+  `:reason` field held, including for the `DateTime.shift_zone/2`
+  refusal its own moduledoc documents.
+
+<!-- end types cycle -->
+
+
 ### Added
 
 - **`diagnostics_budget_ms` repo option (default 500).** One
@@ -1356,6 +1443,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `wal_autocheckpoint`, `mmap_size`) plus pool / DBConnection knobs
   (`pool_size`, `timeout`, `connect_timeout`, `queue_target`,
   `queue_interval`).
+
+<!-- refusals and the busy slot: start -->
+
+### Changed
+
+- **`Repo.query_many/3` returns its refusal instead of raising it.**
+  The adapter does not implement `query_many`, and it used to say so by
+  raising `ArgumentError` — which broke `Repo.query_many/3`'s own
+  `{:ok, _} | {:error, _}` contract and left the refusal impossible to
+  classify without reading the message. It now comes back as
+  `{:error, %XqliteEcto3.Error{type: :query_many_unsupported}}`, so
+  `Repo.query_many/3` returns and `Repo.query_many!/3` raises that same
+  struct. The type atom is about the callback, not the statement count:
+  a one-statement `query_many` is refused with it too, while
+  `:multiple_statements` keeps its old meaning ("this SQL held a second
+  statement").
+
+- **A query carrying `lock:` is refused with a typed error.** It used
+  to raise `ArgumentError` with the message "locks are not supported by
+  SQLite", which named the wrong culprit — SQLite never saw the
+  statement. It now raises
+  `%XqliteEcto3.Error{type: :locks_unsupported, details: %{lock: text}}`
+  carrying the lock text the query asked for, and the message says who
+  refuses: the adapter does not render row locks.
+
+- **`with_xqlite/3`'s busy-slot warning matches what xqlite 0.12 does.**
+  The old text said a busy observer stopped the connection waiting and
+  that unregistering never gave the wait back; neither is true at 0.12.
+  Registering an observer keeps the wait, unregistering the last one
+  restores the timeout the slot displaced, and the one surprise left —
+  `PRAGMA busy_timeout` reads 0 through SQL while the slot is held,
+  although the connection still waits — is now written down, in the
+  README's busy section as well. Two ways to lose the wait are written
+  down with it: an authorizer denying `PRAGMA` leaves nothing to
+  remember when the slot is taken (that connection then fails contended
+  writes for the rest of its life in the pool), and a raw
+  `PRAGMA busy_timeout = N` takes the slot away from xqlite, silently
+  stopping every observer on that connection.
+
+### Fixed
+
+- **A `lock:` carried by a subquery, a join subquery or a CTE is no
+  longer dropped without a word.** The refusal was on the top-level
+  render only, so a lock one nesting level down produced SQL with no
+  lock in it and returned rows. The guard now sits on the arity every
+  one of those paths renders through.
+
+<!-- refusals and the busy slot: end -->
 
 ## [0.1.0] - YYYY-MM-DD
 

@@ -15,7 +15,8 @@ read out of the file it names. Paths are relative to `lib/xqlite_ecto3/`.
 - `connection.ex` — `Ecto.Adapters.SQL.Connection`: the SQL generator (`all/2`,
   `update_all/2`, `delete_all/1`, `insert/8`, `expr/3`), DDL rendering
   (`execute_ddl/1`), `to_constraints/2`, `explain_query/4`, and the
-  `child_spec/1` that starts the pool; `query_many/4` raises.
+  `child_spec/1` that starts the pool; `query_many/4` returns a
+  structured refusal.
 - `driver.ex` — the `DBConnection` behaviour: `connect/1` with its config
   validators, `checkout/1`, `ping/1`, `disconnect/2`, `handle_status/2`, the
   begin/commit/rollback and declare/fetch/deallocate callbacks,
@@ -130,7 +131,12 @@ parse, NaN or infinity so Ecto raises its typed load failure, and
 the value and no number is ever bound. On the way back the two share one
 parse, `DecimalPrecision.parse_finite/1`, with `Decimal`'s 34-significant-digit
 and 6144-exponent defaults lifted, so numeric text of any width in a column
-reads as the number written under either field type.
+reads as the number written under either field type. The way in is narrower
+than the way back on purpose: `Types.ExactDecimal.cast/1` and `dump/1` refuse a
+value whose written-out form would pass 6178 digit characters, measured by
+`DecimalPrecision.written_out_digits/1` without rendering. That check is in the
+type, never in the shared parse, so a wider row already in a column keeps
+loading.
 
 ### 4. Transactions, the state sync, the disconnect guard
 
@@ -248,8 +254,10 @@ grammar for, one clause per case:
 | a keyword list passed to `execute/1` | no keyword DDL form |
 
 Two more raises sit beside the DDL renderer: `Connection.quote_table/2` rejects
-a table prefix (SQLite has no schemas), and `Connection.all/1` rejects a query
-with `lock:` set.
+a table prefix (SQLite has no schemas), and `Connection.all/2` rejects a query
+carrying `lock:` with `%XqliteEcto3.Error{type: :locks_unsupported}` — the
+guard is on the arity every path renders through, so a lock inside a subquery,
+a join subquery or a CTE is refused too.
 
 ### 8. The table rebuild
 
@@ -402,7 +410,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `datetime-text-form` | Datetimes store as `YYYY-MM-DD HH:MM:SS[.ffffff]`: space separator, no `T`, no `Z`. | `query.ex:sqlite_datetime/1` | `datetime_add_form_test.exs: "datetime_add renders the stored text form: space separator, no designator"` |
 | `real-affinity-numeric` | A spelling SQLite would give REAL affinity renders `NUMERIC`, so an integer-exact value past 2^53 is not rounded in. | `data_type.ex:column_type/2`, `sqlite_affinity/1` | `data_type_test.exs: "any unrecognized spelling SQLite would give REAL affinity"` |
 | `decimal-numeric-bind` | A `Decimal` of any width or exponent binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
-| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the dumper/loader chain, the migration column type and the query-parameter `CAST` together. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"` |
+| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the `:binary_id` dumper/loader chain, the migration column type and the query-parameter `CAST` together. An `Ecto.UUID` field ignores it and always stores the 36-character text. Sixteen raw bytes going in are a UUID in either mode; coming out they are expanded only under `:binary`. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"` |
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
 | `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: each spends the smaller of the two less a 20 ms reserve and skips only inside that reserve. The replay's reads also carry a cancel token fired at the allowance, so a read that outlives it is cancelled — except one waiting on another connection's lock, which ends on `busy_timeout`; the replayed write carries no token. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
 | `with-xqlite-fresh-checkout` | `with_xqlite/3` always starts its own checkout, so it must never be nested inside a transaction, a checkout, or itself. | `xqlite_ecto3.ex:with_xqlite/3` | unpinned |
@@ -433,7 +441,8 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
   deps.compile xqlite_ecto3 --force`. The sibling `config :xqlite,
   :telemetry_enabled` gates the xqlite-level events.
 - UUID storage is `config :xqlite_ecto3, :binary_id_storage`, read at run time
-  from the three call sites under `binary-id-storage` above.
+  from the three call sites under `binary-id-storage` above. The `:uuid`
+  dumper is deliberately not one of them.
 - Warnings are errors everywhere: `elixirc_options` in `mix.exs` for `lib/`,
   and the `test: "test --warnings-as-errors"` alias for `.exs` files. The one
   exemption is `test/ecto3_integration/all_test.exs`, which

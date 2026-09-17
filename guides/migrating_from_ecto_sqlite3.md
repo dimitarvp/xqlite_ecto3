@@ -181,11 +181,23 @@ config :xqlite_ecto3, :binary_id_storage, :binary  # 16-byte BLOB storage
 ```
 
 Under `:binary`, a UUID-shaped value is written as its 16 raw bytes and
-read back as the usual 36-char string; a `:binary_id` value that is not
-a UUID passes through unchanged. Flipping to `:binary` after rows exist
-in `:string` form is **not transparent**: old rows stay TEXT while new
-rows are BLOBs, and a lookup by id binds the BLOB form, so it will not
-find the old rows. Leave the default unless you're starting fresh or
+read back as the usual 36-char string; a value that is neither 16 bytes
+nor a UUID string passes through unchanged. Sixteen raw bytes are not
+"not a UUID": `:binary_id` is the adapter's UUID type, so 16 bytes going
+in are written as the dashed text under `:string` and kept as themselves
+under `:binary`. Only the read side is one-sided — 16 stored bytes are
+expanded under `:binary` and handed back as raw bytes under `:string`.
+Keep opaque 16-byte identifiers in a `:binary` field.
+
+The setting governs `:binary_id` fields. An `Ecto.UUID` field stores the
+36-character text under either setting, so under `:binary` the two kinds
+of column hold different things and a join across them finds nothing.
+
+Flipping after rows exist is **not transparent** in either direction.
+Going to `:binary`: old rows stay TEXT while new rows are BLOBs, and a
+lookup by id binds the BLOB form, so it will not find the old rows.
+Going back to `:string`: ids written as BLOBs read back as raw bytes
+rather than as text. Leave the default unless you're starting fresh or
 willing to migrate existing rows.
 
 For per-field control (mixed storage across fields), use the escape

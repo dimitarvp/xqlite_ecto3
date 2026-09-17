@@ -168,6 +168,26 @@ defmodule XqliteEcto3.DecimalPrecision do
   @log10_2_num 84_732_411_018_728
   @log10_2_den 281_474_976_710_656
 
+  # How many digit characters `Decimal.to_string(number, :normal)` would
+  # write, without writing them: the same arithmetic Decimal does
+  # internally, so the answer is exact. The `max/2` covers a zero
+  # coefficient, which prints as one digit while the bit-length routine
+  # below counts none. Neither the decimal point nor the minus sign is
+  # counted — they are two more bytes on top.
+  @doc false
+  @spec written_out_digits(Decimal.t()) :: non_neg_integer()
+  def written_out_digits(%Decimal{coef: coef, exp: exp}) do
+    digits = max(digit_count(coef), 1)
+
+    case exp >= 0 do
+      true -> digits + exp
+      false -> below_the_point(digits, digits + exp)
+    end
+  end
+
+  defp below_the_point(digits, remaining) when remaining > 0, do: digits
+  defp below_the_point(digits, remaining), do: 1 - remaining + digits
+
   defp digit_count(coef) do
     bits = coef |> :binary.encode_unsigned() |> bit_size()
     guess = div(bits * @log10_2_num, @log10_2_den) + 1
@@ -182,9 +202,11 @@ defmodule XqliteEcto3.DecimalPrecision do
   defp settle_digits(_coef, guess, _power), do: guess
 
   # Decimal's defaults stop a parse at 34 significant digits and an exponent
-  # of 6144. A number someone stored is data, so both are lifted here and a
-  # width ceiling on a load, if one is ever needed, returns to this one
-  # place. "NaN" and "Infinity" parse cleanly and are not numbers with digits
+  # of 6144. A number someone stored is data, so both are lifted here and no
+  # width ceiling belongs in this function: `Types.ExactDecimal.load/1` and
+  # the `:decimal` loader both read stored text through it, and a value
+  # already in a column has to keep loading whatever its width.
+  # "NaN" and "Infinity" parse cleanly and are not numbers with digits
   # to store, so they leave as `:error` like any other unreadable text.
   @doc false
   @spec parse_finite(binary()) :: {:ok, Decimal.t()} | :error

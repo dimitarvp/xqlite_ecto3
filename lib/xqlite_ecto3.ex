@@ -68,16 +68,31 @@ defmodule XqliteEcto3 do
 
   `:string` (default) stores the 36-character UUID form in a TEXT column.
   `:binary` stores the raw 16 bytes in a BLOB column — 55% smaller per
-  row, worth it at large scale. The config governs the dumper, the
-  loader, and the migration column type uniformly; the Elixir-side
-  representation is always the 36-character string either way, and a
-  `:binary_id` value that is not UUID-shaped passes through as-is.
+  row, worth it at large scale. The config governs the `:binary_id`
+  dumper, the `:binary_id` loader, the migration column type and the
+  query-parameter `CAST` together. An `Ecto.UUID` field does not follow
+  it: that type stores the 36-character text under both settings, so an
+  `Ecto.UUID` column and a `:binary_id` column hold different things
+  under `:binary` and a join across the two finds nothing.
 
-  **Fresh databases only.** Flipping the config after rows exist in
-  `:string` form is not transparent — Ecto's default UUID loader expects
-  raw 16-byte input, so the adapter cannot read back old `:string`-form
-  rows after switching to `:binary`. Either pick a mode at project
-  inception, or run a data migration when switching.
+  `:binary_id` is the adapter's UUID type, so **sixteen raw bytes are a
+  UUID** on the way in: they are written as the dashed lower-case text
+  under `:string` storage and kept as themselves under `:binary`, and
+  either way what a field reads back is the 36-character string. Coming
+  out of the database the rule is one-sided — sixteen stored bytes are
+  expanded only under `:binary`; under `:string` they are an opaque id
+  and are handed back as the bytes themselves. A value that is neither
+  sixteen bytes nor a UUID string passes through untouched in both
+  directions. Sixteen-byte identifiers that are not UUIDs belong in a
+  `:binary` field, where nothing rewrites them.
+
+  **Fresh databases only.** Flipping the config after rows exist is not
+  transparent in either direction. Old `:string`-form rows still load
+  after a switch to `:binary` (both stored forms are read), but a lookup
+  by id binds the new form and does not find them. Switching the other
+  way, ids written as 16-byte BLOBs read back as raw bytes rather than
+  as text. Either pick a mode at project inception, or run a data
+  migration when switching.
 
   For the rare case where different fields in the same schema need
   different storage modes, see `XqliteEcto3.Types.UUID` — a parameterized
@@ -103,7 +118,9 @@ defmodule XqliteEcto3 do
 
   `XqliteEcto3.Types.Instant` stores moments in time as int64
   nanoseconds from Unix epoch. Compact + fast for high-volume
-  timestamp workloads (IoT, APM, trading). Loads as `%DateTime{}`.
+  timestamp workloads (IoT, APM, trading). Loads as the integer
+  nanosecond count; `XqliteEcto3.Types.Instant.to_datetime/1` is the
+  conversion for display.
 
   `XqliteEcto3.Types.Duration` stores fixed-length time spans as int64
   nanoseconds. Accepts Elixir 1.17+ `%Duration{}` when the calendar
@@ -386,23 +403,42 @@ defmodule XqliteEcto3 do
   same connection see all of it, and nothing repairs it.
 
   The busy slot deserves its own warning. SQLite has ONE busy slot per
-  connection: `Xqlite.register_busy_observer/2` (and
-  `Xqlite.set_busy_policy/2`) replaces the plain `busy_timeout` the
-  adapter configured, and with no retry policy installed the connection
-  stops waiting on contention entirely — writes that used to wait out
-  `busy_timeout` fail immediately with `:database_busy_or_locked`.
-  Unregistering the observer empties the slot without restoring the
-  timeout. To get the configured behavior back, call
-  `Xqlite.busy_timeout/2` with the repo's configured value before the
-  callback returns.
+  connection, and `Xqlite.register_busy_observer/2` (like
+  `Xqlite.set_busy_policy/2`) takes it from the plain `busy_timeout` the
+  adapter configured. The wait itself does not change: with no retry
+  policy installed, the connection keeps waiting out the `busy_timeout`
+  that was in effect when the slot was taken, and unregistering the last
+  observer puts that value back — the value the slot displaced, or the
+  last one passed to `Xqlite.busy_timeout/2` while the slot was held.
+  One surprise is left: while the slot is held, `PRAGMA busy_timeout`
+  read through SQL reports 0 although the connection still waits that
+  long, the same read-back caveat `PRAGMA wal_autocheckpoint` has.
 
-  One connection left in that state does more damage than its share of
-  the pool suggests. Failing immediately instead of waiting is the
-  fastest way to finish a statement, so that connection is idle — and
-  therefore first in line — far more often than the ones that wait out
-  their busy timeout. Measured: a single such connection in a pool of
-  eight absorbed and failed 41 of 48 contended writes, and poisoning
-  more of the pool barely moves that number — one is enough.
+  The remembered value has one hole. xqlite reads `PRAGMA busy_timeout`
+  as it takes the slot, so an authorizer denying `PRAGMA` — one `fun`
+  may have left on this connection — leaves it nothing to remember, and
+  that pooled connection then fails every contended write immediately,
+  for the rest of its life in the pool. Unregistering does not repair
+  it.
+
+  Change the wait with `Xqlite.busy_timeout/2`: it goes through the slot
+  and keeps your observers, though it does remove an installed retry
+  policy. A raw `PRAGMA busy_timeout = N`, including one run through
+  `Repo.query/3`, puts SQLite's own callback in xqlite's place instead —
+  observers on that connection stop receiving messages while their
+  handles still look registered, and unregistering the last one later
+  restores the value the slot displaced, discarding the one the PRAGMA
+  wrote.
+
+  A connection left failing immediately does more damage than its share
+  of the pool suggests, and `Xqlite.busy_timeout(conn, 0)` or a retry
+  policy with no retries is enough to leave one that way. Failing
+  immediately instead of waiting is the fastest way to finish a
+  statement, so that connection is idle — and therefore first in line —
+  far more often than the ones that wait out their busy timeout.
+  Measured: a single such connection in a pool of eight absorbed and
+  failed 41 of 48 contended writes, and leaving more of the pool that
+  way barely moves that number — one is enough.
 
   Extension loading needs the same care.
   `Xqlite.enable_load_extension(conn, true)` does not only unlock the
@@ -2607,8 +2643,8 @@ defmodule XqliteEcto3 do
     end
   end
 
-  # Storage-aware on purpose: a 16-byte value under :string storage is an
-  # opaque binary_id, not a UUID to expand.
+  # The read side is one-sided where the write side is not: sixteen stored
+  # bytes under :string storage are an opaque id, not a UUID to expand.
   defp binary_id_load(<<_::128>> = raw) do
     case binary_id_storage() do
       :string -> {:ok, raw}
@@ -2618,9 +2654,11 @@ defmodule XqliteEcto3 do
 
   defp binary_id_load(value), do: {:ok, value}
 
-  # SQLite stores UUIDs as TEXT. Ecto.UUID.dump/1 produces raw 16-byte binary,
-  # but the xqlite NIF can't bind raw bytes as text without a utf-8 error.
-  # Keep the string representation so it binds as TEXT.
+  # An Ecto.UUID field stores the 36-character text under both storage
+  # settings, unlike :binary_id. Following the setting here needs a way to
+  # bind a binary as a BLOB whatever its bytes: the NIF picks the storage
+  # class from the value, so raw UUID bytes that happen to be valid UTF-8
+  # would land as TEXT and the column would mix storage classes.
   defp uuid_string_dump(nil), do: {:ok, nil}
 
   defp uuid_string_dump(<<_::128>> = raw) do

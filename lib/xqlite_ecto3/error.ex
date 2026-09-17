@@ -25,8 +25,12 @@ defmodule XqliteEcto3.Error do
       is `%{name: name}`: the table or index name exactly as SQLite
       rendered it, which the message repeats inside SQLite's own
       sentence.
-    * Tag-only errors (`:connection_closed`, `:cannot_execute`, …) →
-      `details` is `nil`; the tag lives in `type`.
+    * A query carrying `lock:` (`type: :locks_unsupported`) → `details`
+      is `%{lock: lock}`: the lock text the query asked for, which this
+      adapter refuses to render.
+    * Tag-only errors (`:connection_closed`, `:cannot_execute`,
+      `:query_many_unsupported`, …) → `details` is `nil`; the tag lives
+      in `type`.
 
   `to_constraints/2` and user-level handling pattern-match the
   `details` struct directly — never the message text.
@@ -180,6 +184,7 @@ defmodule XqliteEcto3.Error do
           | %{path: String.t(), code: integer()}
           | %{key: atom(), value: term()}
           | %{name: String.t()}
+          | %{lock: String.t()}
           | nil
 
   @type t :: %__MODULE__{

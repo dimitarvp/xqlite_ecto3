@@ -12,13 +12,13 @@ defmodule XqliteEcto3.TypesLawTest do
   Two shapes of law appear:
 
     * **Identity.** What you write is what you read, compared with the
-      equality that fits the type. Most types are here.
+      equality that fits the type. Most types are here, `Instant` included:
+      it hands back the nanosecond count it stored.
 
     * **Projection.** The type deliberately changes the value, and the law
       pins exactly what comes back, so a silent widening or narrowing of that
-      change fails the property. `Instant` truncates nanoseconds to whole
-      microseconds. `TimestampTZ` shifts to UTC on read while keeping the
-      original offset in the stored text. `:decimal` reads back the number
+      change fails the property. `TimestampTZ` shifts to UTC on read while
+      keeping the original offset in the stored text. `:decimal` reads back the number
       SQLite actually stored rather than the scale you wrote. `:map` written
       with atom keys reads back string-keyed. `Types.Array` with
       `element: :float` widens whole numbers to floats, and `Types.UUID`
@@ -38,11 +38,22 @@ defmodule XqliteEcto3.TypesLawTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  import Ecto.Query, only: [from: 2]
+
   alias XqliteEcto3.DecimalPrecision
   alias XqliteEcto3.Types.ExactDecimal
 
   defmodule LawRepo do
     use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  defmodule InstEmb do
+    use Ecto.Schema
+
+    @primary_key false
+    embedded_schema do
+      field(:inst, XqliteEcto3.Types.Instant)
+    end
   end
 
   defmodule Rec do
@@ -81,17 +92,23 @@ defmodule XqliteEcto3.TypesLawTest do
       field(:xarr_bool_field, XqliteEcto3.Types.Array, element: :boolean)
       field(:uuid_str_field, XqliteEcto3.Types.UUID, storage: :string)
       field(:uuid_bin_field, XqliteEcto3.Types.UUID, storage: :binary)
+      embeds_one(:inst_emb, InstEmb)
     end
   end
 
   @i64_max 9_223_372_036_854_775_807
   @i64_min -9_223_372_036_854_775_808
 
-  # Run counts are picked so the whole file stays around ten seconds. Every
+  # Run counts are picked so every property stays in the low seconds. Every
   # case is one INSERT plus one primary-key SELECT, and most add a second
   # SELECT for the raw stored value, so the cost per case is roughly flat
   # across the properties.
   @runs 2000
+
+  # `Types.ExactDecimal` refuses a value whose written-out form would need more
+  # than this many digit characters. It is `Decimal`'s own default print limit,
+  # so nothing `Decimal`'s default parse accepts is ever refused.
+  @digit_ceiling 6178
 
   setup_all do
     database =
@@ -142,7 +159,8 @@ defmodule XqliteEcto3.TypesLawTest do
         xarr_float_field TEXT,
         xarr_bool_field TEXT,
         uuid_str_field TEXT,
-        uuid_bin_field BLOB
+        uuid_bin_field BLOB,
+        inst_emb TEXT
       )
       """,
       []
@@ -151,6 +169,25 @@ defmodule XqliteEcto3.TypesLawTest do
     on_exit(fn -> remove_database(database) end)
 
     :ok
+  end
+
+  # Two properties below flip `:binary_id_storage` to reach the arms the
+  # default mode never runs. The suite gives every file its own OS process,
+  # so the flip is invisible to other files; this restores it anyway.
+  setup do
+    prior = Application.get_env(:xqlite_ecto3, :binary_id_storage)
+
+    on_exit(fn -> restore_binary_id_storage(prior) end)
+
+    :ok
+  end
+
+  defp restore_binary_id_storage(nil) do
+    Application.delete_env(:xqlite_ecto3, :binary_id_storage)
+  end
+
+  defp restore_binary_id_storage(prior) do
+    Application.put_env(:xqlite_ecto3, :binary_id_storage, prior)
   end
 
   defp remove_database(database) do
@@ -350,6 +387,38 @@ defmodule XqliteEcto3.TypesLawTest do
     end
   end
 
+  # The written-out form has a width ceiling, and the law is the rule on both
+  # sides of it: at or under, the value casts, dumps to exactly the number of
+  # bytes the arithmetic predicts and reads back as the same number; one
+  # character over, `cast/1` and `dump/1` both refuse. The generator aims at a
+  # rendered length within a few characters of the ceiling and reaches it four
+  # ways, so a rounding error in the length arithmetic cannot hide.
+  property "an exact decimal is accepted exactly up to the width ceiling" do
+    check all({value, digits} <- ceiling_straddling_decimal(), max_runs: @runs) do
+      case digits <= @digit_ceiling do
+        true ->
+          assert {:ok, ^value} = ExactDecimal.cast(value)
+          assert {:ok, text} = ExactDecimal.dump(value)
+          assert byte_size(text) == rendered_bytes(value, digits)
+
+          assert {:ok, reloaded} = ExactDecimal.load(text)
+          assert Decimal.equal?(reloaded, value)
+          assert Decimal.equal?(written_back(:xdec_field, value), value)
+
+        false ->
+          assert ExactDecimal.cast(value) == :error
+          assert ExactDecimal.dump(value) == :error
+      end
+    end
+  end
+
+  defp rendered_bytes(%Decimal{sign: sign, exp: exp}, digits) do
+    point = if exp < 0, do: 1, else: 0
+    minus = if sign == -1, do: 1, else: 0
+
+    digits + point + minus
+  end
+
   # --- 6. dates and times ----------------------------------------------------
 
   # Dates are ISO 8601 text, across the whole calendar range the type accepts.
@@ -427,6 +496,66 @@ defmodule XqliteEcto3.TypesLawTest do
     end
   end
 
+  # The stored text carries a four-digit year, so the year is the boundary of
+  # what the adapter can write: -9999 to 9999 goes in and comes back, and
+  # anything outside is refused before a single byte reaches the database.
+  # Both tails matter — ordinary date arithmetic walks off either end.
+  property "a datetime year outside -9999..9999 is refused and nothing is written" do
+    check all(
+            year <- boundary_year(),
+            field <-
+              member_of([
+                :date_field,
+                :naive_field,
+                :naive_usec_field,
+                :utc_field,
+                :utc_usec_field
+              ]),
+            max_runs: @runs
+          ) do
+      value = dated(field, year)
+
+      case year >= -9999 and year <= 9999 do
+        true -> assert written_back(field, value) == value
+        false -> assert_year_refused(field, value)
+      end
+    end
+  end
+
+  defp assert_year_refused(field, value) do
+    before = highest_id()
+
+    error =
+      assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+        written_back(field, value)
+      end
+
+    assert error.reason == :year_out_of_range
+    assert error.value == value
+    assert highest_id() == before
+  end
+
+  defp highest_id do
+    %{rows: [[id]]} = LawRepo.query!("SELECT max(id) FROM law_types", [])
+
+    id
+  end
+
+  defp dated(:date_field, year), do: Date.new!(year, 6, 7)
+  defp dated(:naive_field, year), do: NaiveDateTime.new!(year, 6, 7, 1, 2, 3)
+
+  defp dated(:naive_usec_field, year) do
+    %{NaiveDateTime.new!(year, 6, 7, 1, 2, 3) | microsecond: {456_789, 6}}
+  end
+
+  defp dated(:utc_field, year) do
+    :naive_field |> dated(year) |> DateTime.from_naive!("Etc/UTC")
+  end
+
+  defp dated(:utc_usec_field, year) do
+    :naive_usec_field |> dated(year) |> DateTime.from_naive!("Etc/UTC")
+  end
+
   # --- 7. JSON-backed maps and arrays ----------------------------------------
 
   # `:map` is JSON text. Any value JSON can express — nested objects and
@@ -470,9 +599,9 @@ defmodule XqliteEcto3.TypesLawTest do
 
   # --- 8. binary_id ----------------------------------------------------------
 
-  # `:binary_id` keeps the 36-character form on the Elixir side whatever the
-  # configured storage mode is. The generator builds the string from raw bytes
-  # so a failing case is reproducible from the seed.
+  # A UUID string written through `:binary_id` comes back as itself in either
+  # storage mode. The generator builds the string from raw bytes so a failing
+  # case is reproducible from the seed.
   property "a binary_id comes back equal to itself" do
     check all(value <- uuid_value(), max_runs: @runs) do
       assert written_back(:bid_field, value) == value
@@ -501,6 +630,56 @@ defmodule XqliteEcto3.TypesLawTest do
 
     assert written_back(:bid_field, v4) == v4
     assert written_back(:bid_field, v7) == v7
+  end
+
+  # Sixteen raw bytes are a UUID to the write side, in both storage modes: the
+  # value is rendered as the dashed text before it reaches the database under
+  # `:string`, and expanded by the loader under `:binary`. What differs is the
+  # stored form — 36 characters of text against the 16 bytes themselves.
+  property "sixteen raw bytes written as a binary_id read back as the dashed UUID text" do
+    check all(raw <- binary(length: 16), max_runs: @runs) do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+      {loaded_text, type_text, stored_text} = written_back_with_typeof(:bid_field, raw)
+
+      assert loaded_text == Ecto.UUID.cast!(raw)
+      assert stored_text == Ecto.UUID.cast!(raw)
+      assert type_text == "text"
+
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      {loaded_raw, stored_raw} = written_back_with_stored(:bid_field, raw)
+
+      assert loaded_raw == Ecto.UUID.cast!(raw)
+      assert stored_raw == raw
+      assert byte_size(stored_raw) == 16
+    end
+  end
+
+  # The read side is not symmetric, and that is the rule this pins: sixteen
+  # bytes coming OUT of the database are expanded only under `:binary`. Under
+  # `:string` they are an opaque id and are handed back untouched.
+  property "sixteen stored bytes stay opaque under :string storage" do
+    check all(raw <- binary(length: 16), max_runs: @runs) do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+      assert Ecto.Type.adapter_load(XqliteEcto3, :binary_id, raw) == {:ok, raw}
+
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+
+      assert Ecto.Type.adapter_load(XqliteEcto3, :binary_id, raw) ==
+               {:ok, Ecto.UUID.cast!(raw)}
+    end
+  end
+
+  # Any other length is not a UUID in either direction, and the hostile domain
+  # is the point: invalid UTF-8, embedded NULs and the empty binary all have to
+  # come back byte for byte.
+  property "a binary_id of any other length comes back byte for byte" do
+    check all(value <- non_uuid_length_binary(), max_runs: @runs) do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+      assert written_back(:bid_field, value) == value
+
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+      assert written_back(:bid_field, value) == value
+    end
   end
 
   # --- 8b. Ecto.UUID ---------------------------------------------------------
@@ -553,29 +732,38 @@ defmodule XqliteEcto3.TypesLawTest do
 
   # --- 10. Instant -----------------------------------------------------------
 
-  # Instant stores full nanoseconds but loads a `DateTime`, and `DateTime`
-  # only carries microseconds — so the read-back is the write rounded down to
-  # a whole microsecond. Rounded *down*, not toward zero: a negative
-  # nanosecond count moves earlier, never later. The stored column still holds
-  # every nanosecond, which is what the type's docs promise, so that is
-  # checked too.
-  property "an Instant reads back as its nanosecond count floored to microseconds" do
+  # Instant hands back the nanosecond count it stored, so a value a caller
+  # reads is a value a caller can write again. The law checks all four halves
+  # of that: the column, an embedded field, a query pinning the loaded value,
+  # and re-inserting the row that came back.
+  property "an Instant reads back as the nanosecond count that was written" do
     check all(value <- int_value(), max_runs: @runs) do
-      {loaded, stored} = written_back_with_stored(:inst_field, value)
+      {:ok, written} = LawRepo.insert(%Rec{inst_field: value, inst_emb: %InstEmb{inst: value}})
 
-      assert stored == value
+      fetched = LawRepo.get(Rec, written.id)
 
-      case value do
-        nil ->
-          assert loaded == nil
+      assert fetched.inst_field == value
+      assert fetched.inst_emb.inst == value
 
-        ns ->
-          assert %DateTime{} = loaded
-          assert loaded.time_zone == "Etc/UTC"
-          assert loaded.utc_offset == 0
-          assert DateTime.to_unix(loaded, :nanosecond) == Integer.floor_div(ns, 1000) * 1000
-      end
+      assert_instant_found(fetched.id, fetched.inst_field)
+
+      {:ok, copy} =
+        LawRepo.insert(%Rec{inst_field: fetched.inst_field, inst_emb: fetched.inst_emb})
+
+      assert LawRepo.get(Rec, copy.id).inst_field == value
     end
+  end
+
+  defp assert_instant_found(id, nil) do
+    found = LawRepo.all(from(r in Rec, where: r.id == ^id and is_nil(r.inst_field), select: r.id))
+
+    assert found == [id]
+  end
+
+  defp assert_instant_found(id, ns) do
+    found = LawRepo.all(from(r in Rec, where: r.id == ^id and r.inst_field == ^ns, select: r.id))
+
+    assert found == [id]
   end
 
   # --- 11. TimestampTZ -------------------------------------------------------
@@ -796,6 +984,20 @@ defmodule XqliteEcto3.TypesLawTest do
     ])
   end
 
+  # Everything a `:binary_id` field can hold except the sixteen bytes that are
+  # a UUID: hostile bytes on purpose, short enough that writing each value
+  # twice (once per storage mode) stays cheap.
+  defp non_uuid_length_binary do
+    frequency([
+      {5, binary(max_length: 64)},
+      {2, binary(min_length: 17, max_length: 64)},
+      {2,
+       member_of(["", <<0, 0, 0>>, <<0xFF, 0xFE>>, <<0x80>>, <<0xC3>>, <<0, 1, 2, 255, 254>>])},
+      {1, constant(nil)}
+    ])
+    |> filter(fn value -> value == nil or byte_size(value) != 16 end)
+  end
+
   # A value the adapter's own guard accepts — the guard is the oracle, so
   # this generator stays correct however the guard tightens. The old
   # premise ("15 significant digits always round-trip") was false once the
@@ -840,6 +1042,63 @@ defmodule XqliteEcto3.TypesLawTest do
       {3, member_of([~D[0001-01-01], ~D[1970-01-01], ~D[2024-02-29], ~D[9999-12-31]])}
     ])
   end
+
+  # Weighted onto the two edges, because that is where an off-by-one guard
+  # shows and a uniform draw over a wide range never lands.
+  defp boundary_year do
+    frequency([
+      {5, integer(9_990..10_010)},
+      {5, integer(-10_010..-9_990)},
+      {3, integer(-9_999..9_999)},
+      {3, integer(10_000..30_000)},
+      {2,
+       member_of([
+         0,
+         1,
+         -1,
+         9998,
+         9999,
+         10_000,
+         10_001,
+         -9998,
+         -9999,
+         -10_000,
+         -10_001,
+         99_999,
+         -99_999
+       ])}
+    ])
+  end
+
+  # A rendered length within four characters of the ceiling, reached four
+  # ways: digits alone, a positive exponent expanded into zeros, leading zeros
+  # after the point, and a point inside the digits. Each shape is built so its
+  # `:normal` digit-character count is exactly the drawn target.
+  defp ceiling_straddling_decimal do
+    gen all(
+          digits <- integer((@digit_ceiling - 4)..(@digit_ceiling + 4)),
+          sign <- member_of([1, -1]),
+          shape <- member_of([:digits, :positive_exponent, :leading_zeros, :inner_point])
+        ) do
+      {shaped_decimal(shape, sign, digits), digits}
+    end
+  end
+
+  defp shaped_decimal(:digits, sign, digits), do: Decimal.new(sign, nines(digits), 0)
+
+  defp shaped_decimal(:positive_exponent, sign, digits) do
+    Decimal.new(sign, nines(3), digits - 3)
+  end
+
+  defp shaped_decimal(:leading_zeros, sign, digits) do
+    Decimal.new(sign, nines(3), 1 - digits)
+  end
+
+  defp shaped_decimal(:inner_point, sign, digits) do
+    Decimal.new(sign, nines(digits), -1)
+  end
+
+  defp nines(count), do: Integer.pow(10, count) - 1
 
   defp calendar_date(years) do
     gen all(

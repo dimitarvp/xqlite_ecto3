@@ -39,8 +39,11 @@ defmodule XqliteEcto3.Types.UUID do
     * `:binary` — raw 16-byte binary stored in a BLOB column. 55% smaller
       per row, not human-readable, meaningful at millions-of-rows scale.
 
-  The Elixir-side representation is **always the 36-character string**
-  regardless of storage mode.
+  **This type's** Elixir-side representation is always the 36-character
+  string, in either storage mode: `cast/3` and `load/3` both answer that
+  form, and under `:binary` storage `load/3` reads either a 16-byte column
+  or a 36-character one. The plain `:binary_id` type does not promise the
+  same — see its section in `XqliteEcto3`.
 
   ## Upper and lower case
 
@@ -56,11 +59,13 @@ defmodule XqliteEcto3.Types.UUID do
       the column keeps the upper-case text. That is Ecto's own rule, not
       the adapter's.
 
-    * **`:binary_id` over `:string` storage** passes the text through
-      untouched in both directions, so a mixed-case UUID survives byte
-      for byte.
+    * **`:binary_id` over `:string` storage** passes a UUID *string*
+      through untouched in both directions, so a mixed-case UUID survives
+      byte for byte. Sixteen raw bytes are a different matter: going in
+      they are written as the dashed lower-case text, and coming out of a
+      `:string`-mode column they are handed back as the raw bytes.
 
-  The last one is the one to watch in SQL: `=` on a TEXT column is
+  The third one is the one to watch in SQL: `=` on a TEXT column is
   case-sensitive, so two spellings of one UUID are two values to SQLite.
   Write UUIDs in one case, or use this type, which settles it for you.
 
@@ -112,6 +117,13 @@ defmodule XqliteEcto3.Types.UUID do
 
   def load(<<_::128>> = raw, _loader, %{storage: :binary}) do
     Ecto.UUID.load(raw)
+  end
+
+  # A column written before the storage mode was flipped, or by another tool,
+  # still holds the 36-character text. `Ecto.UUID` and `:binary_id` both read
+  # either stored form; this one used to refuse the text.
+  def load(value, _loader, %{storage: :binary}) when is_binary(value) do
+    Ecto.UUID.cast(value)
   end
 
   def load(_value, _loader, _params), do: :error

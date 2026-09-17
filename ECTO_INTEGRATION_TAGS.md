@@ -69,8 +69,8 @@ carries the load list and these reasons beside it):
 
 | File | Why |
 | --- | --- |
-| `ecto_sql .../sql/lock.exs` | row-level `SELECT ... FOR UPDATE` locking: the adapter refuses a query with `lock:` set (`ArgumentError` in `all/1`), and SQLite itself rejects the `FOR UPDATE` syntax |
-| `ecto_sql .../sql/query_many.exs` | multi-statement `query_many` is an adapter decision, not a SQLite limit: one prepare call compiles one statement, and the adapter chose not to loop over the statement tail collecting result sets |
+| `ecto_sql .../sql/lock.exs` | row-level `SELECT ... FOR UPDATE` locking: the adapter refuses a query carrying `lock:` while it renders the SQL, raising `%XqliteEcto3.Error{type: :locks_unsupported}` wherever the lock sits, and SQLite itself rejects the `FOR UPDATE` syntax |
+| `ecto_sql .../sql/query_many.exs` | multi-statement `query_many` is an adapter decision, not a SQLite limit: one prepare call compiles one statement, and the adapter chose not to loop over the statement tail collecting result sets. Every call comes back `{:error, %XqliteEcto3.Error{type: :query_many_unsupported}}` whatever the statement count, and `Repo.query_many!/3` raises that struct |
 
 Line pointers in this table and in `test_helper.exs` name the `test`
 line, never the `@tag` line: an ExUnit line filter snaps to the nearest

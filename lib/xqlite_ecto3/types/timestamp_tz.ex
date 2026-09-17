@@ -62,6 +62,15 @@ defmodule XqliteEcto3.Types.TimestampTZ do
   time-zone name. If round-tripping `"America/New_York"` → DB →
   `"America/New_York"` matters, store the zone name in a separate column
   and re-attach it after loading.
+
+  ## Year range
+
+  The stored text carries a four-digit year, which is all
+  `DateTime.from_iso8601/1` reads back, so `dump/1` returns `:error` for a
+  year outside -9999 to 9999 and Ecto raises `Ecto.ChangeError` naming the
+  value. Ordinary date arithmetic reaches those years —
+  `DateTime.add(now, 3_000_000, :day)` is one — and writing such a value
+  would make every later read of the table raise instead.
   """
 
   use Ecto.Type
@@ -87,7 +96,17 @@ defmodule XqliteEcto3.Types.TimestampTZ do
 
   @impl Ecto.Type
   def dump(nil), do: {:ok, nil}
-  def dump(%DateTime{} = dt), do: {:ok, DateTime.to_iso8601(dt)}
+
+  def dump(%DateTime{} = dt) do
+    # `load/1` below parses with `DateTime.from_iso8601/1`, which needs a
+    # four-digit year, while `to_iso8601/1` writes a wider one unpadded. A
+    # value outside the range would therefore be written and never read back.
+    case XqliteEcto3.Query.year_in_range?(dt) do
+      true -> {:ok, DateTime.to_iso8601(dt)}
+      false -> :error
+    end
+  end
+
   def dump(_), do: :error
 
   @impl Ecto.Type

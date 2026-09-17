@@ -35,19 +35,36 @@ defmodule XqliteEcto3.Types.Instant do
 
   ## Load returns
 
-  `%DateTime{}` in UTC. Elixir's `DateTime` has microsecond precision,
-  so the last ~3 decimal digits of nanosecond precision are lost on
-  the Elixir-side read. The database still stores the full int64 ns;
-  only the struct-return is truncated. If you need the exact ns back,
-  query the raw column:
+  The integer nanosecond count that was stored, exactly. A value read
+  from a field can therefore be written back, pinned in a `where`
+  clause, or copied into a new row without losing its last three
+  digits.
 
-      from t in Tick, select: fragment("?", t.occurred_at)
+  ## Showing the value
+
+  `to_datetime/1` is the conversion for display. Elixir's `DateTime`
+  carries microseconds, so the conversion rounds the count **down** to
+  a whole microsecond — a negative count moves earlier, never later:
+
+      Instant.to_datetime(1_750_000_000_123_456_789)
+      #=> {:ok, ~U[2025-06-15 15:06:40.123456Z]}
+
+      Instant.to_datetime(-1)
+      #=> {:ok, ~U[1969-12-31 23:59:59.999999Z]}
+
+  The same rounding happens on the way in: `cast/1` of a `%DateTime{}`
+  is its microseconds times 1000, so assigning a `%DateTime{}` to the
+  field through a changeset, or pinning one in a query, cannot reach a
+  row whose stored count has sub-microsecond digits. Hand those the
+  integer.
 
   ## Range
 
-  int64 ns from Unix epoch covers **1677-09-21 to 2262-04-11**.
-  Timestamps outside that window will silently overflow or fail to
-  load. Every production Elixir timestamp sits well inside.
+  int64 ns from Unix epoch covers **1677-09-21 to 2262-04-11**. The
+  type itself passes any integer through; the driver refuses one that
+  does not fit an int64 column
+  (`{:cannot_convert_to_sqlite_value, _}`). Every production Elixir
+  timestamp sits well inside.
   """
 
   use Ecto.Type
@@ -83,16 +100,35 @@ defmodule XqliteEcto3.Types.Instant do
 
   @impl Ecto.Type
   def load(nil), do: {:ok, nil}
-
-  def load(ns) when is_integer(ns) do
-    case DateTime.from_unix(ns, :nanosecond) do
-      {:ok, _} = ok -> ok
-      _ -> :error
-    end
-  end
-
+  def load(ns) when is_integer(ns), do: {:ok, ns}
   def load(_), do: :error
 
   @impl Ecto.Type
   def equal?(a, b), do: a == b
+
+  @doc """
+  Converts a stored nanosecond count into a `%DateTime{}` for display.
+
+  `DateTime` carries microseconds, so the count is rounded down to a
+  whole microsecond. `nil` passes through. A term that is not an
+  integer, and a magnitude no `DateTime` can hold, both answer
+  `:error`.
+
+      iex> XqliteEcto3.Types.Instant.to_datetime(0)
+      {:ok, ~U[1970-01-01 00:00:00.000000Z]}
+
+      iex> XqliteEcto3.Types.Instant.to_datetime("now")
+      :error
+  """
+  @spec to_datetime(term()) :: {:ok, DateTime.t() | nil} | :error
+  def to_datetime(nil), do: {:ok, nil}
+
+  def to_datetime(ns) when is_integer(ns) do
+    case DateTime.from_unix(ns, :nanosecond) do
+      {:ok, _datetime} = ok -> ok
+      {:error, _reason} -> :error
+    end
+  end
+
+  def to_datetime(_other), do: :error
 end

@@ -59,6 +59,49 @@ defmodule XqliteEcto3.QueryEncodingTest do
     test "Time encodes to ISO 8601" do
       assert encode([~T[14:30:45]]) == ["14:30:45"]
     end
+
+    # The stored form carries a four-digit year. A wider one writes text the
+    # loaders cannot read back, poisoning every later read of the table, so it
+    # is refused here instead — where nothing has been written yet.
+    test "the four-digit year boundaries encode" do
+      assert encode([Date.new!(9999, 12, 31)]) == ["9999-12-31"]
+      assert encode([Date.new!(-9999, 1, 1)]) == ["-9999-01-01"]
+      assert encode([NaiveDateTime.new!(9999, 12, 31, 23, 59, 59)]) == ["9999-12-31 23:59:59"]
+    end
+
+    test "a year past 9999 is refused, on every datetime shape" do
+      for value <- [
+            Date.new!(10_000, 6, 7),
+            NaiveDateTime.new!(10_000, 6, 7, 1, 2, 3),
+            DateTime.from_naive!(NaiveDateTime.new!(10_000, 6, 7, 1, 2, 3), "Etc/UTC")
+          ] do
+        error = assert_raise XqliteEcto3.UnencodableParameterError, fn -> encode([value]) end
+
+        assert error.reason == :year_out_of_range
+        assert error.value == value
+        assert error.index == 1
+      end
+    end
+
+    test "a year below -9999 is refused the same way" do
+      value = Date.add(~D[2026-09-17], -5_000_000)
+
+      assert value.year == -11_663
+
+      error = assert_raise XqliteEcto3.UnencodableParameterError, fn -> encode([value]) end
+
+      assert error.reason == :year_out_of_range
+    end
+
+    test "an out-of-range year inside a map is refused too" do
+      value = DateTime.from_naive!(NaiveDateTime.new!(10_000, 6, 7, 1, 2, 3), "Etc/UTC")
+
+      error =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn -> encode([%{"at" => value}]) end
+
+      assert error.reason == :year_out_of_range
+      assert error.value == value
+    end
   end
 
   # A decimal binds as a number, never as text. SQLite compares by storage

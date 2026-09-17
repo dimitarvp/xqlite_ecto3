@@ -95,9 +95,19 @@ defmodule XqliteEcto3.Types.UUIDTest do
       assert UUIDType.load(nil, nil, %{storage: :binary}) == {:ok, nil}
     end
 
-    test "rejects non-16-byte binaries" do
+    test "rejects a binary that is neither 16 bytes nor a UUID string" do
       assert UUIDType.load(<<1, 2, 3>>, nil, %{storage: :binary}) == :error
-      assert UUIDType.load(@uuid_string, nil, %{storage: :binary}) == :error
+      assert UUIDType.load("not-a-uuid", nil, %{storage: :binary}) == :error
+    end
+
+    # A column written before the storage mode was flipped, or by another
+    # tool, still holds the 36-character text. Both other UUID paths read it;
+    # this one refusing was the odd one out.
+    test "loads a 36-character text row the way the other UUID paths do" do
+      assert UUIDType.load(@uuid_string, nil, %{storage: :binary}) == {:ok, @uuid_string}
+
+      assert UUIDType.load(String.upcase(@uuid_string), nil, %{storage: :binary}) ==
+               {:ok, @uuid_string}
     end
   end
 

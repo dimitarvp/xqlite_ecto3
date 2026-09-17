@@ -73,40 +73,63 @@ defmodule XqliteEcto3.Types.InstantTest do
       assert Instant.load(nil) == {:ok, nil}
     end
 
-    test "loads integer as DateTime" do
-      {:ok, dt} = Instant.load(@ns)
-      # DateTime has microsecond precision — nanoseconds are truncated.
-      assert dt.year == 2025
-      assert dt.microsecond == {123_456, 6}
+    test "loads the stored integer verbatim" do
+      assert Instant.load(@ns) == {:ok, @ns}
     end
 
     test "rejects non-integer" do
       assert Instant.load("123") == :error
       assert Instant.load(%{}) == :error
     end
+  end
 
-    test "load round-trips integers lossly at the ns level" do
-      # The stored ns ends in 789, but DateTime stops at microsecond.
-      {:ok, dt} = Instant.load(@ns)
-      {:ok, reloaded} = Instant.cast(dt)
-      # We lost the last 3 ns digits (789) on the way through DateTime.
-      assert reloaded == @ns - rem(@ns, 1_000)
+  describe "to_datetime/1" do
+    test "nil passes through" do
+      assert Instant.to_datetime(nil) == {:ok, nil}
+    end
+
+    test "converts a nanosecond count to a DateTime at microsecond precision" do
+      {:ok, dt} = Instant.to_datetime(@ns)
+
+      assert DateTime.compare(dt, @dt) == :eq
+      assert dt.microsecond == {123_456, 6}
+    end
+
+    test "rounds down, so a negative count moves earlier" do
+      assert {:ok, dt} = Instant.to_datetime(-1)
+      assert DateTime.to_unix(dt, :nanosecond) == -1_000
+    end
+
+    test "rejects a magnitude no DateTime can hold" do
+      assert Instant.to_datetime(10 ** 25) == :error
+    end
+
+    test "rejects a non-integer" do
+      assert Instant.to_datetime("123") == :error
+      assert Instant.to_datetime(@dt) == :error
     end
   end
 
   describe "round-trip via cast then dump" do
-    test "DateTime round-trips" do
+    test "a DateTime casts to its microseconds times 1000" do
+      assert Instant.cast(@dt) == {:ok, @ns - 789}
+    end
+
+    test "DateTime round-trips through to_datetime/1" do
       {:ok, ns} = Instant.cast(@dt)
       {:ok, dumped} = Instant.dump(ns)
-      assert is_integer(dumped)
       {:ok, loaded} = Instant.load(dumped)
-      assert DateTime.compare(@dt, loaded) == :eq
+      assert loaded == ns
+
+      {:ok, back} = Instant.to_datetime(loaded)
+      assert DateTime.compare(@dt, back) == :eq
     end
 
     test "integer round-trips exactly" do
       {:ok, ns} = Instant.cast(@ns)
       {:ok, dumped} = Instant.dump(ns)
       assert dumped == @ns
+      assert Instant.load(dumped) == {:ok, @ns}
     end
   end
 

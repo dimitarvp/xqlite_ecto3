@@ -79,10 +79,14 @@ defmodule XqliteEcto3.Connection do
 
   @impl true
   def query_many(_conn, _sql, _params, _opts) do
-    raise ArgumentError,
-          "query_many is not supported by this adapter (SQLite compiles one " <>
-            "statement per prepare call; the adapter chose not to loop over " <>
-            "the statement tail and collect multiple result sets)"
+    {:error,
+     %XqliteEcto3.Error{
+       message:
+         "query_many is not supported by this adapter (SQLite compiles one " <>
+           "statement per prepare call; the adapter chose not to loop over " <>
+           "the statement tail and collect multiple result sets)",
+       type: :query_many_unsupported
+     }}
   end
 
   @impl true
@@ -286,12 +290,21 @@ defmodule XqliteEcto3.Connection do
   end
 
   @impl true
-  def all(%Ecto.Query{lock: lock}) when lock != nil do
-    raise ArgumentError, "locks are not supported by SQLite"
+  def all(query), do: all(query, [])
+
+  # The guard sits here rather than on `all/1` so that a lock carried by
+  # a subquery, a join subquery or a CTE — all of which render through
+  # this arity — is refused instead of silently dropped.
+  @doc false
+  def all(%Ecto.Query{lock: lock}, _as_prefix) when lock != nil do
+    raise %XqliteEcto3.Error{
+      message: "the adapter does not render row locks; SQLite has no FOR UPDATE",
+      type: :locks_unsupported,
+      details: %{lock: lock}
+    }
   end
 
-  @doc false
-  def all(query, as_prefix \\ []) do
+  def all(query, as_prefix) do
     case query.distinct do
       %ByExpr{expr: exprs} when is_list(exprs) and exprs != [] ->
         distinct_on_all(query, as_prefix)

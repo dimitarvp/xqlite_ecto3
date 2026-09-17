@@ -110,6 +110,15 @@ defmodule XqliteEcto3.Types.DurationTest do
       assert D.dump("5s") == :error
       assert D.dump(3.14) == :error
     end
+
+    # Instant takes a DateTime on cast; Duration is a span and takes none.
+    # Without this the sibling's arm could be copied over unnoticed.
+    test "a DateTime rejects on both cast and dump" do
+      dt = DateTime.from_unix!(1_750_000_000_123_456_789, :nanosecond)
+
+      assert D.dump(dt) == :error
+      assert D.cast(dt) == :error
+    end
   end
 
   describe "load/1" do

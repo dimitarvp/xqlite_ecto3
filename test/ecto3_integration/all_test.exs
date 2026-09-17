@@ -24,13 +24,16 @@ Code.require_file("#{ecto_sql}/integration_test/sql/alter.exs", __DIR__)
 # Skipped shared suite files (permanent SQLite architectural limits):
 #
 # lock.exs      — row-level `SELECT ... FOR UPDATE` locking. The adapter
-#                 refuses any query with `lock:` set (ArgumentError in all/1)
-#                 and SQLite itself rejects the FOR UPDATE syntax; the file's
+#                 refuses any query carrying `lock:` while it renders the SQL,
+#                 raising %XqliteEcto3.Error{type: :locks_unsupported}, and
+#                 SQLite itself rejects the FOR UPDATE syntax; the file's
 #                 one test also requires :lock_for_update app config.
 # query_many.exs — multi-statement `query_many!/4`. One prepare call compiles
 #                 one statement and hands back the unused tail; looping over
 #                 that tail and collecting one result set per statement is
-#                 implementable — the adapter chose not to. An adapter
-#                 decision, not a SQLite limit.
+#                 implementable — the adapter chose not to. Every call comes
+#                 back {:error, %XqliteEcto3.Error{type: :query_many_unsupported}}
+#                 whatever the statement count. An adapter decision, not a
+#                 SQLite limit.
 # Code.require_file("#{ecto_sql}/integration_test/sql/lock.exs", __DIR__)
 # Code.require_file("#{ecto_sql}/integration_test/sql/query_many.exs", __DIR__)

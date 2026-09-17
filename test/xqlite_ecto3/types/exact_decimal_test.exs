@@ -43,6 +43,9 @@ defmodule XqliteEcto3.Types.ExactDecimalTest do
   @forty String.duplicate("9", 40)
   @wide String.duplicate("9", 120)
 
+  # The type's width ceiling, in digit characters of the written-out form.
+  @ceiling 6178
+
   setup_all do
     create_table!("exact_decimals", "id INTEGER PRIMARY KEY AUTOINCREMENT, amount TEXT")
     create_table!("exact_decimal_wallets", "id INTEGER PRIMARY KEY AUTOINCREMENT, money TEXT")
@@ -236,6 +239,106 @@ defmodule XqliteEcto3.Types.ExactDecimalTest do
       assert ED.load(Decimal.new("1.5")) == :error
     end
   end
+
+  # The ceiling is on the written-out form: at most @ceiling digit characters,
+  # which is `Decimal`'s own default print limit, so every value a plain
+  # `:decimal` field accepts still goes in. The check is arithmetic on the
+  # coefficient's digit count and the exponent — the value is never rendered
+  # to find its length, which is what keeps a ten-byte string carrying an
+  # exponent of a billion from costing a billion bytes.
+  describe "the width ceiling" do
+    test "a coefficient at the ceiling casts and one digit more does not" do
+      at = Decimal.new(1, nines(@ceiling), 0)
+      over = Decimal.new(1, nines(@ceiling), 1)
+
+      assert {:ok, ^at} = ED.cast(at)
+      assert ED.cast(over) == :error
+    end
+
+    test "an integer is measured the same way" do
+      assert {:ok, _} = ED.cast(Integer.pow(10, @ceiling - 1))
+      assert ED.cast(Integer.pow(10, @ceiling)) == :error
+    end
+
+    test "an exponent is counted without writing the zeros out" do
+      assert {:ok, _} = ED.cast("1E+#{@ceiling - 1}")
+      assert ED.cast("1E+#{@ceiling}") == :error
+
+      assert {:ok, _} = ED.cast("1E-#{@ceiling - 1}")
+      assert ED.cast("1E-#{@ceiling}") == :error
+    end
+
+    test "an exponent no written-out form could hold is refused, not rendered" do
+      assert ED.cast("1E+900000000") == :error
+      assert ED.dump(Decimal.new(1, 1, 900_000_000)) == :error
+    end
+
+    test "no float can reach the ceiling" do
+      assert {:ok, _} = ED.cast(1.0e308)
+      assert {:ok, _} = ED.cast(5.0e-324)
+    end
+
+    test "dump writes exactly as many bytes as the count predicts" do
+      assert {:ok, text} = ED.dump(Decimal.new(1, nines(@ceiling), 0))
+      assert byte_size(text) == @ceiling
+
+      assert ED.dump(Decimal.new(1, nines(@ceiling + 1), 0)) == :error
+    end
+
+    test "the decimal point and the minus sign are stored on top of the digits" do
+      assert {:ok, text} = ED.dump(Decimal.new(-1, nines(@ceiling), -1))
+      assert byte_size(text) == @ceiling + 2
+
+      assert ED.dump(Decimal.new(-1, nines(@ceiling + 1), -1)) == :error
+    end
+
+    test "a zero coefficient counts as one digit" do
+      assert ED.dump(Decimal.new(-1, 0, 3)) == {:ok, "-0000"}
+      assert {:ok, _} = ED.cast(Decimal.new(1, 0, @ceiling - 1))
+      assert ED.cast(Decimal.new(1, 0, @ceiling)) == :error
+    end
+
+    test "a value already stored above the ceiling loads but cannot be written back" do
+      text = String.duplicate("9", @ceiling + 100)
+
+      assert {:ok, number} = ED.load(text)
+      assert ED.dump(number) == :error
+    end
+
+    test "a non-finite value is decided before any digit is counted" do
+      assert ED.cast(Decimal.new("NaN")) == :error
+      assert ED.dump(Decimal.new("Infinity")) == :error
+    end
+  end
+
+  describe "a refused width through the repo" do
+    setup do
+      %{over: Decimal.new(1, nines(@ceiling), 1)}
+    end
+
+    test "insert and insert_all name the value", %{over: over} do
+      assert_raise Ecto.ChangeError, fn -> Repo.insert!(%Amount{amount: over}) end
+      assert_raise Ecto.ChangeError, fn -> Repo.insert_all(Amount, [%{amount: over}]) end
+
+      assert Repo.aggregate(Amount, :count) == 0
+    end
+
+    test "a query parameter is refused while the query is built", %{over: over} do
+      assert_raise Ecto.Query.CastError, fn ->
+        Repo.all(from(a in Amount, where: a.amount == ^over))
+      end
+    end
+
+    test "an embedded schema refuses it too", %{over: over} do
+      assert_raise ArgumentError, fn ->
+        Repo.insert!(%Wallet{money: %Money{amount: over}})
+      end
+
+      assert Repo.aggregate(Wallet, :count) == 0
+    end
+  end
+
+  defp nines(count), do: Integer.pow(10, count) - 1
 
   describe "equal?/2" do
     test "two decimals compare numerically" do

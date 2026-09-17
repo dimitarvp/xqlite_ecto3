@@ -10,11 +10,12 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
   `@tag`-line pointer silently runs the wrong test), and both whole-file
   skips have doc rows.
 
-  Beside them, two live probes for exclusions the suite can never run:
-  the shared migration's durations table builds without complaint (the
-  `:duration_type` blocker is the adapter's encoder, not the DDL), and a
-  query with `lock:` set refuses up front (the `lock.exs` skip's
-  adapter half).
+  Beside them, live probes for exclusions the suite can never run: the
+  shared migration's durations table builds without complaint (the
+  `:duration_type` blocker is the adapter's encoder, not the DDL), a
+  query carrying `lock:` refuses up front wherever the lock sits (the
+  `lock.exs` skip's adapter half), and `query_many` refuses whatever the
+  statement count (the `query_many.exs` skip's adapter half).
   """
   use XqliteEcto3.AdapterCase, async: true
 
@@ -134,9 +135,51 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
     end
   end
 
-  test "a query with lock: set refuses up front" do
-    q = %{Ecto.Query.from(lc in LockCounter, where: lc.id == 1) | lock: "FOR UPDATE"}
+  defp locked(query), do: %{query | lock: "FOR UPDATE"}
 
-    assert_raise ArgumentError, fn -> Repo.all(q) end
+  test "a query with lock: set refuses up front" do
+    q = locked(Ecto.Query.from(lc in LockCounter, where: lc.id == 1))
+
+    error = assert_raise XqliteEcto3.Error, fn -> Repo.all(q) end
+
+    assert error.type == :locks_unsupported
+    assert error.details == %{lock: "FOR UPDATE"}
+    assert is_binary(error.message)
+  end
+
+  test "a lock: one nesting level down refuses too, and renders no rows" do
+    inner = locked(Ecto.Query.from(lc in LockCounter, select: %{id: lc.id}))
+
+    nested = [
+      Ecto.Query.from(s in subquery(inner), select: s.id),
+      Ecto.Query.from(lc in LockCounter,
+        join: s in subquery(inner),
+        on: s.id == lc.id,
+        select: lc.count
+      ),
+      Ecto.Query.with_cte(Ecto.Query.from(lc in LockCounter, select: lc.count), "locked_cte",
+        as: ^inner
+      )
+    ]
+
+    for q <- nested do
+      error = assert_raise XqliteEcto3.Error, fn -> Repo.all(q) end
+
+      assert error.type == :locks_unsupported
+      assert error.details == %{lock: "FOR UPDATE"}
+    end
+  end
+
+  test "query_many refuses whatever the statement count" do
+    assert {:error, %XqliteEcto3.Error{type: :query_many_unsupported}} =
+             Repo.query_many("SELECT 1; SELECT 2;")
+
+    assert {:error, %XqliteEcto3.Error{type: :query_many_unsupported}} =
+             Repo.query_many("SELECT 1")
+
+    error = assert_raise XqliteEcto3.Error, fn -> Repo.query_many!("SELECT 1; SELECT 2;") end
+
+    assert error.type == :query_many_unsupported
+    assert is_binary(error.message)
   end
 end

@@ -24,8 +24,8 @@ defmodule XqliteEcto3.Types.ExactDecimal do
 
   ## The stored form
 
-  `dump/1` writes `Decimal.to_string(value, :normal, max_digits: :infinity)`:
-  plain digits, never an exponent, and the scale you wrote is kept.
+  `dump/1` writes `Decimal.to_string(value, :normal)`: plain digits, never an
+  exponent, and the scale you wrote is kept.
 
       Decimal.new("1.50")          #=> "1.50"
       Decimal.new("1E+3")          #=> "1000"
@@ -41,9 +41,9 @@ defmodule XqliteEcto3.Types.ExactDecimal do
   ## How it differs from Ecto's `:decimal`
 
   It is wider. Ecto's `:decimal` cast refuses a string past 34 significant
-  digits, which is `Decimal.parse/1`'s default limit. This type parses and
-  prints with that limit lifted, so a value of any number of digits goes in
-  and comes back out.
+  digits, which is `Decimal.parse/1`'s default limit. This type parses with
+  that limit lifted, so a value of many hundreds of digits goes in and comes
+  back out.
 
   It is also quieter about non-finite values. Ecto's `:decimal` **raises**
   `ArgumentError` when handed NaN or an infinity as a `%Decimal{}`, an
@@ -51,10 +51,38 @@ defmodule XqliteEcto3.Types.ExactDecimal do
   it gives for the strings `"NaN"`, `"Infinity"` and `"-Infinity"`.
 
   `cast/1` accepts `nil`, a finite `%Decimal{}`, an integer, a float (through
-  `Decimal.from_float/1`), and a string that `Decimal.parse/2` consumes whole
-  and that is finite. Leading zeros and a trailing dot normalize the way
-  `Decimal.parse/2` normalizes them: `"007"` becomes `7` and `"5."` becomes
-  `5`. Anything else is `:error`.
+  `Decimal.from_float/1`), and a string that `Decimal.parse/2` consumes whole,
+  that is finite, and that is inside the width ceiling below. Leading zeros
+  and a trailing dot normalize the way `Decimal.parse/2` normalizes them:
+  `"007"` becomes `7` and `"5."` becomes `5`. Anything else is `:error`.
+
+  ## The width ceiling
+
+  The widening is on digits, not on zeros. `cast/1` and `dump/1` refuse a
+  value whose written-out form would need more than **6178 digit
+  characters** — at most 6180 bytes stored, counting a decimal point and a
+  minus sign. That is `Decimal`'s own default print limit, and it is the
+  widest written-out form any value `Decimal.parse/1` accepts at its
+  defaults can have, so every value a plain `:decimal` field takes is still
+  accepted here.
+
+  The ceiling exists because the written-out form has no exponent:
+  `"1E+8000000"` is ten characters that would write eight million. The
+  width is computed from the coefficient's digit count and the exponent
+  without writing anything out, so the refusal costs microseconds however
+  large the exponent is.
+
+  `cast/1` answers `:error`, which makes the changeset invalid. `dump/1`
+  answers `:error`, and what Ecto raises depends on the path:
+  `Ecto.ChangeError` from `Repo.insert`, `Repo.insert_all`, `Repo.update`
+  and an `{:array, _}` field; `Ecto.Query.CastError` from `Repo.update_all`
+  and from a query parameter; `ArgumentError` from inside an embedded
+  schema. Nothing is written in any of them.
+
+  `load/1` has no ceiling: a value already in a column keeps loading
+  whatever its width, so a row wider than the ceiling — written by an
+  earlier version or by another tool — still reads, and only writing it
+  back is refused.
 
   ## What a failure looks like
 
@@ -93,17 +121,15 @@ defmodule XqliteEcto3.Types.ExactDecimal do
 
   `embed_as/1` is `:dump`, so a value inside an embedded schema goes through
   this module's own `dump/1` and `load/1` — the same pair the column round
-  trip uses, with the same digit limits lifted. The `:self` alternative would
-  read the value back through `cast/1` and leave the writing to Jason, whose
-  own 6178-digit print limit is not lifted. Either way the stored JSON holds
-  a string, never a JSON number.
+  trip uses, with the same parse limit lifted and the same width ceiling.
+  The `:self` alternative would read the value back through `cast/1` and
+  leave the writing to Jason. Either way the stored JSON holds a string,
+  never a JSON number.
   """
 
   use Ecto.Type
 
-  # Decimal's default print limit stops at 6178 characters. Left in place it
-  # would let this type read values it cannot write back.
-  @print_limits [max_digits: :infinity]
+  @max_digit_characters 6178
 
   @impl Ecto.Type
   def type, do: :string
@@ -113,18 +139,24 @@ defmodule XqliteEcto3.Types.ExactDecimal do
 
   @impl Ecto.Type
   def cast(nil), do: {:ok, nil}
-  def cast(%Decimal{} = value), do: finite(value)
-  def cast(value) when is_integer(value), do: value |> Decimal.new() |> finite()
+  def cast(%Decimal{} = value), do: value |> finite() |> within_ceiling()
+
+  def cast(value) when is_integer(value),
+    do: value |> Decimal.new() |> finite() |> within_ceiling()
+
   def cast(value) when is_float(value), do: value |> Decimal.from_float() |> finite()
-  def cast(value) when is_binary(value), do: parse(value)
+  def cast(value) when is_binary(value), do: value |> parse() |> within_ceiling()
   def cast(_other), do: :error
 
   @impl Ecto.Type
   def dump(nil), do: {:ok, nil}
 
   def dump(%Decimal{} = value) do
-    case finite(value) do
-      {:ok, number} -> {:ok, Decimal.to_string(number, :normal, @print_limits)}
+    value
+    |> finite()
+    |> within_ceiling()
+    |> case do
+      {:ok, number} -> {:ok, Decimal.to_string(number, :normal)}
       :error -> :error
     end
   end
@@ -146,4 +178,17 @@ defmodule XqliteEcto3.Types.ExactDecimal do
   defp parse(value), do: XqliteEcto3.DecimalPrecision.parse_finite(value)
 
   defp finite(number), do: XqliteEcto3.DecimalPrecision.finite(number)
+
+  # The written-out form of `1E+8000000` is eight million characters, and
+  # nothing between the parse and the render looks at the exponent, so the
+  # width is measured from the digit count and the exponent before anything
+  # is written. Only the way in: a value already stored keeps loading.
+  defp within_ceiling({:ok, number}) do
+    case XqliteEcto3.DecimalPrecision.written_out_digits(number) do
+      digits when digits <= @max_digit_characters -> {:ok, number}
+      _wider -> :error
+    end
+  end
+
+  defp within_ceiling(:error), do: :error
 end

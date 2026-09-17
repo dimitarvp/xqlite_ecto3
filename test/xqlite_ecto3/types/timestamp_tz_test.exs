@@ -6,6 +6,10 @@ defmodule XqliteEcto3.Types.TimestampTZTest do
   @utc_dt DateTime.new!(~D[2024-01-15], ~T[10:30:00.000000], "Etc/UTC")
   @utc_iso "2024-01-15T10:30:00.000000Z"
 
+  defp at_year(year) do
+    year |> NaiveDateTime.new!(6, 7, 1, 2, 3) |> DateTime.from_naive!("Etc/UTC")
+  end
+
   describe "type/0" do
     test "returns :string (SQLite TEXT storage)" do
       assert TS.type() == :string
@@ -76,6 +80,21 @@ defmodule XqliteEcto3.Types.TimestampTZTest do
     test "rejects non-DateTime input" do
       assert TS.dump("2024-01-15T10:30:00Z") == :error
       assert TS.dump(12_345) == :error
+    end
+
+    # `DateTime.from_iso8601/1` — this type's own load/1 — needs a four-digit
+    # year, so a wider one would write text the type cannot read back.
+    test "rejects a year the stored form cannot carry" do
+      assert TS.dump(at_year(10_000)) == :error
+      assert TS.dump(at_year(-10_000)) == :error
+    end
+
+    test "accepts both four-digit year boundaries" do
+      assert {:ok, high} = TS.dump(at_year(9999))
+      assert {:ok, %DateTime{year: 9999}, _offset} = DateTime.from_iso8601(high)
+
+      assert {:ok, low} = TS.dump(at_year(-9999))
+      assert {:ok, %DateTime{year: -9999}, _offset} = DateTime.from_iso8601(low)
     end
   end
 
