@@ -21,7 +21,8 @@ Code.require_file("#{ecto_sql}/integration_test/sql/transaction.exs", __DIR__)
 Code.require_file("#{ecto_sql}/integration_test/sql/logging.exs", __DIR__)
 Code.require_file("#{ecto_sql}/integration_test/sql/alter.exs", __DIR__)
 
-# Skipped shared suite files (permanent SQLite architectural limits):
+# Skipped shared suite files (one adapter decision, one mixed case; the
+# rationale beside each file says which):
 #
 # lock.exs      — row-level `SELECT ... FOR UPDATE` locking. The adapter
 #                 refuses any query carrying `lock:` while it renders the SQL,

@@ -197,14 +197,14 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
     end
   end
 
-  describe "fallbacks and resilience" do
+  describe "refusals and resilience" do
     test "multi-statement SQL errors identically on both paths and is never cached" do
       state = seeded!()
       query = %Query{statement: "UPDATE t SET x = x; UPDATE t SET x = x"}
 
       # handle_execute has never supported multi-statement SQL — the one-shot
-      # NIF rejects it too. The cache must fall back and preserve that exact
-      # structured error, and must not retain anything.
+      # NIF refuses it too. The cached path must report that same structured
+      # error, and must not retain anything.
       assert {:error, %XqliteEcto3.Error{type: :multiple_statements}, state} =
                Driver.handle_execute(query, [], [], state)
 
@@ -223,6 +223,27 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       assert %{columns: ["x", "s", "y"]} = r2
     end
 
+    test "two statements run neither of them, whatever the cache size" do
+      state = seeded!()
+      {:ok, _} = NIF.execute(state.conn, "CREATE TABLE pair (n INTEGER)", [])
+
+      query = %Query{statement: "INSERT INTO pair VALUES (1); INSERT INTO pair VALUES (2)"}
+
+      assert {:error, %XqliteEcto3.Error{type: :multiple_statements}, state} =
+               Driver.handle_execute(query, [], [], state)
+
+      assert {:ok, %{rows: [[0]]}} = NIF.query(state.conn, "SELECT count(*) FROM pair", [])
+      assert map_size(state.stmt_cache) == 0
+
+      oneshot = seeded!(statement_cache_size: 0)
+      {:ok, _} = NIF.execute(oneshot.conn, "CREATE TABLE pair (n INTEGER)", [])
+
+      assert {:error, %XqliteEcto3.Error{type: :multiple_statements}, oneshot} =
+               Driver.handle_execute(query, [], [], oneshot)
+
+      assert {:ok, %{rows: [[0]]}} = NIF.query(oneshot.conn, "SELECT count(*) FROM pair", [])
+    end
+
     test "a query timeout still cancels through the cached path" do
       state = connect!([])
 
@@ -234,5 +255,98 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       assert {:error, %DBConnection.ConnectionError{}, _state} =
                Driver.handle_execute(query, [], [timeout: 30], state)
     end
+  end
+
+  defmodule CachingRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  defmodule UncachedRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  defmodule PairMigration do
+    use Ecto.Migration
+
+    def up do
+      execute("INSERT INTO ms_rows VALUES (1); INSERT INTO ms_rows VALUES (2)")
+    end
+
+    def down, do: :ok
+  end
+
+  # One call runs one statement, and the refusal is the same whichever
+  # path the SQL took to reach SQLite. The pair is two INSERTs into an
+  # empty table, so a partial run would leave a row behind to find.
+  describe "two statements in one call, through a repo" do
+    @pair "INSERT INTO ms_rows VALUES (1); INSERT INTO ms_rows VALUES (2)"
+
+    setup do
+      start_repo!(CachingRepo, 50)
+      start_repo!(UncachedRepo, 0)
+      :ok
+    end
+
+    test "Repo.query refuses it and runs neither statement, cache on and off" do
+      for repo <- [CachingRepo, UncachedRepo] do
+        assert {:error, %XqliteEcto3.Error{type: :multiple_statements}} = repo.query(@pair)
+        assert %{rows: [[0]]} = repo.query!("SELECT count(*) FROM ms_rows")
+      end
+    end
+
+    test "a migration's execute refuses it and runs neither statement, cache on and off" do
+      for {repo, version} <- [{CachingRepo, 20_260_917_001}, {UncachedRepo, 20_260_917_002}] do
+        error =
+          assert_raise XqliteEcto3.Error, fn ->
+            Ecto.Migrator.up(repo, version, PairMigration, log: false)
+          end
+
+        assert error.type == :multiple_statements
+        assert %{rows: [[0]]} = repo.query!("SELECT count(*) FROM ms_rows")
+      end
+    end
+
+    # The cache reports the miss it took to find out the statement cannot
+    # be prepared. With `statement_cache_size: 0` no cache runs at all, so
+    # no cache event fires for any statement — that half is not this rule.
+    if XqliteEcto3.Telemetry.enabled?() do
+      test "the cache still reports the miss that found out" do
+        handler_id = "stmt-cache-multi-#{:erlang.unique_integer([:positive])}"
+        test_pid = self()
+
+        :telemetry.attach(
+          handler_id,
+          [:xqlite_ecto3, :statement_cache, :miss],
+          fn name, measurements, metadata, _ ->
+            send(test_pid, {:telemetry_event, name, measurements, metadata})
+          end,
+          nil
+        )
+
+        on_exit(fn -> :telemetry.detach(handler_id) end)
+
+        assert {:error, %XqliteEcto3.Error{type: :multiple_statements}} = CachingRepo.query(@pair)
+
+        assert_receive {:telemetry_event, [:xqlite_ecto3, :statement_cache, :miss], _m,
+                        %{sql: @pair}}
+      end
+    end
+  end
+
+  defp start_repo!(repo, cache_size) do
+    db =
+      Path.join(
+        System.tmp_dir!(),
+        "xqlite_ecto3_stmt_cache_#{:erlang.unique_integer([:positive])}.db"
+      )
+
+    start_supervised!({repo, database: db, pool_size: 1, statement_cache_size: cache_size})
+    repo.query!("CREATE TABLE ms_rows (n INTEGER)")
+
+    on_exit(fn ->
+      for ext <- ["", "-wal", "-shm", "-journal"], do: File.rm(db <> ext)
+    end)
+
+    repo
   end
 end

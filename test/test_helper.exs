@@ -200,8 +200,10 @@ excludes = [
 ]
 
 # The vendored suite waits on ExUnit's default 100 ms window in sandbox.exs:174
-# and migrator.exs:118, and the 3-core macOS runners ran it out repeatedly. Our
-# own tests all pass explicit windows; a green test never waits.
+# and migrator.exs:118, and the 3-core macOS runners ran it out repeatedly. The
+# bump is global and deliberate for those vendored bare waits; our own 34 bare
+# `assert_receive` calls, in 7 files, inherit it, so a red one of those waits up
+# to 2 s before it reports. A green wait returns as soon as the message lands.
 ExUnit.configure(exclude: excludes, assert_receive_timeout: 2_000)
 
 # -- Load shared schemas and migration ----------------------------------------

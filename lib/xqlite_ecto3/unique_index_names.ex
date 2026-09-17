@@ -107,6 +107,12 @@ defmodule XqliteEcto3.UniqueIndexNames do
   `0` turns the lookup off whatever the deadline says: nothing is read
   and the result is `{:unavailable, :diagnostics_disabled}`.
 
+  Two ordinary `Repo` violations stop short of that count on their own.
+  A unique index over a column whose name holds a `"."` makes the
+  message come apart wrongly, so nothing is read at all. A TEMP table
+  sharing the violated table's name makes the first read answer two
+  schemas, so the lookup stops there, one read in.
+
   None of that bounds a single read: when another process holds a
   write lock on a rollback-journal database, one read can block for up
   to `busy_timeout` — the same worst case any statement pays under

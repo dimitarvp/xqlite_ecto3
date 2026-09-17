@@ -100,12 +100,20 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
     end
   end
 
+  defp stored_create_sql(table) do
+    %{rows: [[sql]]} = Repo.query!("SELECT sql FROM sqlite_schema WHERE name = ?1", [table])
+    sql
+  end
+
   defmodule DurationMigration do
     use Ecto.Migration
 
     def up do
       create table(:excl_durations) do
         add(:dur, :duration)
+        add(:dur_with_fields, :duration, fields: "MONTH")
+        add(:dur_with_precision, :duration, precision: 4)
+        add(:dur_with_fields_and_precision, :duration, fields: "HOUR TO SECOND", precision: 1)
         add(:dur_with_default, :duration, default: "10 MONTH")
       end
     end
@@ -118,6 +126,19 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
   test "the shared migration's durations shape builds; the blocker is the encoder" do
     assert :ok = Ecto.Migrator.up(Repo, 20_260_901_001, DurationMigration, log: false)
 
+    sql = stored_create_sql("excl_durations")
+
+    for column <- [
+          "dur",
+          "dur_with_fields",
+          "dur_with_precision",
+          "dur_with_fields_and_precision"
+        ] do
+      assert sql =~ ~s("#{column}" DURATION)
+    end
+
+    assert sql =~ ~s("dur_with_default" DURATION DEFAULT '10 MONTH')
+
     assert_raise XqliteEcto3.UnencodableParameterError, fn ->
       Repo.query!("INSERT INTO excl_durations (id, dur) VALUES (1, ?1)", [
         Duration.new!(month: 13)
@@ -125,6 +146,65 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
     end
 
     assert :ok = Ecto.Migrator.down(Repo, 20_260_901_001, DurationMigration, log: false)
+  end
+
+  defmodule BitstringMigration do
+    use Ecto.Migration
+
+    def up do
+      create table(:excl_bitstrings) do
+        add(:bs, :bitstring)
+        add(:bs_with_size, :bitstring, size: 10)
+      end
+    end
+
+    def down do
+      drop(table(:excl_bitstrings))
+    end
+  end
+
+  defmodule BitstringDefaultMigration do
+    use Ecto.Migration
+
+    def up do
+      create table(:excl_bitstring_defaults) do
+        add(:bs_with_default, :bitstring, default: <<42::6>>)
+      end
+    end
+
+    def down do
+      drop(table(:excl_bitstring_defaults))
+    end
+  end
+
+  test "the shared migration's bitstring columns build; the default and the value do not" do
+    assert :ok = Ecto.Migrator.up(Repo, 20_260_901_002, BitstringMigration, log: false)
+
+    sql = stored_create_sql("excl_bitstrings")
+    assert sql =~ ~s("bs" BITSTRING)
+    assert sql =~ ~s("bs_with_size" BITSTRING)
+
+    error =
+      assert_raise XqliteEcto3.UnsupportedDefaultError, fn ->
+        Ecto.Migrator.up(Repo, 20_260_901_003, BitstringDefaultMigration, log: false)
+      end
+
+    assert error.type == :bitstring
+    assert error.reason == :unsupported_shape
+
+    assert %{rows: [[0]]} =
+             Repo.query!("SELECT count(*) FROM sqlite_schema WHERE name = ?1", [
+               "excl_bitstring_defaults"
+             ])
+
+    bound =
+      assert_raise XqliteEcto3.Error, fn ->
+        Repo.query!("INSERT INTO excl_bitstrings (id, bs) VALUES (1, ?1)", [<<2::3>>])
+      end
+
+    assert bound.type == :cannot_convert_to_sqlite_value
+
+    assert :ok = Ecto.Migrator.down(Repo, 20_260_901_002, BitstringMigration, log: false)
   end
 
   defmodule LockCounter do
