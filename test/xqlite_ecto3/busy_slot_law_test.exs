@@ -99,7 +99,7 @@ defmodule XqliteEcto3.BusySlotLawTest do
   # A second connection that takes the write lock and keeps it. It waits
   # for nothing itself, so a test never queues behind its own fixture.
   defp hold_write_lock(path) do
-    {:ok, conn} = Xqlite.open(path, busy_timeout: 0)
+    {:ok, conn} = Xqlite.open(path)
     :ok = XqliteNIF.begin(conn, :immediate)
     {:ok, _} = Xqlite.query(conn, "UPDATE busy_rows SET v = v + 1", [])
     conn
