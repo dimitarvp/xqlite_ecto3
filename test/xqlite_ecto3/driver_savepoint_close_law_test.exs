@@ -78,6 +78,21 @@ defmodule XqliteEcto3.DriverSavepointCloseLawTest do
     end
   end
 
+  # A status the connection cannot answer at all is not "no transaction
+  # open": it goes on to name the savepoint, and closing it then fails
+  # on the dead connection. The savepoint has to be open first —
+  # a counter at 0 is refused before the status is ever read.
+  test "a close whose status read fails answers the dead connection", %{state: state} do
+    built = build(state, :savepoints_intact, 1)
+    :ok = NIF.close(built.conn)
+
+    assert {:disconnect, %XqliteEcto3.Error{type: :connection_closed}, _state} =
+             Driver.handle_rollback([mode: :savepoint], built)
+
+    assert {:disconnect, %XqliteEcto3.Error{type: :connection_closed}, _state} =
+             Driver.handle_commit([mode: :savepoint], built)
+  end
+
   # --- helpers ----------------------------------------------------------------
 
   defp close(state, :commit), do: Driver.handle_commit([mode: :savepoint], state)

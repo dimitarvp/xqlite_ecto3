@@ -119,6 +119,11 @@ defmodule XqliteEcto3.FkDiagnostics do
   violations by replaying `sql`/`params` under deferred enforcement.
 
   Non-FK reasons wrap exactly as `XqliteEcto3.Error.wrap/1` would.
+
+  `opts` takes one key, `:cancel_token`: the token the diagnosis runs
+  under, in place of the one it creates for itself. The adapter never
+  passes it — it is how a test hands the replay's reads a token that is
+  already cancelled.
   """
   @spec wrap_with_replay(
           term(),
@@ -126,9 +131,18 @@ defmodule XqliteEcto3.FkDiagnostics do
           String.t(),
           list(),
           non_neg_integer(),
-          integer() | :infinity
+          integer() | :infinity,
+          keyword()
         ) :: Error.t()
-  def wrap_with_replay(reason, conn, sql, params, budget_ms, remaining_ms \\ :infinity)
+  def wrap_with_replay(
+        reason,
+        conn,
+        sql,
+        params,
+        budget_ms,
+        remaining_ms \\ :infinity,
+        opts \\ []
+      )
 
   def wrap_with_replay(
         {:constraint_violation, :constraint_foreign_key, _} = reason,
@@ -136,14 +150,22 @@ defmodule XqliteEcto3.FkDiagnostics do
         sql,
         params,
         budget_ms,
-        remaining_ms
+        remaining_ms,
+        opts
       ) do
     collect_fun = fn deadline -> replay(conn, sql, params, deadline) end
 
-    enrich(Error.wrap(reason), collect_fun, conn, :replay, {budget_ms, remaining_ms})
+    enrich(
+      Error.wrap(reason),
+      collect_fun,
+      conn,
+      :replay,
+      {budget_ms, remaining_ms},
+      Keyword.get(opts, :cancel_token)
+    )
   end
 
-  def wrap_with_replay(reason, _conn, _sql, _params, _budget_ms, _remaining_ms) do
+  def wrap_with_replay(reason, _conn, _sql, _params, _budget_ms, _remaining_ms, _opts) do
     Error.wrap(reason)
   end
 
@@ -182,18 +204,25 @@ defmodule XqliteEcto3.FkDiagnostics do
       ) do
     collect_fun = fn deadline -> collect_violations(conn, deadline) end
 
-    enrich(Error.wrap(reason), collect_fun, conn, :in_transaction, {budget_ms, remaining_ms})
+    enrich(Error.wrap(reason), collect_fun, conn, :in_transaction, {budget_ms, remaining_ms}, nil)
   end
 
   def wrap_at_commit(reason, _conn, _budget_ms, _remaining_ms), do: Error.wrap(reason)
 
-  defp enrich(%Error{details: %Constraint{} = details} = error, collect_fun, conn, mode, budget) do
-    %{error | details: diagnose(details, collect_fun, conn, mode, budget)}
+  defp enrich(
+         %Error{details: %Constraint{} = details} = error,
+         collect_fun,
+         conn,
+         mode,
+         budget,
+         token
+       ) do
+    %{error | details: diagnose(details, collect_fun, conn, mode, budget, token)}
   end
 
-  defp diagnose(details, collect_fun, conn, mode, allowance) do
+  defp diagnose(details, collect_fun, conn, mode, allowance, token) do
     case runnable(allowance) do
-      {:run, budget_ms} -> spanned(details, collect_fun, conn, mode, budget_ms)
+      {:run, budget_ms} -> spanned(details, collect_fun, conn, mode, budget_ms, token)
       {:skip, reason} -> %{details | fk_diagnostics: {:unavailable, reason}}
     end
   end
@@ -217,12 +246,12 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   defp spendable(_remaining_ms, spend_ms), do: {:run, spend_ms}
 
-  defp spanned(details, collect_fun, conn, mode, budget_ms) do
+  defp spanned(details, collect_fun, conn, mode, budget_ms, token) do
     start_md = %{conn: conn, mode: mode}
 
     {status, violations} =
       span_with_stop_metadata [:xqlite_ecto3, :fk_diagnostics], start_md do
-        {status, violations} = bounded_collect(collect_fun, budget_ms)
+        {status, violations} = bounded_collect(collect_fun, budget_ms, token)
 
         stop_md =
           Map.merge(start_md, %{
@@ -241,11 +270,15 @@ defmodule XqliteEcto3.FkDiagnostics do
   # carry it, the replayed write does not. A token that cannot even be
   # created degrades the diagnosis like any other failed step, rather
   # than running the chain with nothing to stop it.
-  defp bounded_collect(collect_fun, budget_ms) do
+  defp bounded_collect(collect_fun, budget_ms, nil) do
     case NIF.create_cancel_token() do
       {:ok, token} -> collect_under_token(collect_fun, budget_ms, token)
       {:error, reason} -> {{:unavailable, reason}, []}
     end
+  end
+
+  defp bounded_collect(collect_fun, budget_ms, token) do
+    collect_under_token(collect_fun, budget_ms, token)
   end
 
   defp collect_under_token(collect_fun, budget_ms, token) do

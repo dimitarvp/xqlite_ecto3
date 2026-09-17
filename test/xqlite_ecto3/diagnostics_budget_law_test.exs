@@ -34,7 +34,9 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   reserve is set aside for the error path that follows. Only a
   deadline already inside that reserve skips a diagnosis whole. A
   configured allowance of `0` still means off, deadline or no
-  deadline.
+  deadline. Both sides of that pair are pinned: a deadline tighter
+  than the allowance takes over, and a deadline with room to spare
+  leaves the configured allowance in charge.
 
   ## 4. A read the allowance outlives is cancelled
 
@@ -304,6 +306,29 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
     end
   end
 
+  # The configured allowance is the smaller of the two here. A lookup
+  # that took only the deadline into account would sit through the whole
+  # lock hold and resolve the name, spending a hundred times what it was
+  # given.
+  property "a contended lookup stops at the configured allowance when the deadline has room",
+           context do
+    check all(
+            budget <- integer(1..15),
+            remaining_ms <- integer(10_000..15_000),
+            max_runs: @contended_runs
+          ) do
+      {resolved, _elapsed_ms} =
+        under_write_lock(context.writer, fn ->
+          UniqueIndexNames.resolve(unique_error(), context.conn, budget, remaining_ms)
+        end)
+
+      assert %Constraint{
+               unique_index_names: [],
+               unique_index_lookup: {:unavailable, {:lookup_budget_exceeded, _spent_ms}}
+             } = resolved.details
+    end
+  end
+
   property "a zero allowance skips the foreign-key replay whatever the deadline leaves",
            context do
     check all(remaining_ms <- integer(1..2_000), max_runs: @uncontended_runs) do
@@ -405,6 +430,23 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
         assert elapsed_ms <= budget + @slack_ms
         assert {:ok, %{rows: [[1]]}} = XqliteNIF.query(context.scan_conn, "SELECT 1", [])
         assert {:ok, false} = XqliteNIF.transaction_status(context.scan_conn)
+      end
+    end
+
+    # The same pair from the other side: the deadline here is wide
+    # enough to bound nothing, so a replay that outlived the allowance
+    # would be one that stopped counting it — and on this fixture that
+    # means the whole scan, twice, and a diagnosis that reports success.
+    property "a deadline with room to spare leaves the allowance in charge", context do
+      check all(
+              budget <- integer(1..5),
+              remaining_ms <- integer(10_000..15_000),
+              max_runs: @scan_runs
+            ) do
+        error = replay(context.scan_conn, budget, remaining_ms)
+
+        assert %Constraint{fk_violations: [], fk_diagnostics: diagnostics} = error.details
+        assert stopped_inside_the_allowance?(diagnostics)
       end
     end
 

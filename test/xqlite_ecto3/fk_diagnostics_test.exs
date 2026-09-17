@@ -17,6 +17,15 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
   # What a repo gets when it sets no :diagnostics_budget_ms of its own.
   @budget_ms 500
 
+  # An allowance the replayed write outlives many times over, on a
+  # fixture whose scans cost a fraction of it.
+  @slow_write_allowance_ms 5
+
+  # Longer than `settled_cancellers/1` waits below: a canceller nobody
+  # told to stand down is still sitting on an allowance this size when
+  # that helper gives up.
+  @long_allowance_ms 60_000
+
   defp tmp_db(tag) do
     Path.join(
       System.tmp_dir!(),
@@ -470,6 +479,168 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
       assert metadata.mode == :replay
       assert metadata.conn == conn
     end
+  end
+
+  # The token the replay's reads run under is created inside the
+  # diagnosis and never leaves it, so handing one in is the only way to
+  # ask those reads whether they still carry it.
+  describe "the cancel token the replay's reads carry" do
+    setup do
+      {:ok, conn: fk_conn("replay_token")}
+    end
+
+    test "a token already cancelled stops the replay at its first read", %{conn: conn} do
+      {:ok, token} = XqliteNIF.create_cancel_token()
+      :ok = XqliteNIF.cancel_operation(token)
+
+      replayed = replay_orphan(conn, cancel_token: token)
+
+      assert %Constraint{
+               fk_diagnostics: {:unavailable, :operation_cancelled},
+               fk_violations: []
+             } = replayed.details
+    end
+
+    test "with no token handed in the same replay reports the violation", %{conn: conn} do
+      replayed = replay_orphan(conn, [])
+
+      assert %Constraint{fk_diagnostics: :ok, fk_violations: [%FkViolation{child_table: "ch"}]} =
+               replayed.details
+    end
+  end
+
+  # The replayed write is the caller's own statement run again under
+  # deferred enforcement, and it takes no cancel token: cancelling it
+  # would cancel a write inside the caller's transaction. A thousand
+  # child rows make the scans around it cost a fraction of the
+  # allowance, so the write is what spends it — and the clock check
+  # after the write is then the only thing that can report an overrun.
+  # A token on the write would cut it short and name the cancel instead.
+  describe "the replayed write" do
+    setup do
+      conn = fk_conn("replay_write")
+
+      {:ok, _} =
+        XqliteNIF.query(
+          conn,
+          "INSERT INTO ch(id, p_id) SELECT x + 1000000, 1 FROM (WITH RECURSIVE c(x) AS " <>
+            "(SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 1000) SELECT x FROM c)",
+          []
+        )
+
+      {:ok, conn: conn}
+    end
+
+    test "outliving the allowance costs the diagnosis, not the transaction", %{conn: conn} do
+      {:ok, _} = XqliteNIF.query(conn, "BEGIN", [])
+      {:ok, _} = XqliteNIF.query(conn, "INSERT INTO p(id) VALUES (2)", [])
+
+      replayed =
+        XqliteEcto3.FkDiagnostics.wrap_with_replay(
+          {:constraint_violation, :constraint_foreign_key,
+           %{message: "FOREIGN KEY constraint failed"}},
+          conn,
+          "INSERT INTO ch(id, p_id, b) VALUES (8, 999, zeroblob(40000000))",
+          [],
+          @slow_write_allowance_ms
+        )
+
+      assert %Constraint{fk_diagnostics: {:unavailable, {:diagnostics_budget_exceeded, _spent}}} =
+               replayed.details
+
+      assert {:ok, true} = XqliteNIF.transaction_status(conn)
+
+      assert {:ok, %{rows: [[1]]}} =
+               XqliteNIF.query(conn, "SELECT count(*) FROM p WHERE id = 2", [])
+    end
+  end
+
+  test "a diagnosis leaves no canceller waiting behind it" do
+    path = tmp_db("canceller")
+
+    on_exit(fn ->
+      for ext <- ["", "-wal", "-shm"], do: File.rm(path <> ext)
+    end)
+
+    pid = start_conn(path, rich_fk_diagnostics: true, diagnostics_budget_ms: @long_allowance_ms)
+    exec!(pid, "CREATE TABLE p(id INTEGER PRIMARY KEY)")
+    exec!(pid, "CREATE TABLE ch(id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id))")
+    exec!(pid, "INSERT INTO p(id) VALUES (1)")
+
+    before = cancellers()
+
+    assert {:error, %Error{details: %Constraint{fk_diagnostics: :ok}}} =
+             exec(pid, "INSERT INTO ch VALUES (1, 999)")
+
+    assert settled_cancellers(before) == []
+  end
+
+  defp fk_conn(tag) do
+    path = tmp_db(tag)
+
+    on_exit(fn ->
+      for ext <- ["", "-wal", "-shm"], do: File.rm(path <> ext)
+    end)
+
+    {:ok, conn} = XqliteNIF.open(path)
+    on_exit(fn -> XqliteNIF.close(conn) end)
+
+    # Durability is not what these two pin, and the replayed write is
+    # large enough to sit on a slow disk for as long as it sits on the
+    # allowance.
+    {:ok, _} = XqliteNIF.set_pragma(conn, "foreign_keys", true)
+    {:ok, _} = XqliteNIF.set_pragma(conn, "journal_mode", :memory)
+    {:ok, _} = XqliteNIF.set_pragma(conn, "synchronous", :off)
+    {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE p(id INTEGER PRIMARY KEY)", [])
+
+    {:ok, _} =
+      XqliteNIF.query(
+        conn,
+        "CREATE TABLE ch(id INTEGER PRIMARY KEY, p_id INTEGER REFERENCES p(id), b BLOB)",
+        []
+      )
+
+    {:ok, _} = XqliteNIF.query(conn, "INSERT INTO p(id) VALUES (1)", [])
+
+    conn
+  end
+
+  defp replay_orphan(conn, opts) do
+    XqliteEcto3.FkDiagnostics.wrap_with_replay(
+      {:constraint_violation, :constraint_foreign_key,
+       %{message: "FOREIGN KEY constraint failed"}},
+      conn,
+      "INSERT INTO ch(id, p_id) VALUES (7, 999)",
+      [],
+      @budget_ms,
+      :infinity,
+      opts
+    )
+  end
+
+  defp cancellers do
+    Enum.filter(Process.list(), fn pid ->
+      match?(
+        {:current_function, {XqliteEcto3.Cancellation, _, _}},
+        Process.info(pid, :current_function)
+      )
+    end)
+  end
+
+  # Wide on purpose: what is under test is that the process goes away at
+  # all, not how soon the scheduler gets to it.
+  defp settled_cancellers(before) do
+    Enum.reduce_while(1..100, [], fn _attempt, _acc ->
+      case Enum.reject(cancellers(), fn pid -> pid in before end) do
+        [] -> {:halt, []}
+        still_waiting -> wait_once(still_waiting)
+      end
+    end)
+  end
+
+  defp wait_once(still_waiting) do
+    Process.sleep(20)
+    {:cont, still_waiting}
   end
 
   describe "a diagnosis that ends the transaction" do

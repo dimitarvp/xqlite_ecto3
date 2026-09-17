@@ -15,7 +15,9 @@ defmodule XqliteEcto3.TelemetryTest do
   # Every test here asserts on an emitted event, so none is compiled into
   # the no-op build; that build's own coverage is the smoke file.
   if XqliteEcto3.Telemetry.enabled?() do
+    alias Ecto.Adapters.SQL.Sandbox
     alias Ecto.Integration.PoolRepo
+    alias Ecto.Integration.TestRepo
     alias XqliteEcto3.Driver
 
     setup do
@@ -250,6 +252,27 @@ defmodule XqliteEcto3.TelemetryTest do
 
         Driver.handle_rollback([], state3)
         :telemetry.detach(handler_id)
+      end
+
+      # The twin of the begin refusal above, through the test sandbox,
+      # which opens the transaction at check-out and rolls it back at
+      # check-in. A raw COMMIT in the test body ends that transaction
+      # first, so the check-in rollback is the one that is refused, and
+      # the reason a subscriber sees names the status rather than a
+      # statement SQLite would have rejected.
+      @tag capture_log: true
+      test "a rollback the status refuses reports the status it read" do
+        handler_id = "test-rollback-refused-#{:erlang.unique_integer([:positive])}"
+        attach_capture(handler_id, [[:xqlite_ecto3, :handle_rollback, :stop]])
+        on_exit(fn -> :telemetry.detach(handler_id) end)
+
+        :ok = Sandbox.checkout(TestRepo)
+        TestRepo.query!("COMMIT")
+        Sandbox.checkin(TestRepo)
+
+        assert_receive {:telemetry_event, [:xqlite_ecto3, :handle_rollback, :stop], _,
+                        %{result_class: :error, error_reason: {:transaction_status, :idle}}},
+                       5_000
       end
 
       test "savepoint mode is captured in metadata", %{state: state} do

@@ -216,6 +216,12 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       ]
     )
 
+    # A column name carrying a dot is what makes SQLite's violation
+    # message hold one separator more than the columns it names.
+    create_table!("uix_dots", "id INTEGER PRIMARY KEY AUTOINCREMENT, \"a.b\" TEXT UNIQUE")
+
+    create_table!("uix_shadows", "id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT UNIQUE")
+
     cap_columns = Enum.map_join(0..24, ", ", fn i -> "c#{i} TEXT" end)
 
     create_table!(
@@ -237,7 +243,9 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       "uix_autos",
       "uix_autocolls",
       "uix_mixes",
-      "uix_caps"
+      "uix_caps",
+      "uix_dots",
+      "uix_shadows"
     ])
   end
 
@@ -799,6 +807,77 @@ defmodule XqliteEcto3.UniqueIndexNamesTest do
       assert metadata.columns == [nil]
       assert metadata.lookup_status == :ambiguous
       assert metadata.candidate_count == 2
+    end
+
+    # Each outcome the lookup can reach counts its pragma reads
+    # differently, and a subscriber reading that number is how the cost
+    # of the error path is watched. All three below come from an
+    # ordinary violation, not from a hand-built error.
+    test "a message that does not come apart is refused before any read" do
+      attach_lookup_span("uix-dots", "uix_dots")
+
+      {:ok, _} = Repo.query("INSERT INTO uix_dots(\"a.b\") VALUES ('x')", [])
+
+      assert {:error, %Error{details: %Constraint{} = details}} =
+               Repo.query("INSERT INTO uix_dots(\"a.b\") VALUES ('x')", [])
+
+      assert {:unavailable, {:unparseable_violation_table, _message}} =
+               details.unique_index_lookup
+
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], _measurements,
+                      metadata}
+
+      assert metadata.lookup_status == :unavailable
+      assert metadata.index_reads == 0
+    end
+
+    test "a schema read that cannot name one schema still counts as a read" do
+      attach_lookup_span("uix-shadows", "uix_shadows")
+
+      Repo.query!("CREATE TEMP TABLE uix_shadows (v TEXT)")
+      {:ok, _} = Repo.query("INSERT INTO main.uix_shadows(v) VALUES ('x')", [])
+
+      assert {:error, %Error{details: %Constraint{} = details}} =
+               Repo.query("INSERT INTO main.uix_shadows(v) VALUES ('x')", [])
+
+      assert {:unavailable, {:ambiguous_schema, schemas}} = details.unique_index_lookup
+      assert Enum.sort(schemas) == ["main", "temp"]
+
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], _measurements,
+                      metadata}
+
+      assert metadata.lookup_status == :unavailable
+      assert metadata.index_reads == 1
+    end
+
+    test "past the cap the tally is the reads the lookup had already made" do
+      attach_lookup_span("uix-caps", "uix_caps")
+
+      {:ok, _} = Repo.query("INSERT INTO uix_caps(c0) VALUES ('x')", [])
+
+      assert {:error, %Error{details: %Constraint{} = details}} =
+               Repo.query("INSERT INTO uix_caps(c0) VALUES ('x')", [])
+
+      assert {:unavailable, {:too_many_unique_indexes, 25}} = details.unique_index_lookup
+
+      assert_receive {:lookup_span, [:xqlite_ecto3, :unique_index_names, :stop], _measurements,
+                      metadata}
+
+      assert metadata.lookup_status == :unavailable
+      assert metadata.index_reads == 2
+    end
+
+    defp attach_lookup_span(tag, table) do
+      handler_id = "#{tag}-#{:erlang.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:xqlite_ecto3, :unique_index_names, :stop],
+        &__MODULE__.forward_lookup_span/4,
+        %{pid: self(), table: table}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
     end
 
     @doc false

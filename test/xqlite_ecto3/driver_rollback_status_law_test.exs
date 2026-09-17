@@ -109,6 +109,18 @@ defmodule XqliteEcto3.DriverRollbackStatusLawTest do
     assert real_status(rolled_back) == :idle
   end
 
+  # A status the connection cannot answer is not the refusal above: the
+  # rollback is issued, and the statement that fails on the dead
+  # connection is a disconnect carrying what SQLite said, not a status.
+  test "a rollback the connection can no longer answer disconnects", %{state: state} do
+    idle = reset_to_autocommit(state)
+    {:ok, nil, open} = Driver.handle_begin([], idle)
+    :ok = NIF.close(open.conn)
+
+    assert {:disconnect, %XqliteEcto3.Error{type: :connection_closed}, _state} =
+             Driver.handle_rollback([], open)
+  end
+
   # A savepoint-mode close is not covered by the status answer above:
   # DBConnection's contract carries no savepoint, and the savepoint this
   # close names is gone with the transaction that held it.
