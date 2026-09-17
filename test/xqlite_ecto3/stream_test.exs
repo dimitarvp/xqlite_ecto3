@@ -110,7 +110,15 @@ defmodule XqliteEcto3.StreamTest do
   # default nobody asked for. The refusal comes from the library, on the
   # first fetch — declaring the stream only records the number.
   describe "Repo.stream/2 with a :max_rows that is not a batch size" do
-    for value <- [0, -1, "100", 1.5, :infinity, nil, {:a, 1}] do
+    for {value, provided} <- [
+          {0, {:integer, 0}},
+          {-1, {:integer, -1}},
+          {"100", {:string, "100"}},
+          {1.5, {:float, 1.5}},
+          {:infinity, {:atom, :infinity}},
+          {nil, {:atom, nil}},
+          {{:a, 1}, {:tuple, {:a, 1}}}
+        ] do
       test "max_rows: #{inspect(value)} is refused, not replaced" do
         error =
           assert_raise XqliteEcto3.Error, fn ->
@@ -122,6 +130,11 @@ defmodule XqliteEcto3.StreamTest do
           end
 
         assert error.type == :invalid_batch_size
+
+        assert error.details == %{
+                 provided: unquote(Macro.escape(provided)),
+                 minimum: 1
+               }
       end
     end
 

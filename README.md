@@ -115,7 +115,7 @@ Drop-in for most schemas and queries. The differences that matter:
 
 - Constraint errors arrive as `%XqliteEcto3.Error{}` with structured fields, not exception messages parsed downstream.
 - `Repo.insert_all(..., on_conflict: ..., conflict_target: ...)` and `RETURNING` work identically.
-- `:binary_id` storage is configurable globally (`config :xqlite_ecto3, :binary_id_storage, :string | :binary`). Default is `:string` (TEXT, 36-char UUIDs) — matches ecto_sqlite3. It governs `:binary_id` fields only: an `Ecto.UUID` field stores the 36-character text under either setting.
+- UUID storage is configurable globally (`config :xqlite_ecto3, :binary_id_storage, :string | :binary`). Default is `:string` (TEXT, 36-char UUIDs) — matches ecto_sqlite3. It governs every UUID field: under `:binary` an `Ecto.UUID` field is stored as the same 16-byte BLOB a `:binary_id` field is.
 - `ALTER TABLE ... MODIFY COLUMN` is an opt-in table rebuild behind `support_alter_via_table_rebuild: true`. ecto_sqlite3 has no equivalent.
 
 See [`guides/migrating_from_ecto_sqlite3.md`](guides/migrating_from_ecto_sqlite3.md) for the full walk-through.
@@ -454,7 +454,7 @@ Generates `DELETE FROM comments WHERE id IN (SELECT c0.id FROM comments AS c0 IN
 
 All live under `XqliteEcto3.Types.*`:
 
-- **`UUID`** — parameterized `:storage` (`:string` TEXT | `:binary` BLOB), defaulting to `:string` per field. It does not read `config :xqlite_ecto3, :binary_id_storage`; that setting governs `:binary_id` fields.
+- **`UUID`** — parameterized `:storage` (`:string` TEXT | `:binary` BLOB), defaulting to `:string` per field. It does not read `config :xqlite_ecto3, :binary_id_storage`; that setting governs `:binary_id` and `Ecto.UUID` fields.
 - **`Instant`** — point-in-time as int64 ns from Unix epoch. Reads back the integer nanosecond count it stored; `XqliteEcto3.Types.Instant.to_datetime/1` converts one for display. Range 1677-09-21 to 2262-04-11.
 - **`Duration`** — absolute span as int64 ns. Rejects calendar-`Duration` with non-zero year/month/week.
 - **`TimestampTZ`** — timezone-aware `DateTime`.
@@ -468,6 +468,31 @@ UUIDs are hexadecimal, so the same value can be written in upper case, lower cas
 - `:binary_id` over `:string` storage passes a UUID *string* through untouched in both directions, so mixed case survives byte for byte. Sixteen raw bytes are read as a UUID, not as opaque bytes: going in they become the dashed lower-case text in either storage mode, and only a `:binary`-mode column expands them again on the way out.
 
 The last one matters when you compare in SQL: `=` on a TEXT column is case-sensitive, so two spellings of one UUID are two different values to SQLite. Write UUIDs in one case, or use `XqliteEcto3.Types.UUID`, which settles the case for you.
+
+Sixteen stored bytes in a UUID column are read as a UUID whatever they were — the byte count alone decides it, for `Ecto.UUID`, for `:binary_id` under `:binary` storage and for `XqliteEcto3.Types.UUID` under both its storage modes. A 16-character text that is not a UUID (`"sixteen  bytes!!"`) therefore comes back as the dashed form of those bytes, with no error anywhere. Keep 16-character identifiers that are not UUIDs in a `:string` field, where nothing expands them.
+
+#### One storage class per UUID column
+
+Under `:binary` storage every UUID kind — `:binary_id`, `Ecto.UUID` and `XqliteEcto3.Types.UUID` — is written as a 16-byte BLOB, whatever the bytes are. That matters because a plain binary parameter is stored as TEXT when its bytes happen to be valid UTF-8, which about one UUID in fourteen thousand is: such a column would hold two storage classes, and SQLite sorts every TEXT value before every BLOB one and never compares the two equal, so a UNIQUE column would accept the same UUID twice and a lookup by id would miss the row. The BLOB form is also about 45% smaller per row than the 36-character text (measured over 50 000 rows: 45.9% for a plain column, 45.4% for a primary key).
+
+A column written before this — where an `Ecto.UUID` field under `:binary` stored the 36-character text — is converted once, per column. First count the rows the conversion will not touch, so you know what stays behind:
+
+```sql
+SELECT count(*) FROM t WHERE typeof(c) = 'text' AND NOT
+  (length(c) = 36 AND length(replace(c, '-', '')) = 32
+   AND unhex(replace(c, '-', '')) IS NOT NULL);
+```
+
+Then convert the rest. The `WHERE` clause is the exact complement of the count above, so a row that is not a dashed 32-hex-digit UUID text is left exactly as it is:
+
+```sql
+UPDATE t SET c = unhex(replace(c, '-', ''))
+  WHERE typeof(c) = 'text' AND length(c) = 36
+  AND length(replace(c, '-', '')) = 32
+  AND unhex(replace(c, '-', '')) IS NOT NULL;
+```
+
+`unhex` needs SQLite 3.41 or newer; the bundled build is 3.53.2.
 
 ### SQLite-specific extras via xqlite
 
@@ -521,6 +546,8 @@ Permanent SQLite constraints (not adapter choices):
 - Datetimes are stored in SQLite's own text form — `YYYY-MM-DD HH:MM:SS[.ffffff]`, space separator, no trailing `Z` — so values written by `CURRENT_TIMESTAMP`/`datetime()` and values written by the adapter order and range-filter correctly in one column, and both load. A non-UTC `DateTime` handed to the raw-SQL path is shifted to UTC before storage (typed fields already arrive normalized from Ecto). `datetime_add`, `ago`, and `from_now` compute their comparand in the same form with six fractional digits, so strict comparisons are exact against either precision; an exact-equality boundary against a second-precision column is not (its stored text has no fractional digits), and the custom `TimestampTZ` type keeps its own offset-carrying ISO-8601 form, which interval arithmetic does not target. Databases written by versions before this form (or by tools writing ISO-8601 `T`/`Z` text) still load; to restore instant ordering against such rows, normalize once per column: `UPDATE t SET at = replace(replace(at, 'T', ' '), 'Z', '')` (skip `TimestampTZ` columns — their stored offset is their contract, though the rewrite is value-preserving there too). The stored text carries a four-digit year, so a `Date`, `NaiveDateTime` or `DateTime` outside years -9999 to 9999 is refused at the binding boundary with `XqliteEcto3.UnencodableParameterError` (`reason: :year_out_of_range`) and nothing is written. Ordinary arithmetic reaches those years — `DateTime.add(now, 3_000_000, :day)` and `Date.add(~D[2026-09-17], -5_000_000)` both do — and a row written with a five-digit year made every later read of the table raise. A row already written that way can only be reached by binding the stored text yourself: `DELETE FROM t WHERE at = ?` with `"10000-06-07 01:02:03"`.
 
 - The TEXT-affinity mirror image of the same trap: a `:decimal` field over a `:string`/`TEXT` column silently stores SQLite's float-to-text rendering of the value — roughly one accepted decimal in ten comes back as a slightly different number, with no error anywhere. A `:decimal` field cannot be made exact by changing only the column. Three related facts about `:decimal`: the `precision:`/`scale:` migration options are carried into the DDL for documentation value only — SQLite ignores them and the exactness guard's limit is float64's, not the declared one; SQLite's `sum`/`avg` silently treat non-numeric stored values (a foreign writer's BLOB or text) as 0; and a non-numeric stored value under a `:decimal` field fails the load with Ecto's typed error naming the field and value rather than loading garbage, while numeric text of any width — a number a foreign writer put in the column, past the 34 significant digits and the 6144 exponent `Decimal` parses by default — loads as the number written. One value cannot survive at all: a `Decimal` negative zero binds as the integer `0`, and an INTEGER has no negative zero, so it loads back positive — the two compare equal, only the struct's `sign` field differs. The fix for exact arbitrary-precision digits is the `XqliteEcto3.Types.ExactDecimal` field type over that same `:string`/TEXT column: it binds the number as text with every digit kept, so nothing is rendered through a float — at the cost of textual, not numeric, ordering and comparison on the column, and of a 6178-digit-character ceiling on the written-out form.
+
+- A datetime struct inside a `:map` field or an `{:array, :map}` field is written into the JSON as ISO 8601 text — `2026-09-17T01:02:03.456789Z`, with a `T` and a `Z`, not the space-separated form a datetime column gets — and reads back as a plain string: a `:map` field has no per-value type to load it through. `%DateTime{}`, `%NaiveDateTime{}`, `%Date{}` and `%Time{}` all behave this way, at any nesting depth. Use an embedded schema where you need the struct back — all four kinds load as structs there. The four-digit-year rule of the datetime bullet above applies inside JSON too: a year outside -9999 to 9999 is refused with `XqliteEcto3.UnencodableParameterError` (`reason: :year_out_of_range`) and nothing is written.
 
 - A `%Decimal{}` inside a `:map` field or an `{:array, :decimal}` field goes through the same precision guard as a bare one, and is written into the JSON as a number rather than a quoted string. A value the guard refuses is refused there too, with the same `XqliteEcto3.DecimalPrecisionError`. Under `{:array, :decimal}` each element loads back as a `Decimal`; under a plain `:map` field there is no per-value type to load through, so the numbers come back as Elixir integers and floats. The opt-in `XqliteEcto3.Types.Array` and `XqliteEcto3.Types.ExactDecimal` build their own JSON and text and are deliberately outside this guard.
 

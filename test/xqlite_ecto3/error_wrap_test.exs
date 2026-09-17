@@ -165,6 +165,31 @@ defmodule XqliteEcto3.ErrorWrapTest do
       assert is_binary(e.message)
     end
 
+    test "a batch size that is not a batch size carries the value and the minimum" do
+      e = Error.wrap({:invalid_batch_size, %{provided: {:integer, 0}, minimum: 1}})
+
+      assert e.type == :invalid_batch_size
+      assert e.details == %{provided: {:integer, 0}, minimum: 1}
+      assert is_binary(e.message)
+    end
+
+    # The stream path tags the refused value with its type; the statement path
+    # takes an integer and reports it bare. One clause carries both shapes.
+    test "an untagged batch size carries its details too" do
+      e = Error.wrap({:invalid_batch_size, %{provided: 0, minimum: 1}})
+
+      assert e.type == :invalid_batch_size
+      assert e.details == %{provided: 0, minimum: 1}
+    end
+
+    test "a blob parameter whose bytes are not a binary carries its position" do
+      e = Error.wrap({:invalid_blob_bytes, %{position: 1, type: :integer}})
+
+      assert e.type == :invalid_blob_bytes
+      assert e.details == %{position: 1, type: :integer}
+      assert is_binary(e.message)
+    end
+
     test "an unsupported atom and an unknown parameter name carry their token" do
       atom = Error.wrap({:unsupported_atom, "b"})
 
@@ -244,8 +269,8 @@ defmodule XqliteEcto3.ErrorWrapTest do
 
   describe "wrap/1 on tagged tuples with a non-binary payload" do
     test "two-element tuple with a map payload keeps its tag as type" do
-      e = Error.wrap({:invalid_batch_size, %{provided: {:integer, 0}, minimum: 1}})
-      assert e.type == :invalid_batch_size
+      e = Error.wrap({:not_a_plain_table, %{table: "v", type: :view}})
+      assert e.type == :not_a_plain_table
       assert is_binary(e.message)
       assert e.details == nil
     end

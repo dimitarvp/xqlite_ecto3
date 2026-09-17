@@ -65,12 +65,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is unchanged — opaque sixteen-byte identifiers belong in a `:binary`
   field.
 
-- **Documented: an `Ecto.UUID` field does not follow
-  `:binary_id_storage`.** It stores the 36-character text under either
-  setting, so under `:binary` an `Ecto.UUID` column and a `:binary_id`
-  column hold different things and a join across them returns nothing.
+- **Breaking, pre-1.0: under `:binary` storage an `Ecto.UUID` field is
+  stored as a 16-byte BLOB, not as the 36-character text.** The
+  `:binary_id_storage` setting now governs every UUID kind —
+  `:binary_id`, `Ecto.UUID` and `XqliteEcto3.Types.UUID` — so one
+  database holds one form. Rows written before this still load; a lookup
+  by id binds the new form and does not find them, so convert an
+  existing column once with the two statements in the README's custom
+  types section. Under `:string` nothing changed, byte for byte.
+
+- **The xqlite dependency is pinned at `~> 0.12.2`**, whose
+  `%Xqlite.Blob{}` parameter is what makes a UUID reach SQLite as a BLOB
+  whatever its bytes are.
+
+- **A batch size SQLite refuses reports what was refused.**
+  `Repo.stream/2` with a `:max_rows` that is not a positive integer
+  raises `%XqliteEcto3.Error{type: :invalid_batch_size}` with
+  `details: %{provided: value, minimum: 1}`, where the value carries its
+  own type tag (`{:integer, 0}`, `{:string, "100"}`, …). The whole
+  payload used to be legible only inside the message text.
 
 ### Fixed
+
+- **A column of UUIDs under `:binary` storage no longer holds two
+  storage classes.** A plain binary parameter is stored as TEXT when its
+  bytes happen to be valid UTF-8 and as a BLOB otherwise, and about one
+  UUID in fourteen thousand is valid UTF-8 — so a few rows per million
+  landed as TEXT in a BLOB column. TEXT and BLOB sort apart and never
+  compare equal, so a UNIQUE column accepted the same UUID twice and a
+  lookup by that id found nothing. Every UUID kind now binds a value
+  SQLite stores as a BLOB whatever the bytes are.
+
+- **An `Ecto.UUID` column under `:binary` storage is no longer filled
+  with TEXT.** The `Ecto.UUID` dumper did not read the storage setting,
+  so the column was declared BLOB and written as the 36-character text,
+  and a join between an `Ecto.UUID` column and a `:binary_id` column
+  returned nothing.
 
 - **A UUID inside an embedded schema no longer raises under `:binary`
   storage.** An `embeds_one` or `embeds_many` field declared

@@ -189,16 +189,26 @@ under `:binary`. Only the read side is one-sided — 16 stored bytes are
 expanded under `:binary` and handed back as raw bytes under `:string`.
 Keep opaque 16-byte identifiers in a `:binary` field.
 
-The setting governs `:binary_id` fields. An `Ecto.UUID` field stores the
-36-character text under either setting, so under `:binary` the two kinds
-of column hold different things and a join across them finds nothing.
+The setting governs every UUID kind: under `:binary` an `Ecto.UUID`
+field is written as the same 16-byte BLOB a `:binary_id` field is, so
+the two kinds of column hold the same thing and a join across them
+works. `XqliteEcto3.Types.UUID` is the exception, on purpose — it takes
+its mode per field.
+
+Under `:binary` a UUID is bound so that SQLite stores a BLOB whatever
+the bytes are. Bound as a plain binary, the one UUID in fourteen
+thousand whose bytes are valid UTF-8 would be stored as TEXT instead,
+and a column holding both classes sorts and compares by class before
+value.
 
 Flipping after rows exist is **not transparent** in either direction.
 Going to `:binary`: old rows stay TEXT while new rows are BLOBs, and a
 lookup by id binds the BLOB form, so it will not find the old rows.
 Going back to `:string`: ids written as BLOBs read back as raw bytes
 rather than as text. Leave the default unless you're starting fresh or
-willing to migrate existing rows.
+willing to migrate existing rows — the README's custom types section
+carries the two SQL statements that convert one column of UUID texts
+into BLOBs and report what they will not convert.
 
 For per-field control (mixed storage across fields), use the escape
 hatch — as the primary key, or on any other field:

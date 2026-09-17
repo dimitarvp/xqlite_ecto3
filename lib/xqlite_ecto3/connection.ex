@@ -1875,6 +1875,16 @@ defmodule XqliteEcto3.Connection do
     ["CAST(", Float.to_string(literal), " AS REAL)"]
   end
 
+  # A UUID written straight into a query under :binary storage reaches this
+  # point as the dumper's BLOB parameter, which Ecto's own "please
+  # interpolate" check misses because it tests for a binary. Saying the same
+  # thing here keeps both storage settings refusing a literal alike.
+  defp expr(%Xqlite.Blob{}, _sources, query) do
+    raise Ecto.QueryError,
+      query: query,
+      message: "cannot inline a BLOB value, please interpolate (using ^) instead"
+  end
+
   defp expr(expr, _sources, query) do
     raise Ecto.QueryError,
       query: query,

@@ -80,6 +80,11 @@ defmodule XqliteEcto3.Query do
       end
     end
 
+    # A UUID under :binary storage arrives wrapped, so SQLite stores a BLOB
+    # whatever its bytes are. The driver takes the wrapper itself; the clause
+    # is here because a wrapper is also a map.
+    defp encode_param(%Xqlite.Blob{} = blob, _index), do: blob
+
     defp encode_param(value, index) when is_map(value), do: encode_json(value, index)
 
     defp encode_param(value, index) when is_list(value), do: encode_json(value, index)
@@ -116,14 +121,20 @@ defmodule XqliteEcto3.Query do
     defp json_form(%Date{} = d, index), do: in_year_range(d, index)
     defp json_form(%NaiveDateTime{} = dt, index), do: in_year_range(dt, index)
     defp json_form(%DateTime{} = dt, index), do: in_year_range(dt, index)
+
+    # A UUID dumped for :binary storage is wrapped, and JSON has no BLOB to
+    # carry it in. Sixteen bytes are the UUID this wrapper always holds, so
+    # they go in as the dashed text the column path stores; a wrapper of any
+    # other size falls through and is refused like the raw bytes it holds.
+    defp json_form(%Xqlite.Blob{bytes: <<_::128>> = raw}, _index), do: uuid_text(raw)
+
     defp json_form(%{__struct__: _} = value, _index), do: value
 
-    # A UUID dumped for `:binary` storage arrives as sixteen raw bytes, which
-    # JSON cannot carry — an embedded `:binary_id` field was refused outright
-    # before this clause existed. Written out as the dashed text it is the
-    # same value the column path stores, and every UUID loader reads it back.
-    # Bytes that are valid UTF-8 are left alone: JSON already carries them,
-    # and the loaders expand sixteen stored bytes anyway.
+    # Sixteen raw bytes JSON cannot carry: written out as the dashed text
+    # they are the same value the column path stores, and every UUID loader
+    # reads them back. Bytes that are valid UTF-8 are left alone: JSON
+    # already carries them, and the loaders expand sixteen stored bytes
+    # anyway.
     defp json_form(<<_::128>> = raw, _index) do
       case String.valid?(raw) do
         true -> raw

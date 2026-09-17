@@ -415,7 +415,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `datetime-text-form` | Datetimes store as `YYYY-MM-DD HH:MM:SS[.ffffff]`: space separator, no `T`, no `Z`. | `query.ex:sqlite_datetime/1` | `datetime_add_form_test.exs: "datetime_add renders the stored text form: space separator, no designator"` |
 | `real-affinity-numeric` | A spelling SQLite would give REAL affinity renders `NUMERIC`, so an integer-exact value past 2^53 is not rounded in. | `data_type.ex:column_type/2`, `sqlite_affinity/1` | `data_type_test.exs: "any unrecognized spelling SQLite would give REAL affinity"` |
 | `decimal-numeric-bind` | A `Decimal` of any width or exponent binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
-| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the `:binary_id` dumper/loader chain, the migration column type and the query-parameter `CAST` together, and every one of them reads it through the one public `XqliteEcto3.binary_id_storage/0`, which refuses a value that is neither `:string` nor `:binary`. An `Ecto.UUID` field ignores it and always stores the 36-character text. Sixteen raw bytes going in are a UUID in either mode; coming out they are expanded only under `:binary`. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"`, `"every run-time reader goes through that reader"` |
+| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the `:binary_id` dumper/loader chain, the `Ecto.UUID` dumper, the migration column type and the query-parameter `CAST` together, and every one of them reads it through the one public `XqliteEcto3.binary_id_storage/0`, which refuses a value that is neither `:string` nor `:binary`. Under `:binary` every UUID kind binds a `%Xqlite.Blob{}`, so the storage class never depends on the bytes. Sixteen raw bytes going in are a UUID in either mode; coming out they are expanded only under `:binary`. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"`, `"every run-time reader goes through that reader"` |
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
 | `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: each spends the smaller of the two less a 20 ms reserve and skips only inside that reserve. The replay's reads also carry a cancel token fired at the allowance, so a read that outlives it is cancelled — except one waiting on another connection's lock, which ends on `busy_timeout`; the replayed write carries no token. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
 | `with-xqlite-fresh-checkout` | `with_xqlite/3` always starts its own checkout, so it must never be nested inside a transaction, a checkout, or itself. | `xqlite_ecto3.ex:with_xqlite/3` | unpinned |
@@ -446,11 +446,11 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
   deps.compile xqlite_ecto3 --force`. The sibling `config :xqlite,
   :telemetry_enabled` gates the xqlite-level events.
 - UUID storage is `config :xqlite_ecto3, :binary_id_storage`, read at run time
-  through `XqliteEcto3.binary_id_storage/0` by the six call sites under
+  through `XqliteEcto3.binary_id_storage/0` by the call sites under
   `binary-id-storage` above, in `xqlite_ecto3.ex`, `data_type.ex` and
   `connection.ex`. `Connection.child_spec/1` reads it once more so a value
   that is neither `:string` nor `:binary` is refused at boot. The `:uuid`
-  dumper is deliberately not one of the six.
+  dumper is one of them: it picks its whole chain from the setting.
 - Warnings are errors everywhere: `elixirc_options` in `mix.exs` for `lib/`,
   and the `test: "test --warnings-as-errors"` alias for `.exs` files. The one
   exemption is `test/ecto3_integration/all_test.exs`, which

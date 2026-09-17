@@ -2,6 +2,7 @@ defmodule XqliteEcto3.QueryEncodingTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  alias Ecto.Integration.TestRepo
   alias XqliteEcto3.Query
 
   defp encode(params), do: DBConnection.Query.encode(%Query{statement: "?"}, params, [])
@@ -205,6 +206,17 @@ defmodule XqliteEcto3.QueryEncodingTest do
       [encoded] = encode([value])
       assert Jason.decode!(encoded) == value
     end
+
+    # A UUID field under `:binary` storage dumps to a BLOB parameter, and an
+    # embedded schema hands the whole map to the JSON encoder. JSON cannot
+    # carry raw bytes, so the sixteen inside it are written as the dashed text
+    # every UUID loader reads back.
+    test "a sixteen-byte BLOB parameter inside a map writes the dashed UUID text" do
+      raw = Ecto.UUID.dump!("550e8400-e29b-41d4-a716-446655440000")
+
+      assert encode([%{"id" => %Xqlite.Blob{bytes: raw}}]) ==
+               [~s({"id":"550e8400-e29b-41d4-a716-446655440000"})]
+    end
   end
 
   describe "encode passes through primitives" do
@@ -290,6 +302,18 @@ defmodule XqliteEcto3.QueryEncodingTest do
 
     test "a plain map still encodes to JSON" do
       assert encode([%{a: 1}]) == [~s({"a":1})]
+    end
+
+    # Only sixteen bytes are a UUID. Any other BLOB parameter inside a JSON
+    # value is refused exactly as raw bytes are, rather than guessed at.
+    test "a BLOB parameter of another size inside a map is refused" do
+      err =
+        assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+          encode([%{"b" => %Xqlite.Blob{bytes: <<1, 2, 3>>}}])
+        end
+
+      assert err.index == 1
+      assert %Protocol.UndefinedError{} = err.reason
     end
 
     test "a decimal with no exact numeric form refuses inside a map, carrying itself" do
@@ -390,6 +414,91 @@ defmodule XqliteEcto3.QueryEncodingTest do
     test "flattens iodata statements" do
       q = %Query{statement: ["SELECT ", "1"]}
       assert to_string(q) == "SELECT 1"
+    end
+  end
+
+  defmodule Doc do
+    use Ecto.Schema
+
+    @primary_key {:id, :id, autogenerate: true}
+    schema "qe_docs" do
+      field(:meta, :map)
+      field(:metas, {:array, :map})
+    end
+  end
+
+  defp iso_text(%Date{} = value), do: Date.to_iso8601(value)
+  defp iso_text(%Time{} = value), do: Time.to_iso8601(value)
+  defp iso_text(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp iso_text(%DateTime{} = value), do: DateTime.to_iso8601(value)
+
+  defp parsed_back(%Date{}, text), do: Date.from_iso8601!(text)
+  defp parsed_back(%Time{}, text), do: Time.from_iso8601!(text)
+  defp parsed_back(%NaiveDateTime{}, text), do: NaiveDateTime.from_iso8601!(text)
+
+  defp parsed_back(%DateTime{}, text) do
+    {:ok, value, _offset} = DateTime.from_iso8601(text)
+    value
+  end
+
+  # JSON has no datetime, so a datetime struct inside a `:map` value is written
+  # as ISO 8601 text — `T` separator, `Z` for UTC, not the space-separated form
+  # a datetime column gets — and comes back as a plain string, because a `:map`
+  # field has no per-value type to load it through. An embedded schema is the
+  # way to get the struct back.
+  describe "a datetime struct inside a :map field" do
+    setup do
+      :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
+
+      TestRepo.query!(
+        "CREATE TEMP TABLE qe_docs(id INTEGER PRIMARY KEY AUTOINCREMENT, meta TEXT, metas TEXT)"
+      )
+
+      :ok
+    end
+
+    test "all four kinds read back as their ISO 8601 text, bare and nested" do
+      written = %{
+        "at" => ~U[2026-09-17 01:02:03.456789Z],
+        "nd" => ~N[2026-09-17 01:02:03.456789],
+        "d" => ~D[2026-09-17],
+        "t" => ~T[01:02:03.456789]
+      }
+
+      %Doc{id: id} = TestRepo.insert!(%Doc{meta: written, metas: [%{"nested" => written}]})
+
+      %Doc{meta: meta, metas: [%{"nested" => nested}]} = TestRepo.get!(Doc, id)
+
+      for {key, value} <- written do
+        text = Map.fetch!(meta, key)
+
+        assert is_binary(text)
+        assert text == iso_text(value)
+        assert parsed_back(value, text) == value
+        assert Map.fetch!(nested, key) == text
+      end
+    end
+
+    # The stored text carries a four-digit year, inside a JSON value as much as
+    # in a datetime column, so the same boundary holds on both paths.
+    test "the year boundaries store, and a wider year is refused" do
+      for year <- [-9999, 9999] do
+        value = Date.new!(year, 9, 17)
+        %Doc{id: id} = TestRepo.insert!(%Doc{meta: %{"d" => value}})
+
+        assert TestRepo.get!(Doc, id).meta == %{"d" => Date.to_iso8601(value)}
+      end
+
+      for year <- [-10_000, 10_000] do
+        value = Date.new!(year, 9, 17)
+
+        error =
+          assert_raise XqliteEcto3.UnencodableParameterError, fn ->
+            TestRepo.insert!(%Doc{meta: %{"d" => value}})
+          end
+
+        assert error.reason == :year_out_of_range
+      end
     end
   end
 end

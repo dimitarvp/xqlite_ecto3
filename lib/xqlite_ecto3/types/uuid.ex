@@ -17,8 +17,9 @@ defmodule XqliteEcto3.Types.UUID do
         field :name, :string
       end
 
-  This governs the adapter's dumper, loader, column-type mapping in
-  migrations, and query-param CAST generation uniformly.
+  This governs the `:binary_id` dumper and loader, the `Ecto.UUID`
+  dumper, column-type mapping in migrations, and query-param CAST
+  generation uniformly.
 
   ## Escape hatch (this type)
 
@@ -36,8 +37,13 @@ defmodule XqliteEcto3.Types.UUID do
       Human-readable in the SQLite CLI, portable, easy to export. 36 bytes
       per row.
 
-    * `:binary` — raw 16-byte binary stored in a BLOB column. 55% smaller
-      per row, not human-readable, meaningful at millions-of-rows scale.
+    * `:binary` — raw 16-byte binary stored in a BLOB column. About 45%
+      smaller per row, not human-readable, meaningful at
+      millions-of-rows scale. The value is bound so that SQLite stores a
+      BLOB whatever the bytes are: a plain binary would be stored as
+      TEXT whenever its bytes are valid UTF-8, which about one UUID in
+      fourteen thousand is, and a column holding both storage classes
+      sorts and compares by class before value.
 
   **This type's** Elixir-side representation is always the 36-character
   string, in either storage mode: `cast/3` and `load/3` both answer that
@@ -137,9 +143,10 @@ defmodule XqliteEcto3.Types.UUID do
 
   def dump(value, _dumper, %{storage: :binary}) do
     # Normalize to string first (handles both raw and string input), then convert
-    # to raw 16 bytes for BLOB storage.
-    with {:ok, string_form} <- Ecto.UUID.cast(value) do
-      Ecto.UUID.dump(string_form)
+    # to the raw 16 bytes, wrapped so SQLite stores a BLOB whatever they are.
+    with {:ok, string_form} <- Ecto.UUID.cast(value),
+         {:ok, raw} <- Ecto.UUID.dump(string_form) do
+      {:ok, %Xqlite.Blob{bytes: raw}}
     end
   end
 

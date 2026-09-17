@@ -67,13 +67,20 @@ defmodule XqliteEcto3 do
       @primary_key {:id, :binary_id, autogenerate: true}
 
   `:string` (default) stores the 36-character UUID form in a TEXT column.
-  `:binary` stores the raw 16 bytes in a BLOB column — 55% smaller per
-  row, worth it at large scale. The config governs the `:binary_id`
-  dumper, the `:binary_id` loader, the migration column type and the
-  query-parameter `CAST` together. An `Ecto.UUID` field does not follow
-  it: that type stores the 36-character text under both settings, so an
-  `Ecto.UUID` column and a `:binary_id` column hold different things
-  under `:binary` and a join across the two finds nothing.
+  `:binary` stores the raw 16 bytes in a BLOB column — about 45% smaller
+  per row, worth it at large scale. The config governs the `:binary_id`
+  dumper, the `:binary_id` loader, the `Ecto.UUID` dumper, the migration
+  column type and the query-parameter `CAST` together, so an `Ecto.UUID`
+  column and a `:binary_id` column hold the same thing and a join across
+  the two works. `XqliteEcto3.Types.UUID` is the deliberate exception:
+  it takes its mode per field.
+
+  Under `:binary` every UUID kind is written so that SQLite stores a
+  BLOB whatever the bytes are. Bound as a plain binary, the one UUID in
+  fourteen thousand whose bytes are valid UTF-8 would be stored as TEXT
+  instead, and a column holding both storage classes sorts and compares
+  by class before value: a UNIQUE column takes the same UUID twice and a
+  lookup by id misses the row.
 
   `:binary_id` is the adapter's UUID type, so **sixteen raw bytes are a
   UUID** on the way in: they are written as the dashed lower-case text
@@ -85,6 +92,14 @@ defmodule XqliteEcto3 do
   sixteen bytes nor a UUID string passes through untouched in both
   directions. Sixteen-byte identifiers that are not UUIDs belong in a
   `:binary` field, where nothing rewrites them.
+
+  The same rule holds on the way out for every UUID kind: sixteen stored
+  bytes in an `Ecto.UUID` column, a `:binary_id` column under `:binary`
+  or an `XqliteEcto3.Types.UUID` column under either of its modes are
+  read as a UUID whatever they were. The byte count alone decides it —
+  the characters need not be hex — so a 16-character text that is not a
+  UUID comes back as the dashed form of its bytes, with no error
+  anywhere. Keep such identifiers in a `:string` field.
 
   **Fresh databases only.** Flipping the config after rows exist is not
   transparent in either direction. Old `:string`-form rows still load
@@ -2583,7 +2598,14 @@ defmodule XqliteEcto3 do
 
   @impl Ecto.Adapter
   def dumpers(:boolean, type), do: [type, &bool_encode/1]
-  def dumpers(:uuid, _type), do: [&uuid_string_dump/1]
+
+  def dumpers(:uuid, _type) do
+    case binary_id_storage() do
+      :string -> [&uuid_string_dump/1]
+      :binary -> [&uuid_blob_dump/1]
+    end
+  end
+
   def dumpers(:binary_id, type), do: [type, &binary_id_dump/1]
   def dumpers(_, type), do: [type]
 
@@ -2645,14 +2667,14 @@ defmodule XqliteEcto3 do
         Ecto.UUID.cast(raw)
 
       :binary ->
-        {:ok, raw}
+        {:ok, %Xqlite.Blob{bytes: raw}}
     end
   end
 
   defp binary_id_dump(value) when is_binary(value) do
     case binary_id_storage() do
       :string -> {:ok, value}
-      :binary -> compact_uuid_string(value)
+      :binary -> value |> compact_uuid_string() |> blob_of_compacted()
     end
   end
 
@@ -2665,6 +2687,12 @@ defmodule XqliteEcto3 do
     end
   end
 
+  # Only the sixteen bytes of a real UUID become a BLOB parameter; a string
+  # `compact_uuid_string/1` could not read stays the string it was, and
+  # storing that as a BLOB would change what the column holds.
+  defp blob_of_compacted({:ok, <<_::128>> = raw}), do: {:ok, %Xqlite.Blob{bytes: raw}}
+  defp blob_of_compacted({:ok, value}), do: {:ok, value}
+
   # The read side is one-sided where the write side is not: sixteen stored
   # bytes under :string storage are an opaque id, not a UUID to expand.
   defp binary_id_load(<<_::128>> = raw) do
@@ -2676,11 +2704,6 @@ defmodule XqliteEcto3 do
 
   defp binary_id_load(value), do: {:ok, value}
 
-  # An Ecto.UUID field stores the 36-character text under both storage
-  # settings, unlike :binary_id. Following the setting here needs a way to
-  # bind a binary as a BLOB whatever its bytes: the NIF picks the storage
-  # class from the value, so raw UUID bytes that happen to be valid UTF-8
-  # would land as TEXT and the column would mix storage classes.
   defp uuid_string_dump(nil), do: {:ok, nil}
 
   defp uuid_string_dump(<<_::128>> = raw) do
@@ -2689,6 +2712,20 @@ defmodule XqliteEcto3 do
 
   defp uuid_string_dump(value) when is_binary(value), do: {:ok, value}
   defp uuid_string_dump(value), do: {:ok, value}
+
+  # This one function is the whole `Ecto.UUID` chain under :binary, on
+  # purpose: Ecto's own dumper refuses raw sixteen bytes and every non-UUID
+  # string, and a dumper that answers :error halts the insert — values this
+  # chain has always stored.
+  defp uuid_blob_dump(nil), do: {:ok, nil}
+
+  defp uuid_blob_dump(<<_::128>> = raw), do: {:ok, %Xqlite.Blob{bytes: raw}}
+
+  defp uuid_blob_dump(value) when is_binary(value) do
+    value |> compact_uuid_string() |> blob_of_compacted()
+  end
+
+  defp uuid_blob_dump(value), do: {:ok, value}
 
   # SQLite stores UUIDs as TEXT strings. Ecto.UUID.load/1 expects raw
   # 16-byte binary and raises on strings. Convert string UUIDs to the raw

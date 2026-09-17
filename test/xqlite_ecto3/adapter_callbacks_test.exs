@@ -166,6 +166,47 @@ defmodule XqliteEcto3.AdapterCallbacksTest do
     end
   end
 
+  # Under `:binary` storage an `Ecto.UUID` field follows the setting the way a
+  # `:binary_id` field does, and the chain stays one adapter function: the 16
+  # bytes are wrapped so SQLite stores a BLOB whatever the bytes are.
+  describe "dumpers/2 for :uuid under :binary storage" do
+    setup do
+      prior = Application.get_env(:xqlite_ecto3, :binary_id_storage)
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+
+      on_exit(fn -> restore_binary_id_storage(prior) end)
+
+      :ok
+    end
+
+    test ":uuid dumper wraps the bytes of the string form" do
+      [encoder] = XqliteEcto3.dumpers(:uuid, Ecto.UUID)
+      uuid = Ecto.UUID.generate()
+
+      assert encoder.(uuid) == {:ok, %Xqlite.Blob{bytes: Ecto.UUID.dump!(uuid)}}
+    end
+
+    test ":uuid dumper wraps raw binary as it is" do
+      [encoder] = XqliteEcto3.dumpers(:uuid, Ecto.UUID)
+      {:ok, raw} = Ecto.UUID.dump(Ecto.UUID.generate())
+
+      assert encoder.(raw) == {:ok, %Xqlite.Blob{bytes: raw}}
+    end
+
+    test ":uuid dumper passes nil through" do
+      [encoder] = XqliteEcto3.dumpers(:uuid, Ecto.UUID)
+      assert encoder.(nil) == {:ok, nil}
+    end
+  end
+
+  defp restore_binary_id_storage(nil) do
+    Application.delete_env(:xqlite_ecto3, :binary_id_storage)
+  end
+
+  defp restore_binary_id_storage(mode) do
+    Application.put_env(:xqlite_ecto3, :binary_id_storage, mode)
+  end
+
   describe "dump_cmd/3" do
     test "reports the unsupported command as output and a non-zero exit status" do
       assert {output, 127} = XqliteEcto3.dump_cmd(["--schema-only"], [], database: "db.sqlite3")

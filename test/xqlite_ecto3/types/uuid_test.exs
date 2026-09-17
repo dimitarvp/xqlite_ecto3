@@ -130,12 +130,14 @@ defmodule XqliteEcto3.Types.UUIDTest do
   end
 
   describe "dump/3 with :binary storage" do
-    test "dumps string form as raw 16 bytes" do
-      assert UUIDType.dump(@uuid_string, nil, %{storage: :binary}) == {:ok, @uuid_raw}
+    test "dumps string form as the 16 bytes wrapped for BLOB storage" do
+      assert UUIDType.dump(@uuid_string, nil, %{storage: :binary}) ==
+               {:ok, %Xqlite.Blob{bytes: @uuid_raw}}
     end
 
-    test "dumps raw form as raw 16 bytes (unchanged round-trip)" do
-      assert UUIDType.dump(@uuid_raw, nil, %{storage: :binary}) == {:ok, @uuid_raw}
+    test "dumps raw form as the same wrapped bytes" do
+      assert UUIDType.dump(@uuid_raw, nil, %{storage: :binary}) ==
+               {:ok, %Xqlite.Blob{bytes: @uuid_raw}}
     end
 
     test "nil passes through" do
@@ -223,15 +225,18 @@ defmodule XqliteEcto3.Types.UUIDTest do
       :ok
     end
 
-    test "insert raw 16 bytes + select preserves the bytes" do
+    test "insert raw 16 bytes + select preserves the bytes as a BLOB" do
       uuid = Ecto.UUID.generate()
 
       {:ok, dumped} = UUIDType.dump(uuid, nil, %{storage: :binary})
-      assert byte_size(dumped) == 16
+      assert dumped == %Xqlite.Blob{bytes: Ecto.UUID.dump!(uuid)}
 
       TestRepo.query!("INSERT INTO uuid_binary_test VALUES (?1, ?2)", [dumped, "first"])
 
-      %{rows: [[stored, _]]} = TestRepo.query!("SELECT id, label FROM uuid_binary_test")
+      %{rows: [[type, stored, _]]} =
+        TestRepo.query!("SELECT typeof(id), id, label FROM uuid_binary_test")
+
+      assert type == "blob"
       assert byte_size(stored) == 16
       assert {:ok, ^uuid} = UUIDType.load(stored, nil, %{storage: :binary})
     end

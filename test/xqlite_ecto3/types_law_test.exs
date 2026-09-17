@@ -217,6 +217,50 @@ defmodule XqliteEcto3.TypesLawTest do
     {Map.fetch!(fetched, field), stored}
   end
 
+  # Writes one row carrying the same value in three UUID fields — `:binary_id`,
+  # `Ecto.UUID` and one of the two `Types.UUID` fields — and reads it back
+  # through the schema, so one row covers every UUID kind at once.
+  defp uuid_row(raw, third_field) do
+    changes = %{:bid_field => raw, :euuid_field => raw, third_field => raw}
+    {:ok, inserted} = LawRepo.insert(Ecto.Changeset.change(%Rec{}, changes))
+
+    {inserted.id, LawRepo.get(Rec, inserted.id)}
+  end
+
+  # SQLite's own opinion of the three UUID columns of one row: the storage
+  # class and the stored size of each.
+  defp uuid_storage_classes(id, third_field) do
+    %{rows: [row]} =
+      LawRepo.query!(
+        "SELECT typeof(bid_field), length(bid_field), typeof(euuid_field), " <>
+          "length(euuid_field), typeof(#{third_field}), length(#{third_field}) " <>
+          "FROM law_types WHERE id = ?",
+        [id]
+      )
+
+    row
+  end
+
+  # The lookup a caller makes with the UUID in hand. It binds the same dumped
+  # value the write bound, so it finds the row only if the two agree.
+  defp found_by_uuid(id, text) do
+    LawRepo.all(from(r in Rec, where: r.id == ^id and r.bid_field == ^text, select: r.id))
+  end
+
+  # A join across a `:binary_id` column and an `Ecto.UUID` column holding the
+  # same UUID. SQLite compares by storage class first, so this returns the row
+  # only while both columns hold one class.
+  defp joined_on_two_uuid_kinds(id) do
+    LawRepo.all(
+      from(a in Rec,
+        join: b in Rec,
+        on: a.bid_field == b.euuid_field,
+        where: a.id == ^id and b.id == ^id,
+        select: a.id
+      )
+    )
+  end
+
   # Same again, with SQLite's own opinion of the storage class alongside the
   # stored value: a type that promises text has to be checked against what
   # SQLite thinks it is holding, not only against the bytes.
@@ -714,6 +758,63 @@ defmodule XqliteEcto3.TypesLawTest do
 
   test "a nil Ecto.UUID stays nil" do
     assert written_back(:euuid_field, nil) == nil
+  end
+
+  # --- 8c. one storage class per UUID column ---------------------------------
+
+  # A plain binary parameter is stored as TEXT when its bytes happen to be
+  # valid UTF-8 and as a BLOB otherwise, and about one UUID in fourteen
+  # thousand is valid UTF-8 — so a column of UUIDs used to hold two storage
+  # classes, which sort apart, compare unequal and let a UNIQUE column take the
+  # same UUID twice. Under `:binary` every UUID kind now hands the driver a
+  # value bound as a BLOB whatever its bytes. Half of the generated values are
+  # valid UTF-8 on purpose: that is the case the rule exists for.
+  property "sixteen bytes store as a BLOB through every UUID kind under :binary" do
+    check all(raw <- raw_uuid_bytes(), max_runs: @runs) do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+
+      text = Ecto.UUID.cast!(raw)
+      {id, loaded} = uuid_row(raw, :uuid_bin_field)
+
+      assert loaded.bid_field == text
+      assert loaded.euuid_field == text
+      assert loaded.uuid_bin_field == text
+
+      assert uuid_storage_classes(id, :uuid_bin_field) == ["blob", 16, "blob", 16, "blob", 16]
+
+      assert found_by_uuid(id, text) == [id]
+      assert joined_on_two_uuid_kinds(id) == [id]
+    end
+  end
+
+  # The anchor for the law above: sixteen ASCII characters are valid UTF-8, so
+  # bound as a plain binary they reach the column as TEXT.
+  test "sixteen ASCII bytes store as a BLOB through every UUID kind under :binary" do
+    Application.put_env(:xqlite_ecto3, :binary_id_storage, :binary)
+
+    raw = "0123456789abcdef"
+    {id, loaded} = uuid_row(raw, :uuid_bin_field)
+
+    assert loaded.bid_field == Ecto.UUID.cast!(raw)
+    assert uuid_storage_classes(id, :uuid_bin_field) == ["blob", 16, "blob", 16, "blob", 16]
+  end
+
+  # Under `:string` nothing moved: the same values are the 36-character text in
+  # every one of the three kinds, which is the form those columns have always
+  # held.
+  property "the same sixteen bytes stay 36 characters of text under :string" do
+    check all(raw <- raw_uuid_bytes(), max_runs: @runs) do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)
+
+      text = Ecto.UUID.cast!(raw)
+      {id, loaded} = uuid_row(raw, :uuid_str_field)
+
+      assert loaded.bid_field == text
+      assert loaded.euuid_field == text
+      assert loaded.uuid_str_field == text
+
+      assert uuid_storage_classes(id, :uuid_str_field) == ["text", 36, "text", 36, "text", 36]
+    end
   end
 
   # --- 9. Duration -----------------------------------------------------------
@@ -1320,6 +1421,13 @@ defmodule XqliteEcto3.TypesLawTest do
 
   defp bool_element do
     frequency([{9, boolean()}, {1, constant(nil)}])
+  end
+
+  # Sixteen bytes, half of them valid UTF-8 by construction. Drawn at random
+  # only about one in fourteen thousand is, so the case the storage-class rule
+  # exists for would almost never appear in a generated domain.
+  defp raw_uuid_bytes do
+    one_of([binary(length: 16), string(:ascii, length: 16)])
   end
 
   # Built from sixteen generated bytes rather than from a real UUID generator,

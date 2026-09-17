@@ -36,6 +36,16 @@ defmodule XqliteEcto3.Error do
       `:invalid_parameter_name`) → `details` is `%{token: token}`: the
       atom or the parameter name, as text, which the message repeats
       inside a sentence naming what was wrong with it.
+    * A `:max_rows` that is not a batch size
+      (`type: :invalid_batch_size`) → `details` is
+      `%{provided: value, minimum: 1}`: the value as the library
+      reported it — tagged with its own type on the stream path
+      (`{:integer, 0}`, `{:string, "100"}`), bare on the statement
+      path — and the smallest batch size there is.
+    * An `%Xqlite.Blob{}` parameter whose `bytes` is not a binary
+      (`type: :invalid_blob_bytes`) → `details` is `%{position: n,
+      type: t}`: the parameter's one-based position in the list and the
+      type of what was found in `bytes`.
     * Every other reason (`:connection_closed`, `:cannot_execute`,
       `:query_many_unsupported`, …) → `details` is `nil`; the tag
       reaches `type` and the reason's own payload, if it has one, is
@@ -194,6 +204,8 @@ defmodule XqliteEcto3.Error do
           | %{key: atom(), value: term()}
           | %{name: String.t()}
           | %{lock: String.t()}
+          | %{provided: term(), minimum: pos_integer()}
+          | %{position: pos_integer(), type: atom()}
           | nil
 
   @type t :: %__MODULE__{
@@ -323,6 +335,25 @@ defmodule XqliteEcto3.Error do
       message: "statement takes #{expected} parameters, #{provided} given",
       type: :invalid_parameter_count,
       details: %{expected: expected, provided: provided}
+    }
+  end
+
+  # The refused value comes tagged with its own type from the stream path
+  # (`{:integer, 0}`) and bare from the statement path; both are kept as the
+  # library sent them, so a caller reads the value rather than the message.
+  def wrap({:invalid_batch_size, %{provided: provided, minimum: minimum}}) do
+    %__MODULE__{
+      message: "batch size #{inspect(provided)} is not an integer of at least #{minimum}",
+      type: :invalid_batch_size,
+      details: %{provided: provided, minimum: minimum}
+    }
+  end
+
+  def wrap({:invalid_blob_bytes, %{position: position, type: type}}) do
+    %__MODULE__{
+      message: "parameter #{position} wraps #{type} bytes, which is not a binary",
+      type: :invalid_blob_bytes,
+      details: %{position: position, type: type}
     }
   end
 
