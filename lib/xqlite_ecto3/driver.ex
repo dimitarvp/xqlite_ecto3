@@ -733,17 +733,17 @@ defmodule XqliteEcto3.Driver do
   end
 
   # A statement error can take the whole transaction with it: a constraint
-  # declared ON CONFLICT ROLLBACK, an OR ROLLBACK statement, or a CANCELLED
-  # write (SQLite rolls back the whole transaction when it interrupts an
-  # INSERT/UPDATE/DELETE) makes SQLite roll back and return to autocommit
-  # while the driver still believes a transaction is open. Letting the body continue would run
-  # its statements in autocommit — durably committing writes inside a
-  # transaction that will report failure. Disconnect at the point of
-  # damage instead, so DBConnection tears the transaction down and no
-  # later statement can run. One cheap status read, on the error path
-  # only, only while a transaction is supposed to be open. A failed status
-  # read means the connection itself is unusable — disconnect, the same
-  # disposition checkout/1 and ping/1 give that error.
+  # declared ON CONFLICT ROLLBACK or an OR ROLLBACK statement makes SQLite
+  # roll back and return to autocommit while the driver still believes a
+  # transaction is open. Letting the body continue would run its statements
+  # in autocommit — durably committing writes inside a transaction that
+  # will report failure. Disconnect at the point of damage instead, so
+  # DBConnection tears the transaction down and no later statement can
+  # run. One cheap status read, on the error path only, only while a
+  # transaction is supposed to be open — a cancelled write leaves the
+  # transaction open, so what SQLite did is read, never assumed. A failed
+  # status read means the connection itself is unusable — disconnect, the
+  # same disposition checkout/1 and ping/1 give that error.
   defp disconnect_if_rolled_back(wrapped, state) do
     case transaction_verdict(state) do
       :keep -> {:error, wrapped, state}
@@ -895,8 +895,9 @@ defmodule XqliteEcto3.Driver do
 
   # Statement cache: prepared statements live per connection, keyed by SQL
   # text, LRU-evicted beyond :statement_cache_size (0 disables). SQL that
-  # stmt_prepare rejects by design (multiple statements, whitespace-only)
-  # falls back to the uncached one-shot path.
+  # stmt_prepare refuses — several statements in one call, whitespace only —
+  # is refused with the same structured reason the uncached path gives it,
+  # and nothing is cached.
   defp run_statement(%{stmt_cache_size: 0} = state, sql, params, timeout) do
     {execute_with_cancel(state.conn, sql, params, timeout), state}
   end
@@ -905,9 +906,6 @@ defmodule XqliteEcto3.Driver do
     case checkout_stmt(state, sql) do
       {:ok, stmt, state} ->
         {run_cached_stmt(state.conn, stmt, params, timeout), state}
-
-      {:fallback, state} ->
-        {execute_with_cancel(state.conn, sql, params, timeout), state}
 
       {:error, reason, state} ->
         {{:error, reason}, state}
@@ -945,7 +943,6 @@ defmodule XqliteEcto3.Driver do
   defp prepare_and_cache(state, sql) do
     case NIF.stmt_prepare(state.conn, sql) do
       {:ok, stmt} -> {:ok, stmt, insert_stmt(state, sql, stmt)}
-      {:error, :multiple_statements} -> {:fallback, state}
       {:error, reason} -> {:error, reason, state}
     end
   end
@@ -1253,11 +1250,12 @@ defmodule XqliteEcto3.Driver do
     end
   end
 
+  # Whatever the caller asked for goes to the library as written: it
+  # refuses anything that is not a batch size by name, and a size nobody
+  # asked for is worse than an error — `:max_rows` is there to bound the
+  # memory one batch holds.
   defp batch_size_from_opts(opts) do
-    case Keyword.get(opts, :max_rows, @default_stream_batch_size) do
-      n when is_integer(n) and n > 0 -> n
-      _ -> @default_stream_batch_size
-    end
+    Keyword.get(opts, :max_rows, @default_stream_batch_size)
   end
 
   defp execute_with_cancel(conn, sql, params, :infinity) do
@@ -1303,7 +1301,7 @@ defmodule XqliteEcto3.Driver do
       {:disconnect, error, _state} ->
         {result, Map.merge(start_md, %{result_class: :error, error_reason: {:disconnect, error}})}
 
-      {status, _state} when status in [:idle, :transaction, :error] ->
+      {status, _state} when status in [:idle, :transaction] ->
         {result,
          Map.merge(start_md, %{result_class: :error, error_reason: {:transaction_status, status}})}
 

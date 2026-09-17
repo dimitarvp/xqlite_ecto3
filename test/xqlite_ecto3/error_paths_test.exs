@@ -71,6 +71,31 @@ defmodule XqliteEcto3.ErrorPathsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Refused parameters
+  # ---------------------------------------------------------------------------
+
+  test "a parameter count mismatch reports both counts" do
+    assert {:error, error} = Repo.query("SELECT ?1, ?2", [1])
+
+    assert error.type == :invalid_parameter_count
+    assert error.details == %{expected: 2, provided: 1}
+  end
+
+  test "an atom no storage class can hold names the atom" do
+    assert {:error, error} = Repo.query("SELECT ?1", [{:a, :b}])
+
+    assert error.type == :unsupported_atom
+    assert error.details == %{token: "b"}
+  end
+
+  test "a parameter name the statement never declared names the name" do
+    assert {:error, error} = Repo.query("SELECT :nope", [{:foo, 1}])
+
+    assert error.type == :invalid_parameter_name
+    assert error.details == %{token: ":foo"}
+  end
+
+  # ---------------------------------------------------------------------------
   # Changeset validation errors (not DB errors)
   # ---------------------------------------------------------------------------
 

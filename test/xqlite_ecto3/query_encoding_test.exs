@@ -17,17 +17,17 @@ defmodule XqliteEcto3.QueryEncodingTest do
   end
 
   describe "encode date/time types" do
-    test "NaiveDateTime encodes to ISO 8601" do
+    test "NaiveDateTime encodes to the stored space-separated form" do
       ndt = ~N[2024-06-15 14:30:45]
       assert encode([ndt]) == ["2024-06-15 14:30:45"]
     end
 
-    test "NaiveDateTime with microseconds preserves them" do
+    test "NaiveDateTime with microseconds keeps them in the stored form" do
       ndt = ~N[2024-06-15 14:30:45.123456]
       assert encode([ndt]) == ["2024-06-15 14:30:45.123456"]
     end
 
-    test "DateTime encodes to ISO 8601 with timezone" do
+    test "DateTime encodes to the stored UTC form with no designator" do
       dt = ~U[2024-06-15 14:30:45Z]
       assert encode([dt]) == ["2024-06-15 14:30:45"]
     end
@@ -138,6 +138,7 @@ defmodule XqliteEcto3.QueryEncodingTest do
         end
 
       assert Decimal.equal?(err.value, dec)
+      assert err.reason == :precision
     end
 
     # Whatever the guard accepts must bind as a number of the same value: an
@@ -303,6 +304,21 @@ defmodule XqliteEcto3.QueryEncodingTest do
       assert err.index == 1
     end
 
+    # NaN and Infinity are not wide numbers, so the refusal has to say
+    # something else about them: the remedy that fits a wide number does
+    # not accept either of these.
+    for {text, reason} <- [{"NaN", :nan}, {"Inf", :infinity}] do
+      test "a #{text} inside a map is refused as #{reason}" do
+        err =
+          assert_raise XqliteEcto3.DecimalPrecisionError, fn ->
+            encode([%{"amount" => Decimal.new(unquote(text))}])
+          end
+
+        assert err.reason == unquote(reason)
+        assert err.index == 1
+      end
+    end
+
     test "an accepted decimal reaches JSON as a number, not a quoted string" do
       assert encode([%{"amount" => Decimal.new("19.99")}]) == [~s({"amount":19.99})]
       assert encode([[Decimal.new("1E+18")]]) == ["[1000000000000000000]"]
@@ -355,7 +371,7 @@ defmodule XqliteEcto3.QueryEncodingTest do
     case XqliteEcto3.DecimalPrecision.bind_form(dec) do
       {:integer, int} -> int
       {:float, float} -> float
-      :error -> :no_bind_form
+      {:error, _reason} -> :no_bind_form
     end
   end
 

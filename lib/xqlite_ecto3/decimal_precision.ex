@@ -9,9 +9,10 @@ defmodule XqliteEcto3.DecimalPrecision do
   # does not survive its storage path would come back quietly changed.
   # `bind_form/1` answers both questions at once: whether a decimal
   # survives, and which of the two numeric forms is the exact one to bind.
-  # `representable?/1` is the yes/no view of the same answer, so the binding
-  # boundary can refuse the values that would not survive instead of writing
-  # a silently-wrong number.
+  # Both binding boundaries ask it directly, so a refused value is reported
+  # with the reason it was refused for instead of as a silently-wrong
+  # number; `representable?/1` is the yes/no view for a caller that only
+  # needs the verdict.
 
   # float64 (IEEE-754 double) finite magnitude bounds. Outside them a value
   # has no clean float64 form — these value-equal the limits `Decimal.to_float/1`
@@ -23,6 +24,13 @@ defmodule XqliteEcto3.DecimalPrecision do
   @int64_min -9_223_372_036_854_775_808
   @int64_max 9_223_372_036_854_775_807
 
+  @typedoc """
+  Why a `Decimal` has no form that survives storage: more significant
+  digits than a float64 reads back, a magnitude outside float64's finite
+  range in either direction, or a value that is not a finite number.
+  """
+  @type refusal :: :precision | :above_float64_range | :below_float64_range | :nan | :infinity
+
   @doc """
   Whether a `Decimal` survives storage under NUMERIC affinity unchanged.
 
@@ -32,11 +40,11 @@ defmodule XqliteEcto3.DecimalPrecision do
   ~15 significant digits (including large float-exact integers).
   """
   @spec representable?(Decimal.t()) :: boolean()
-  def representable?(%Decimal{} = d), do: bind_form(d) != :error
+  def representable?(%Decimal{} = d), do: not match?({:error, _reason}, bind_form(d))
 
   @doc """
-  The numeric term to bind for a `Decimal`, or `:error` when no form of it
-  survives storage.
+  The numeric term to bind for a `Decimal`, or `{:error, reason}` naming
+  why no form of it survives storage.
 
   Binding a number rather than its text matters beyond storage: SQLite
   compares by storage class whenever an operand carries no column affinity
@@ -60,12 +68,16 @@ defmodule XqliteEcto3.DecimalPrecision do
   loads back positive. Binding it as the float -0.0 instead would keep
   the sign at the price of moving that single value to a different
   storage class, which ordering and range queries would then see.
+
+  The digit count is checked before the magnitude, so a value that is both
+  too wide and out of range answers `:precision`.
   """
-  @spec bind_form(Decimal.t()) :: {:integer, integer()} | {:float, float()} | :error
+  @spec bind_form(Decimal.t()) ::
+          {:integer, integer()} | {:float, float()} | {:error, refusal()}
   def bind_form(%Decimal{} = d) do
     cond do
-      Decimal.nan?(d) -> :error
-      Decimal.inf?(d) -> :error
+      Decimal.nan?(d) -> {:error, :nan}
+      Decimal.inf?(d) -> {:error, :infinity}
       true -> finite_bind_form(d)
     end
   end
@@ -92,15 +104,14 @@ defmodule XqliteEcto3.DecimalPrecision do
   defp narrowed_bind_form(d) do
     case drop_trailing_zeros(d) do
       {:ok, narrowed} -> in_range_bind_form(narrowed)
-      :error -> :error
+      :error -> {:error, :precision}
     end
   end
 
   defp in_range_bind_form(d) do
-    if out_of_float_range?(d) do
-      :error
-    else
-      exact_float(d)
+    case float_range(d) do
+      :inside -> exact_float(d)
+      outside -> {:error, outside}
     end
   end
 
@@ -122,9 +133,14 @@ defmodule XqliteEcto3.DecimalPrecision do
   defp int64_or_error(int) when int >= @int64_min and int <= @int64_max, do: {:ok, int}
   defp int64_or_error(_out_of_range), do: :error
 
-  defp out_of_float_range?(d) do
+  defp float_range(d) do
     abs = Decimal.abs(d)
-    Decimal.gt?(abs, @dbl_max) or Decimal.lt?(abs, @dbl_min)
+
+    cond do
+      Decimal.gt?(abs, @dbl_max) -> :above_float64_range
+      Decimal.lt?(abs, @dbl_min) -> :below_float64_range
+      true -> :inside
+    end
   end
 
   # A float64 reads back with at most 19 significant digits — 17 from the
@@ -157,7 +173,7 @@ defmodule XqliteEcto3.DecimalPrecision do
     if Decimal.equal?(Decimal.normalize(d), Decimal.normalize(back)) do
       {:float, float}
     else
-      :error
+      {:error, :precision}
     end
   end
 
@@ -228,8 +244,9 @@ defmodule XqliteEcto3.DecimalPrecision do
   end
 
   # What a SELECT returns after NUMERIC affinity stores the bound float.
-  # SQLite demotes an integral REAL within int64 range to an INTEGER, which
-  # reads back with its exact digits; everything else stays REAL and reads
+  # SQLite demotes an integral REAL STRICTLY inside int64 range to an
+  # INTEGER, which reads back with its exact digits; int64's own lower
+  # limit is a float64 exactly and stays REAL. Everything else reads
   # back through the same shortest-representation printing the :decimal
   # loader uses. Comparing against the shortest printing alone is not enough:
   # it can echo the original digits even after the float rounded, while the
@@ -239,7 +256,7 @@ defmodule XqliteEcto3.DecimalPrecision do
   def stored_decimal(f) do
     t = trunc(f)
 
-    if t + 0.0 == f and t >= @int64_min and t <= @int64_max do
+    if t + 0.0 == f and t > @int64_min and t < @int64_max do
       Decimal.new(t)
     else
       Decimal.from_float(f)
@@ -256,13 +273,19 @@ defmodule XqliteEcto3.DecimalPrecisionError do
   time, which is exact only to ~15 significant digits. Rather than store a
   quietly-rounded number, the adapter refuses a `Decimal` whose value does
   not survive the float64 round-trip. `value` carries the offending
-  `Decimal` and `index` its 1-based parameter position, so callers
-  pattern-match on them instead of parsing the message.
+  `Decimal`, `index` its 1-based parameter position (`nil` for a value
+  written straight into the SQL), and `reason` which of five things is
+  wrong with it — see `t:XqliteEcto3.DecimalPrecision.refusal/0`. Callers
+  pattern-match on those instead of parsing the message.
   """
 
-  defexception [:value, :index]
+  defexception [:value, :index, :reason]
 
-  @type t :: %__MODULE__{value: Decimal.t(), index: pos_integer() | nil}
+  @type t :: %__MODULE__{
+          value: Decimal.t(),
+          index: pos_integer() | nil,
+          reason: XqliteEcto3.DecimalPrecision.refusal()
+        }
 
   # The refused values include the ones no written-out form can hold — an
   # exponent of a billion is a billion characters — so the message prints the
@@ -270,13 +293,47 @@ defmodule XqliteEcto3.DecimalPrecisionError do
   # already has. For an exponent of zero or below with an adjusted exponent
   # of -6 or more, that is the same text the written-out form gives.
   @impl true
-  def message(%__MODULE__{value: value}) do
-    "decimal #{Decimal.to_string(value, :scientific, max_digits: :infinity)} exceeds SQLite's exact numeric " <>
-      "precision — a :decimal column has NUMERIC affinity and stores as float64 (REAL), " <>
-      "exact only to ~15 significant digits, so storing this value would silently round " <>
-      "it. To keep the exact digits, declare the field XqliteEcto3.Types.ExactDecimal " <>
-      "over a :string column — it stores the number as text, every digit kept. A " <>
-      ":decimal field over a TEXT column does not help, the value still binds as a " <>
-      "number. Or reduce the value's precision."
+  def message(%__MODULE__{value: value, reason: reason}) do
+    written = Decimal.to_string(value, :scientific, max_digits: :infinity)
+
+    "decimal #{written} #{cause(reason)} #{remedy(reason)}"
+  end
+
+  defp cause(:precision) do
+    "exceeds SQLite's exact numeric precision — a :decimal column has NUMERIC affinity " <>
+      "and stores as float64 (REAL), exact only to ~15 significant digits, so storing " <>
+      "this value would silently round it."
+  end
+
+  defp cause(:above_float64_range) do
+    "is larger than SQLite can store — a :decimal column has NUMERIC affinity and stores " <>
+      "as float64 (REAL), whose largest finite magnitude is about 1.8E+308."
+  end
+
+  defp cause(:below_float64_range) do
+    "is smaller than SQLite can store — a :decimal column has NUMERIC affinity and stores " <>
+      "as float64 (REAL), whose smallest normal magnitude is about 2.2E-308."
+  end
+
+  defp cause(:nan) do
+    "is not a number, and SQLite has no storage class for one — a :decimal column holds " <>
+      "an integer or a float64 (REAL)."
+  end
+
+  defp cause(:infinity) do
+    "is an infinity, and SQLite has no storage class for one — a :decimal column holds " <>
+      "an integer or a float64 (REAL)."
+  end
+
+  # The remedy is real only for the three refusals `ExactDecimal` accepts:
+  # its own cast refuses NaN and Infinity as well.
+  defp remedy(reason) when reason in [:nan, :infinity] do
+    "Leave the value out, or keep it in a :string column you write and read yourself."
+  end
+
+  defp remedy(_reason) do
+    "To keep the exact digits, declare the field XqliteEcto3.Types.ExactDecimal over a " <>
+      ":string column — it stores the number as text, every digit kept. A :decimal field " <>
+      "over a TEXT column does not help, the value still binds as a number."
   end
 end

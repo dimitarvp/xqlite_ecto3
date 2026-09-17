@@ -38,6 +38,9 @@ defmodule XqliteEcto3.Connection do
   @impl true
   def child_spec(opts) do
     :ok = refuse_pooled_private_memory(opts)
+    # Reading it once here turns a misspelled :binary_id_storage into a
+    # refusal at boot instead of one at the first insert.
+    _mode = XqliteEcto3.binary_id_storage()
 
     opts = merge_defaults(opts)
     DBConnection.child_spec(XqliteEcto3.Driver, opts)
@@ -1798,10 +1801,12 @@ defmodule XqliteEcto3.Connection do
   # the guard accepts can still be wide: ten written as 10^7000 * 10^-6999 is
   # 7002 characters.
   defp expr(%Decimal{} = decimal, _sources, _query) do
-    if XqliteEcto3.DecimalPrecision.representable?(decimal) do
-      Decimal.to_string(decimal, :normal, max_digits: :infinity)
-    else
-      raise XqliteEcto3.DecimalPrecisionError, value: decimal, index: nil
+    case XqliteEcto3.DecimalPrecision.bind_form(decimal) do
+      {:error, reason} ->
+        raise XqliteEcto3.DecimalPrecisionError, value: decimal, index: nil, reason: reason
+
+      _exact_form ->
+        Decimal.to_string(decimal, :normal, max_digits: :infinity)
     end
   end
 
@@ -1830,7 +1835,7 @@ defmodule XqliteEcto3.Connection do
   # TEXT column's type for comparisons; when :binary, emit bare.
   defp expr(%Ecto.Query.Tagged{value: expr, type: type}, sources, query)
        when type in [:binary_id, :uuid] do
-    case Application.get_env(:xqlite_ecto3, :binary_id_storage, :string) do
+    case XqliteEcto3.binary_id_storage() do
       :string ->
         ["CAST(", expr(expr, sources, query), " AS ", column_type(:string, query), ?)]
 

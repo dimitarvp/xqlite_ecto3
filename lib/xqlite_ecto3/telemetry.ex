@@ -112,8 +112,7 @@ defmodule XqliteEcto3.Telemetry do
   `DBConnection.TransactionError` carrying the same status and drops
   the connection, so the paired `:disconnect` event is where that error
   shows up — there is no stop event with `{:disconnect, _}` for it.
-  A third status, `:error`, is admitted by the classifier and answered
-  by no callback.
+  Those two statuses are the whole set.
 
   Match all three, and end the handler in a clause that takes anything:
 
@@ -186,8 +185,8 @@ defmodule XqliteEcto3.Telemetry do
         metadata:     %{conn, sql}
 
   `:miss` fires whenever the statement is absent from the cache —
-  including statements that then fall back to the uncached path
-  (multi-statement SQL). `:evicted` names the LRU statement removed
+  including SQL that then fails to prepare, such as several statements
+  in one call. `:evicted` names the LRU statement removed
   to make room; `cached_count` is the size BEFORE the event's action.
   The cache is PER CONNECTION (`conn` is the discriminator): each
   pooled connection misses once per distinct statement, and a

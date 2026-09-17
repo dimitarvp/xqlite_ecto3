@@ -105,6 +105,48 @@ defmodule XqliteEcto3.StreamTest do
     end
   end
 
+  # `:max_rows` bounds the memory one batch holds, so a value that cannot
+  # mean a batch size is refused by name rather than replaced with the
+  # default nobody asked for. The refusal comes from the library, on the
+  # first fetch — declaring the stream only records the number.
+  describe "Repo.stream/2 with a :max_rows that is not a batch size" do
+    for value <- [0, -1, "100", 1.5, :infinity, nil, {:a, 1}] do
+      test "max_rows: #{inspect(value)} is refused, not replaced" do
+        error =
+          assert_raise XqliteEcto3.Error, fn ->
+            Repo.transaction(fn ->
+              from(s in SI, order_by: s.id, select: s.n)
+              |> Repo.stream(max_rows: unquote(Macro.escape(value)))
+              |> Enum.to_list()
+            end)
+          end
+
+        assert error.type == :invalid_batch_size
+      end
+    end
+
+    test "a positive integer is honoured" do
+      {:ok, results} =
+        Repo.transaction(fn ->
+          from(s in SI, order_by: s.id, select: s.n)
+          |> Repo.stream(max_rows: 2)
+          |> Enum.to_list()
+        end)
+
+      assert results == Enum.to_list(1..20)
+    end
+
+    test "no :max_rows at all declares the documented default" do
+      state = XqliteEcto3.DriverHelper.connect!([])
+      query = %XqliteEcto3.Query{statement: "SELECT 1"}
+
+      assert {:ok, _query, cursor, _state} =
+               XqliteEcto3.Driver.handle_declare(query, [], [], state)
+
+      assert cursor.batch_size == 500
+    end
+  end
+
   describe "a failing streamed statement" do
     test "carries its SQL on the error" do
       TestRepo.query!("CREATE TABLE st_fail (id INTEGER PRIMARY KEY, v TEXT)")

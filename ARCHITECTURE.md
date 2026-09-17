@@ -67,10 +67,12 @@ only stamps a `make_ref()`), `DBConnection.Query.encode/3` (flow 3), and
 reuses a statement and steps it in 500-row batches through
 `NIF.stmt_multi_step_cancellable/3`; `finish_cached_stmt/4` then concatenates
 the batches, reads the column names, computes the changed-row count and resets
-the statement for its next use. It falls back to the uncached one-shot
-`NIF.query_with_changes_cancellable/4` — or `NIF.query_with_changes/3` when
-`:timeout` is `:infinity` — when `statement_cache_size` is 0 or `stmt_prepare`
-reports `:multiple_statements`.
+the statement for its next use. With `statement_cache_size` at 0 it runs the
+uncached one-shot `NIF.query_with_changes_cancellable/4` — or
+`NIF.query_with_changes/3` when `:timeout` is `:infinity` — instead. SQL
+`stmt_prepare` refuses, several statements in one call above all, is refused
+with that reason on both paths: one call runs one statement, and neither of
+them runs.
 
 A column-less result gets `num_rows: changes`, `rows: nil` and a pass through
 `sync_after_transaction_control/2`. An integer `:timeout` (default 15 s)
@@ -84,8 +86,11 @@ separate process is needed.
 `DBConnection.stream/4`, which drives three driver callbacks.
 `Driver.handle_declare/4` calls `NIF.stream_open/3`, reads the column names
 once with `NIF.stream_get_columns/1`, and stores them on the cursor together
-with a batch size taken from `:max_rows` (default 500, and any non-positive
-value falls back to that default — `batch_size_from_opts/1`). A failed
+with a batch size taken from `:max_rows` (default 500 when the option is
+absent, and every other value passed to the library as written —
+`batch_size_from_opts/1`; a batch size must be a positive integer, and one
+that is not is refused as `:invalid_batch_size` on the first fetch, never
+clamped). A failed
 `stream_get_columns` closes the handle before wrapping the error.
 `handle_fetch/4` fetches one batch and returns `:cont` with the rows, or
 `:halt` with an empty batch when the stream reports `:done`. It reads `:timeout`
@@ -387,7 +392,7 @@ counter is `0` or `1`, not the test's nesting depth.
 | State | Event | Next | Moved by |
 | --- | --- | --- | --- |
 | miss | prepare succeeds | cached, key at head | `insert_stmt/3` |
-| miss | `:multiple_statements` | uncached one-shot | `prepare_and_cache/2` |
+| miss | prepare refuses (`:multiple_statements`, …) | that reason returned, nothing cached | `prepare_and_cache/2` |
 | hit | statement reused | key moved to head | `touch_stmt/2` |
 | over capacity | insert | tail key finalized | `evict_over_capacity/1` |
 | any | disconnect | all finalized | `disconnect/2` |
@@ -410,7 +415,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `datetime-text-form` | Datetimes store as `YYYY-MM-DD HH:MM:SS[.ffffff]`: space separator, no `T`, no `Z`. | `query.ex:sqlite_datetime/1` | `datetime_add_form_test.exs: "datetime_add renders the stored text form: space separator, no designator"` |
 | `real-affinity-numeric` | A spelling SQLite would give REAL affinity renders `NUMERIC`, so an integer-exact value past 2^53 is not rounded in. | `data_type.ex:column_type/2`, `sqlite_affinity/1` | `data_type_test.exs: "any unrecognized spelling SQLite would give REAL affinity"` |
 | `decimal-numeric-bind` | A `Decimal` of any width or exponent binds as an exact int64 or float64, never as text; one with no exact form raises. | `decimal_precision.ex:bind_form/1` | `decimal_precision_test.exs: "an int64 whole number stores as an exact INTEGER"` |
-| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the `:binary_id` dumper/loader chain, the migration column type and the query-parameter `CAST` together. An `Ecto.UUID` field ignores it and always stores the 36-character text. Sixteen raw bytes going in are a UUID in either mode; coming out they are expanded only under `:binary`. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"` |
+| `binary-id-storage` | `config :xqlite_ecto3, :binary_id_storage` governs the `:binary_id` dumper/loader chain, the migration column type and the query-parameter `CAST` together, and every one of them reads it through the one public `XqliteEcto3.binary_id_storage/0`, which refuses a value that is neither `:string` nor `:binary`. An `Ecto.UUID` field ignores it and always stores the 36-character text. Sixteen raw bytes going in are a UUID in either mode; coming out they are expanded only under `:binary`. | `xqlite_ecto3.ex:binary_id_storage/0` | `binary_id_storage_test.exs: ":binary_id and :uuid map to BLOB when :binary"`, `"every run-time reader goes through that reader"` |
 | `busy-timeout-int32` | `busy_timeout` must be an integer in `0..2_147_483_647`; outside that SQLite clamps to 0 and stops waiting. | `driver.ex:validate_busy_timeout/1` | `driver_connect_pragmas_test.exs: "the int32 boundaries connect and read back exactly"` |
 | `diagnostics-budget-is-a-repo-option` | The unique-index-name lookup and the FK-diagnostics replay spend at most `:diagnostics_budget_ms` (default 500; `0` turns both off), checked before every read; `busy_timeout` is not consulted for it. The failed statement's remaining deadline caps it: each spends the smaller of the two less a 20 ms reserve and skips only inside that reserve. The replay's reads also carry a cancel token fired at the allowance, so a read that outlives it is cancelled — except one waiting on another connection's lock, which ends on `busy_timeout`; the replayed write carries no token. | `driver.ex:validate_diagnostics_budget_ms/1`, `unique_index_names.ex:resolve/4`, `fk_diagnostics.ex` | `diagnostics_budget_law_test.exs` |
 | `with-xqlite-fresh-checkout` | `with_xqlite/3` always starts its own checkout, so it must never be nested inside a transaction, a checkout, or itself. | `xqlite_ecto3.ex:with_xqlite/3` | unpinned |
@@ -432,7 +437,7 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
 | `bare-typename-rule` | `bare_typename?/1` decides whether a declared type renders bare: the migration passthrough refuses, the rebuild quotes. | `data_type.ex:bare_typename?/1` | `data_type_test.exs: "SQLite keywords in type position"` |
 | `pragma-defaults-in-two-places` | `journal_mode: :wal`, `cache_size: -64_000`, `temp_store: :memory` and `busy_timeout: 5_000` live in two lists and must agree. | `connection.ex:@default_opts`, `driver.ex:connect/1` | `driver_connect_pragmas_test.exs: "cache_size and foreign_keys keep the adapter defaults when absent"` |
 | `url-params-match-connect-validators` | The URL allowlist coerces to exactly what the connect validators accept, so a refusable value is refused at parse time. | `url.ex:@param_specs` | `url_test.exs: "rejects values past int32 max — connect would refuse them"` |
-| `exclusion-list-matches-tags-doc` | Every exclusion tag and location tuple has a doc row and the reverse; every tuple names a `test` line. | `test/test_helper.exs` | `exclusion_artifacts_test.exs: "every location tuple has a doc row, and every pointer names a test line"` |
+| `exclusion-list-matches-tags-doc` | Every exclusion tag and every location tuple has a doc row and the reverse; both whole-file skips have a doc row; every tuple names a `test` line. | `test/test_helper.exs`, `ECTO_INTEGRATION_TAGS.md`, `test/ecto3_integration/all_test.exs` | `exclusion_artifacts_test.exs: "every exclusion tag has a doc row marked excluded, and vice versa"`, `"every location tuple has a doc row, and every pointer names a test line"`, `"both whole-file skips have doc rows"` |
 
 ## Build facts
 
@@ -441,8 +446,11 @@ half. Producers are relative to `lib/xqlite_ecto3/`, pins to
   deps.compile xqlite_ecto3 --force`. The sibling `config :xqlite,
   :telemetry_enabled` gates the xqlite-level events.
 - UUID storage is `config :xqlite_ecto3, :binary_id_storage`, read at run time
-  from the three call sites under `binary-id-storage` above. The `:uuid`
-  dumper is deliberately not one of them.
+  through `XqliteEcto3.binary_id_storage/0` by the six call sites under
+  `binary-id-storage` above, in `xqlite_ecto3.ex`, `data_type.ex` and
+  `connection.ex`. `Connection.child_spec/1` reads it once more so a value
+  that is neither `:string` nor `:binary` is refused at boot. The `:uuid`
+  dumper is deliberately not one of the six.
 - Warnings are errors everywhere: `elixirc_options` in `mix.exs` for `lib/`,
   and the `test: "test --warnings-as-errors"` alias for `.exs` files. The one
   exemption is `test/ecto3_integration/all_test.exs`, which

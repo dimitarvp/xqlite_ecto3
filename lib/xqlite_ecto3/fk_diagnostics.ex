@@ -63,9 +63,9 @@ defmodule XqliteEcto3.FkDiagnostics do
   the diagnosis degrades to `{:unavailable, :operation_cancelled}`.
 
   The replayed statement is deliberately left out of that: it is the
-  caller's own WRITE, and SQLite rolls the caller's whole transaction
-  back when it interrupts a write, so cancelling it would destroy the
-  work the caller is still holding and tell nobody.
+  caller's own WRITE, and it carries no token, so a cancel can never
+  reach the caller's transaction, whatever SQLite does when it
+  interrupts a write.
 
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
@@ -324,7 +324,7 @@ defmodule XqliteEcto3.FkDiagnostics do
   defp violations_total(_status, violations), do: length(violations)
 
   # The middle step is the caller's own write and takes no token: see
-  # the moduledoc on what cancelling it would cost.
+  # the moduledoc on why it is left out of the allowance.
   defp replay(conn, sql, params, {_started_at_ms, _budget_ms, tokens} = deadline) do
     result =
       with :ok <- NIF.savepoint(conn, @diag_savepoint),

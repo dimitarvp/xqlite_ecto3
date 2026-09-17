@@ -28,9 +28,18 @@ defmodule XqliteEcto3.Error do
     * A query carrying `lock:` (`type: :locks_unsupported`) → `details`
       is `%{lock: lock}`: the lock text the query asked for, which this
       adapter refuses to render.
-    * Tag-only errors (`:connection_closed`, `:cannot_execute`,
-      `:query_many_unsupported`, …) → `details` is `nil`; the tag lives
-      in `type`.
+    * A parameter list whose length the statement disagrees with
+      (`type: :invalid_parameter_count`) → `details` is
+      `%{expected: n, provided: m}`: how many parameters the statement
+      declares and how many were given.
+    * A parameter SQLite would not take (`type: :unsupported_atom`,
+      `:invalid_parameter_name`) → `details` is `%{token: token}`: the
+      atom or the parameter name, as text, which the message repeats
+      inside a sentence naming what was wrong with it.
+    * Every other reason (`:connection_closed`, `:cannot_execute`,
+      `:query_many_unsupported`, …) → `details` is `nil`; the tag
+      reaches `type` and the reason's own payload, if it has one, is
+      rendered into `message`.
 
   `to_constraints/2` and user-level handling pattern-match the
   `details` struct directly — never the message text.
@@ -223,6 +232,8 @@ defmodule XqliteEcto3.Error do
 
   @name_tags [:no_such_table, :no_such_index, :table_exists, :index_exists]
 
+  @token_tags [:unsupported_atom, :invalid_parameter_name]
+
   @doc """
   Wraps an error reason into an `XqliteEcto3.Error` exception.
   """
@@ -299,6 +310,22 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: name_message(tag, name), type: tag, details: %{name: name}}
   end
 
+  # These two carry the refused token alone — an atom's text, a parameter
+  # name — so the whole user-facing message used to be a bare `b` or
+  # `:foo`. The token stays available unparsed and the message says what
+  # was wrong with it.
+  def wrap({tag, token}) when tag in @token_tags and is_binary(token) do
+    %__MODULE__{message: token_message(tag, token), type: tag, details: %{token: token}}
+  end
+
+  def wrap({:invalid_parameter_count, %{expected: expected, provided: provided}}) do
+    %__MODULE__{
+      message: "statement takes #{expected} parameters, #{provided} given",
+      type: :invalid_parameter_count,
+      details: %{expected: expected, provided: provided}
+    }
+  end
+
   # The binary payload of a NIF reason is SQLite's own message. A refused
   # configuration value can be a binary too, and reading as a bare message
   # was how `journal_mode: "wal"` came out as the error `wal` — so the
@@ -339,4 +366,10 @@ defmodule XqliteEcto3.Error do
   defp name_message(:no_such_index, name), do: "no such index: " <> name
   defp name_message(:table_exists, name), do: "table " <> name <> " already exists"
   defp name_message(:index_exists, name), do: "index " <> name <> " already exists"
+
+  defp token_message(:unsupported_atom, token),
+    do: "no SQLite storage class holds the atom :" <> token
+
+  defp token_message(:invalid_parameter_name, token),
+    do: "the statement declares no parameter named " <> token
 end

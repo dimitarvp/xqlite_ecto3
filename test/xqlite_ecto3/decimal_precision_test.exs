@@ -12,6 +12,14 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
   # can miss it.
   @bind_budget_ms 1_000
 
+  @refusal_reasons [
+    :precision,
+    :above_float64_range,
+    :below_float64_range,
+    :nan,
+    :infinity
+  ]
+
   # Values that survive a float64 round-trip and so store losslessly through
   # a NUMERIC-affinity column: typical money, small magnitudes, and large
   # float-exact integers.
@@ -105,7 +113,8 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
 
     test "a value beyond float64's exact precision has no bind form" do
-      assert DecimalPrecision.bind_form(Decimal.new("12345678901234567890.12345")) == :error
+      assert DecimalPrecision.bind_form(Decimal.new("12345678901234567890.12345")) ==
+               {:error, :precision}
     end
 
     test "an int64 whole number stores as an exact INTEGER" do
@@ -122,16 +131,57 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
   end
 
+  # Five different things can make a value unstorable, and a caller has to
+  # be able to branch on which one without reading English.
+  describe "bind_form/1 names why a value has no exact form" do
+    for {text, reason} <- [
+          {"12345678901234567890.12345", :precision},
+          {"1E+400", :above_float64_range},
+          {"1E-320", :below_float64_range},
+          {"NaN", :nan},
+          {"Inf", :infinity},
+          {"-Inf", :infinity}
+        ] do
+      test "#{text} is refused as #{reason}" do
+        assert DecimalPrecision.bind_form(Decimal.new(unquote(text))) ==
+                 {:error, unquote(reason)}
+      end
+    end
+
+    # The digit count is checked before the magnitude, so a value with both
+    # defects reports the one that was reached first.
+    test "too many digits outranks an out-of-range magnitude" do
+      both = Decimal.new("1234567890123456789012345E+320")
+      assert DecimalPrecision.bind_form(both) == {:error, :precision}
+    end
+
+    test "the exception carries the reason and renders one message per reason" do
+      for reason <- @refusal_reasons do
+        err = %DecimalPrecisionError{value: Decimal.new("1E+400"), index: 1, reason: reason}
+
+        assert err.reason == reason
+        assert is_binary(DecimalPrecisionError.message(err))
+      end
+    end
+  end
+
   # A Decimal is three words wide however many digits it stands for, so its
   # written-out form can be gigabytes: 1E+7000 is 7001 characters, and an
   # exponent of a billion is a billion. The guard has to answer from the
   # struct, because building that text is neither possible nor needed.
   describe "bind_form/1 answers without writing the value out" do
     test "an exponent too wide to write out is refused, not rendered" do
-      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 7000)) == :error
-      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -7000)) == :error
-      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 1_000_000_000)) == :error
-      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -1_000_000_000)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 7000)) ==
+               {:error, :above_float64_range}
+
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -7000)) ==
+               {:error, :below_float64_range}
+
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, 1_000_000_000)) ==
+               {:error, :above_float64_range}
+
+      assert DecimalPrecision.bind_form(Decimal.new(1, 1, -1_000_000_000)) ==
+               {:error, :below_float64_range}
     end
 
     test "a coefficient of trailing zeros binds as the small number it stands for" do
@@ -178,9 +228,10 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
                      Decimal.normalize(DecimalPrecision.stored_decimal(float))
                    )
 
-          :error ->
+          {:error, reason} ->
             assert oracle == :error
-            err = %DecimalPrecisionError{value: dec, index: 1}
+            assert reason in @refusal_reasons
+            err = %DecimalPrecisionError{value: dec, index: 1, reason: reason}
             assert is_binary(DecimalPrecisionError.message(err))
         end
       end
@@ -246,18 +297,40 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
       :ok = XqliteNIF.close(conn)
     end
 
+    # int64's lower limit is the one boundary value a float64 lands on
+    # exactly, and SQLite keeps it REAL: its demotion takes only values
+    # strictly inside the range. The model has to say the same, or the
+    # loader predicts digits the column never held.
+    test "int64's lower limit stays REAL, in SQLite and in the storage model" do
+      f = -9_223_372_036_854_775_808.0
+
+      {:ok, conn} = Xqlite.open_in_memory()
+      {:ok, _} = XqliteNIF.query(conn, "CREATE TABLE lim (v NUMERIC)", [])
+      {:ok, _} = XqliteNIF.query(conn, "INSERT INTO lim VALUES (?1)", [f])
+
+      assert {:ok, %{rows: [["real", stored]]}} =
+               XqliteNIF.query(conn, "SELECT typeof(v), v FROM lim", [])
+
+      assert Decimal.equal?(DecimalPrecision.stored_decimal(f), Decimal.from_float(stored))
+
+      :ok = XqliteNIF.close(conn)
+    end
+
     # One digit past the widest float64 reads back: nothing exact to
     # equal it, whatever the exponent puts behind the dot.
     test "twenty significant digits have no exact form" do
-      assert DecimalPrecision.bind_form(Decimal.new(1, 18_446_744_073_709_551_615, -1)) == :error
-      assert DecimalPrecision.bind_form(Decimal.new(-1, 18_446_744_073_709_551_615, -4)) == :error
+      assert DecimalPrecision.bind_form(Decimal.new(1, 18_446_744_073_709_551_615, -1)) ==
+               {:error, :precision}
+
+      assert DecimalPrecision.bind_form(Decimal.new(-1, 18_446_744_073_709_551_615, -4)) ==
+               {:error, :precision}
     end
 
     property "trailing zeros never turn an exactly-stored value into a refusal" do
       check all(dec <- float_exact_decimal(), max_runs: 2000) do
         form = DecimalPrecision.bind_form(dec)
 
-        refute form == :error
+        refute match?({:error, _reason}, form)
         assert exact_form?(form, dec)
       end
     end
@@ -340,7 +413,7 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     )
   end
 
-  defp exact_form?(:error, _dec), do: false
+  defp exact_form?({:error, _reason}, _dec), do: false
 
   describe "DecimalPrecisionError" do
     test "carries the offending decimal on the :value field" do
@@ -350,7 +423,11 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     end
 
     test "renders a message" do
-      err = %XqliteEcto3.DecimalPrecisionError{value: Decimal.new("12345678901234567890.12345")}
+      err = %XqliteEcto3.DecimalPrecisionError{
+        value: Decimal.new("12345678901234567890.12345"),
+        reason: :precision
+      }
+
       assert is_binary(Exception.message(err))
     end
 
@@ -359,10 +436,20 @@ defmodule XqliteEcto3.DecimalPrecisionTest do
     # binary too — so the refused value's own message has to be asked for
     # directly to see whether it renders at all.
     test "renders a message for a value too wide to write out" do
-      err = %DecimalPrecisionError{value: Decimal.new(1, 1, 7000), index: 1}
+      err = %DecimalPrecisionError{
+        value: Decimal.new(1, 1, 7000),
+        index: 1,
+        reason: :above_float64_range
+      }
+
       assert is_binary(DecimalPrecisionError.message(err))
 
-      wider = %DecimalPrecisionError{value: Decimal.new(1, 1, 1_000_000_000), index: 1}
+      wider = %DecimalPrecisionError{
+        value: Decimal.new(1, 1, 1_000_000_000),
+        index: 1,
+        reason: :above_float64_range
+      }
+
       assert is_binary(DecimalPrecisionError.message(wider))
     end
   end

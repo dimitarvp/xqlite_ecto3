@@ -2600,10 +2600,32 @@ defmodule XqliteEcto3 do
   defp bool_encode(true), do: {:ok, 1}
   defp bool_encode(x), do: {:ok, x}
 
-  # Governs the :binary_id dumper's output shape, the loader, the migration
-  # column type, and the CAST wrapping of query-param Tagged values.
-  defp binary_id_storage do
-    Application.get_env(:xqlite_ecto3, :binary_id_storage, :string)
+  @doc """
+  How a `:binary_id` is stored: `:string` (36-character TEXT) or
+  `:binary` (16-byte BLOB).
+
+  Reads `config :xqlite_ecto3, :binary_id_storage` fresh on every call, so
+  the setting can be changed while the system runs; absent means `:string`.
+  It governs the `:binary_id` dumper's output shape, the loader, the
+  migration column type, and the `CAST` wrapping of query-parameter tagged
+  values together, and every one of them reads it here. Any other value
+  raises `ArgumentError`, which is where a misspelling is worth meeting:
+  left unchecked it surfaces much later as a `CaseClauseError` from
+  whichever of them ran first.
+  """
+  @spec binary_id_storage() :: :string | :binary
+  def binary_id_storage do
+    :xqlite_ecto3
+    |> Application.get_env(:binary_id_storage, :string)
+    |> checked_binary_id_storage()
+  end
+
+  defp checked_binary_id_storage(mode) when mode in [:string, :binary], do: mode
+
+  defp checked_binary_id_storage(other) do
+    raise ArgumentError,
+          "config :xqlite_ecto3, :binary_id_storage is #{inspect(other)}, " <>
+            "which is neither :string nor :binary"
   end
 
   # Input is whatever the field's own type produced: raw 16 bytes when the

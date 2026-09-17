@@ -156,6 +156,30 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
   end
 
+  describe "wrap/1 on the refused-parameter tags" do
+    test "a count mismatch carries both counts" do
+      e = Error.wrap({:invalid_parameter_count, %{expected: 2, provided: 1}})
+
+      assert e.type == :invalid_parameter_count
+      assert e.details == %{expected: 2, provided: 1}
+      assert is_binary(e.message)
+    end
+
+    test "an unsupported atom and an unknown parameter name carry their token" do
+      atom = Error.wrap({:unsupported_atom, "b"})
+
+      assert atom.type == :unsupported_atom
+      assert atom.details == %{token: "b"}
+      assert is_binary(atom.message)
+
+      name = Error.wrap({:invalid_parameter_name, ":foo"})
+
+      assert name.type == :invalid_parameter_name
+      assert name.details == %{token: ":foo"}
+      assert is_binary(name.message)
+    end
+  end
+
   describe "wrap/1 on generic {tag, msg}" do
     test "preserves tag as type with nil details" do
       e = Error.wrap({:cannot_execute, "SQL contains no statement"})
@@ -220,8 +244,8 @@ defmodule XqliteEcto3.ErrorWrapTest do
 
   describe "wrap/1 on tagged tuples with a non-binary payload" do
     test "two-element tuple with a map payload keeps its tag as type" do
-      e = Error.wrap({:invalid_parameter_count, %{provided: 1, expected: 2}})
-      assert e.type == :invalid_parameter_count
+      e = Error.wrap({:invalid_batch_size, %{provided: {:integer, 0}, minimum: 1}})
+      assert e.type == :invalid_batch_size
       assert is_binary(e.message)
       assert e.details == nil
     end

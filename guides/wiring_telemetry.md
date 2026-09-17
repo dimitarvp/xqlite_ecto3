@@ -53,7 +53,7 @@ true
 | `[:xqlite_ecto3, :fk_diagnostics, :*]` | opt-in rich FK diagnosis ran after an FK violation | `:conn`, `:mode` (`:replay` or `:in_transaction`); on `:stop` also `:violations_count` (rows carried, capped), `:violations_total` (the real number), `:diagnostics_status` (`:ok` \| `:truncated` \| `:unavailable`) |
 | `[:xqlite_ecto3, :unique_index_names, :*]` | the real index name behind a UNIQUE violation was read back | `:conn`, `:table`, `:columns`; on `:stop` also `:candidate_count` (unique indexes covering the violated columns), `:index_reads` (PRAGMA reads made), `:lookup_status` (`:ok` \| `:ambiguous` \| `:unavailable`) |
 | `[:xqlite_ecto3, :statement_cache, :hit]` | a cached prepared statement was reused | `:conn`, `:sql` |
-| `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then falls back to the uncached path) | `:conn`, `:sql` |
+| `[:xqlite_ecto3, :statement_cache, :miss]` | the statement was not in the cache (this includes SQL that then fails to prepare, such as several statements in one call) | `:conn`, `:sql` |
 | `[:xqlite_ecto3, :statement_cache, :evicted]` | the least recently used statement was finalized to make room | `:conn`, `:sql` |
 
 Both error-path spans stay silent when their diagnosis does not run:
@@ -141,8 +141,7 @@ because the connection's transaction status forbids it.
 `handle_begin` answers `:transaction` when a transaction is already
 open, and `handle_rollback` answers `:idle` when raw SQL in the
 caller's own statements already ended the one it was asked to roll
-back. A third status, `:error`, is admitted by the classifier and
-answered by no callback.
+back. Those two statuses are the whole set.
 
 Match all three, and read the field as `metadata[:error_reason]`, not
 `metadata.error_reason` — the `:exception` event carries no such key,

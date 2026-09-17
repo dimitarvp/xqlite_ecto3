@@ -96,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`XqliteEcto3.binary_id_storage/0`.** The one reader for `config
+  :xqlite_ecto3, :binary_id_storage`, now public: the `:binary_id`
+  dumper, the loader, the migration column type and the
+  query-parameter `CAST` all go through it, so they can never disagree
+  about what the setting says.
+
 - **`diagnostics_budget_ms` repo option (default 500).** One
   wall-clock allowance, in milliseconds, for each of the two
   error-path diagnoses: the unique-index-name lookup and the
@@ -230,6 +236,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is un-excluded.
 
 ### Changed
+
+- **`XqliteEcto3.DecimalPrecisionError` says which of five things is
+  wrong.** Its new `:reason` field is `:precision`,
+  `:above_float64_range`, `:below_float64_range`, `:nan` or
+  `:infinity`, with one message per reason, so a caller branches on a
+  field instead of reading English. The `XqliteEcto3.Types.ExactDecimal`
+  remedy is now printed only for the three reasons that type accepts:
+  it refuses NaN and Infinity too.
+
+- **A `:max_rows` that is not a positive integer is refused, not
+  replaced.** `Repo.stream/2` passed every value it disliked — zero,
+  a negative, a string, a float, an atom — to the default 500, so a
+  mistyped option silently produced a batch size nobody asked for.
+  Every value now reaches the library, which refuses it with
+  `%XqliteEcto3.Error{type: :invalid_batch_size}` on the first batch.
+  An absent `:max_rows` is still 500.
+
+- **`config :xqlite_ecto3, :binary_id_storage` is validated.** Anything
+  but `:string` or `:binary` used to surface as a `CaseClauseError`
+  from inside the adapter at migration time, at insert time, at read
+  time or while building SQL. It now raises `ArgumentError` naming the
+  setting, the value and the two allowed values — at repo boot as well.
+
+- **Three refused-parameter errors carry what they refused.**
+  `%XqliteEcto3.Error{}` with `type: :invalid_parameter_count` now
+  carries `details: %{expected: n, provided: m}`, and `:unsupported_atom`
+  and `:invalid_parameter_name` carry `details: %{token: token}` with a
+  message naming what was wrong with the token — the whole message used
+  to be the bare token itself.
 
 - **The xqlite dependency moves to `~> 0.12.0`.** The bundled SQLite
   is unchanged at 3.53.2. Three of that release's changes are visible
@@ -604,6 +639,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[:xqlite_ecto3, :fk_diagnostics]` telemetry span.
 
 ### Fixed
+
+- **A `:decimal` value at int64's lower limit loads as SQLite stores
+  it.** SQLite turns a whole-number REAL into an INTEGER only for
+  values strictly inside int64's range, and `-9223372036854775808` sits
+  exactly on the lower limit, so it stays a REAL. The loader predicted
+  an INTEGER for it and handed back digits the column never held.
 
 - **A transaction a `with_xqlite/3` callback left open on its way out of
   a raise no longer confuses the pool.** The callback holds the raw

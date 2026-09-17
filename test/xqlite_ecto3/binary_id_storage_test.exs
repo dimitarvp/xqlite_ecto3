@@ -86,6 +86,48 @@ defmodule XqliteEcto3.BinaryIdStorageTest do
     end
   end
 
+  # A misspelled setting used to surface as a CaseClauseError from whichever
+  # reader ran first — at migration time, at insert time, at read time or
+  # while building SQL. One reader answers for all of them now.
+  describe "a :binary_id_storage value that is neither :string nor :binary" do
+    setup do
+      Application.put_env(:xqlite_ecto3, :binary_id_storage, :blob)
+      :ok
+    end
+
+    test "the shared reader refuses it" do
+      assert_raise ArgumentError, fn -> XqliteEcto3.binary_id_storage() end
+    end
+
+    test "every run-time reader goes through that reader" do
+      require Ecto.Query
+
+      assert_raise ArgumentError, fn -> DataType.column_type(:binary_id, []) end
+      assert_raise ArgumentError, fn -> XqliteEcto3.autogenerate(:binary_id) end
+
+      [_type, dump] = XqliteEcto3.dumpers(:binary_id, Ecto.UUID)
+      assert_raise ArgumentError, fn -> dump.(@uuid_raw) end
+      assert_raise ArgumentError, fn -> dump.(@uuid_string) end
+
+      [load, _type] = XqliteEcto3.loaders(:binary_id, Ecto.UUID)
+      assert_raise ArgumentError, fn -> load.(@uuid_raw) end
+
+      tagged =
+        Ecto.Query.from(f in Flip,
+          where: f.id == type(^@uuid_string, :binary_id),
+          select: f.note
+        )
+
+      assert_raise ArgumentError, fn -> Ecto.Adapters.SQL.to_sql(:all, TestRepo, tagged) end
+    end
+
+    test "a repo refuses to boot with it" do
+      assert_raise ArgumentError, fn ->
+        XqliteEcto3.Connection.child_spec(database: "bid_never_opened.db", pool_size: 1)
+      end
+    end
+  end
+
   describe "adapter dumper chain for :binary_id" do
     test "with :string config, outputs 36-char string form" do
       Application.put_env(:xqlite_ecto3, :binary_id_storage, :string)

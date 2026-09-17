@@ -69,9 +69,14 @@ defmodule XqliteEcto3.Query do
     # exact for the value and refuses the values that have none.
     defp encode_param(%Decimal{} = d, index) do
       case XqliteEcto3.DecimalPrecision.bind_form(d) do
-        {:integer, int} -> int
-        {:float, float} -> float
-        :error -> raise XqliteEcto3.DecimalPrecisionError, value: d, index: index
+        {:integer, int} ->
+          int
+
+        {:float, float} ->
+          float
+
+        {:error, reason} ->
+          raise XqliteEcto3.DecimalPrecisionError, value: d, index: index, reason: reason
       end
     end
 

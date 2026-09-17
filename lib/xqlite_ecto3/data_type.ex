@@ -222,7 +222,7 @@ defmodule XqliteEcto3.DataType do
   # `config :xqlite_ecto3, :binary_id_storage`: `:string` → TEXT,
   # `:binary` → BLOB.
   defp binary_id_column_type do
-    case Application.get_env(:xqlite_ecto3, :binary_id_storage, :string) do
+    case XqliteEcto3.binary_id_storage() do
       :string -> "TEXT"
       :binary -> "BLOB"
     end

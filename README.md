@@ -187,6 +187,8 @@ changeset.errors
 
 Standard Ecto behaviours: `Ecto.Adapter`, `Ecto.Adapter.Queryable`, `Ecto.Adapter.Schema`, `Ecto.Adapter.Transaction`, `Ecto.Adapter.Storage`, `Ecto.Adapter.Migration`, `Ecto.Adapter.Structure`. All the `mix ecto.*` tasks work; all the `Repo.*` functions you'd expect from a PostgreSQL setup work with the same shape.
 
+One call runs exactly one statement. A trailing semicolon, trailing whitespace and a trailing comment are all accepted; a second statement is refused with `%XqliteEcto3.Error{type: :multiple_statements}` and neither statement runs, whether the call came from `Repo.query/3` or from `execute/1` in a migration. To run several statements in one go, use `XqliteNIF.execute_batch/2` through `XqliteEcto3.with_xqlite/3` (see below).
+
 ### Cancel tokens wired to `:timeout`
 
 ```elixir
@@ -364,6 +366,11 @@ MyApp.Repo.transaction(fn ->
 end)
 ```
 
+`:max_rows` is the batch size and must be a positive integer; it
+defaults to 500 when you give none, and any other value is refused with
+`%XqliteEcto3.Error{type: :invalid_batch_size}` on the first batch
+rather than replaced with a size you did not ask for.
+
 `:timeout` bounds every batch the stream fetches. The deadline is the
 one you give `Repo.stream/2`, or your repo's configured `:timeout` when
 the call gives none; a `:timeout` on the surrounding
@@ -503,7 +510,7 @@ Permanent SQLite constraints (not adapter choices):
 - No user/role/GRANT system — file permissions are the only access gate
 - Foreign-key violation errors do not carry the FK name (`SQLITE_CONSTRAINT_FOREIGNKEY` has no name field) — the opt-in `rich_fk_diagnostics: true` recovers table/columns/rowid and a convention-synthesized name (see Features)
 - `ON DELETE SET NULL` / `SET DEFAULT` always apply to every column of the foreign key — there is no PostgreSQL-15-style per-column list (`ON DELETE SET NULL (col)`). Workarounds: split the relationship into separate single-column foreign keys, or create an `AFTER DELETE` trigger on the parent (via `execute/2` in a migration) that nulls exactly the columns you need
-- `ALTER TABLE` cannot modify primary keys or foreign keys in-place (rebuild required)
+- `ALTER TABLE` cannot modify primary keys or foreign keys in-place (rebuild required), and the rebuild does not repoint references either
 - SQLite's `strftime %f` is millisecond-precision; microsecond-exact datetime arithmetic rounds
 - No materialized views. `CREATE VIEW` is always virtual. You should materialize by hand into a real table, manually e.g. `CREATE TABLE ... AS SELECT`.
 - No table partitioning. Heavy SQLite users emulate this by multiple database files (tenants, time windows) with separate repos or via `ATTACH`.
@@ -536,6 +543,11 @@ Permanent SQLite constraints (not adapter choices):
 Currently tracked gaps (see `test/test_helper.exs` for the exact exclusion list):
 
 - Untyped boolean JSON extraction — `select: o.meta["enabled"]` returns SQLite's storage-faithful `1`/`0`, not `true`/`false` (no boolean storage class, no JSON wire typing; PostgreSQL/MySQL pass via protocol-level typing). Sanctioned fix: `select: type(o.meta["enabled"], :boolean)`. WHERE comparisons and dynamic path segments (`o.meta[o.label][o.idx]`) work fully.
+- Primary-key and foreign-key changes the rebuild refuses — a `modify` carrying `references(...)` stops up front, because the rebuild reconstructs foreign keys from the stored schema and cannot merge a new or repointed one in; an `add` of a PRIMARY KEY column is SQLite's own refusal, no rebuild involved.
+- A bitstring column default — a bitstring is not a value SQLite can hold as a default, so a migration declaring one is refused before SQLite is involved. Plain and `size:` bitstring columns do build, and a bitstring parameter is refused too.
+- The `:duration` type — a `%Duration{}` parameter has no encoder here and is refused. A `DURATION` column itself builds, and `fields:`/`precision:` leave no trace in the schema.
+
+Two more exclusions are deliberate decisions rather than gaps to close: two concurrent transactions from separate processes need a pool of at least 2 and `default_transaction_mode: :deferred`, and the suite keeps a pool of 1 with `:immediate` on purpose; and a `:binary_id` is stored as 36-character TEXT by default, where the shared suite expects the sixteen raw bytes PostgreSQL stores.
 
 ## Design notes
 

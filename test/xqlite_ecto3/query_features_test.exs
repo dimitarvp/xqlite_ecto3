@@ -397,6 +397,7 @@ defmodule XqliteEcto3.QueryFeaturesTest do
 
       assert Decimal.equal?(err.value, beyond)
       assert err.index == nil
+      assert err.reason == :precision
     end
 
     test "an inlined decimal within range is written as a numeric literal" do
