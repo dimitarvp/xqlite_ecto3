@@ -221,7 +221,7 @@ require Logger
   ],
   fn
     [:xqlite_ecto3, :connect, :stop], _, %{result_class: :error, database: db}, _ ->
-      Logger.error("xqlite_ecto3 connect failed for #{db}")
+      Logger.error("xqlite_ecto3 connect failed for #{inspect(db)}")
 
     [:xqlite_ecto3, :disconnect], _, %{reason: reason}, _ ->
       Logger.warning("xqlite_ecto3 dropped a connection: #{inspect(reason)}")
@@ -236,7 +236,9 @@ require Logger
 The last clause is what keeps this handler attached. Without it, a
 successful connect (`result_class: :ok`) or an `:exception` event —
 which carries no `result_class` at all — raises inside the handler, and
-`:telemetry` responds by detaching it for good.
+`:telemetry` responds by detaching it for good. `inspect/1` matters the
+same way: a connect refused for a `database` that is no string reports
+that value as it was given, and interpolating a map would raise too.
 
 ### Catching slow statements
 

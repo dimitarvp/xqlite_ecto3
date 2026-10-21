@@ -36,7 +36,8 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   `db.operation.name` derived from the event, `db.query.text` from the
   event's `:sql` (statement-cache events) or its `:query` struct's
   statement (DBConnection callback events), `db.namespace` from
-  `:database` (connect events), and `error.type` for error results and
+  `:database` (connect events, when it is a binary), and `error.type`
+  for error results and
   exceptions.
 
   An error that also dropped the connection arrives as
@@ -66,15 +67,15 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
 
   @doc """
   Suggested span name per the conventions' priority chain:
-  `"{operation} {database}"` when both are known, the operation alone
-  otherwise, `"sqlite"` as the last resort.
+  `"{operation} {database}"` when both are known and the database is a
+  binary, the operation alone otherwise, `"sqlite"` as the last resort.
   """
   @spec span_name([atom()], map()) :: String.t()
   def span_name(event, metadata \\ %{}) do
     case {operation_name(event), metadata[:database]} do
       {nil, _database} -> "sqlite"
-      {op, nil} -> op
-      {op, database} -> "#{op} #{database}"
+      {op, database} when is_binary(database) -> "#{op} #{database}"
+      {op, _other} -> op
     end
   end
 

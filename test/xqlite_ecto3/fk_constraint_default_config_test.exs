@@ -35,7 +35,7 @@ defmodule XqliteEcto3.FkConstraintDefaultConfigTest do
     db =
       Path.join(
         System.tmp_dir!(),
-        "xqlite_ecto3_fk_plain_#{:erlang.unique_integer([:positive])}.db"
+        "xqlite_ecto3_fk_plain_#{System.pid()}_#{:erlang.unique_integer([:positive])}.db"
       )
 
     start_supervised!({PlainRepo, database: db, pool_size: 1, rich_fk_diagnostics: false})
@@ -47,7 +47,7 @@ defmodule XqliteEcto3.FkConstraintDefaultConfigTest do
         "parent_id INTEGER REFERENCES fk_plain_parent(id))"
     )
 
-    on_exit(fn -> File.rm(db) end)
+    on_exit(fn -> for suffix <- ["", "-wal", "-shm"], do: File.rm(db <> suffix) end)
     :ok
   end
 

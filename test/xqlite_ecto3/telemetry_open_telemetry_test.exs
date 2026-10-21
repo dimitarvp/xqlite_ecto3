@@ -1,5 +1,6 @@
 defmodule XqliteEcto3.Telemetry.OpenTelemetryTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias XqliteEcto3.Query
   alias XqliteEcto3.Telemetry.OpenTelemetry, as: Otel
@@ -44,6 +45,33 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetryTest do
 
     assert attrs["db.namespace"] == "/data/app.db"
     assert "connect /data/app.db" == Otel.span_name([:xqlite_ecto3, :connect, :stop], metadata)
+  end
+
+  property "the span name and db.namespace carry the database only when it is a binary" do
+    check all(
+            stage <- member_of([:start, :stop, :exception]),
+            database <- one_of([constant(nil), scale(term(), &min(&1, 8))]),
+            max_runs: 2000
+          ) do
+      event = [:xqlite_ecto3, :connect, stage]
+      metadata = %{database: database}
+      name = Otel.span_name(event, metadata)
+      attrs = Otel.attributes(event, %{}, metadata)
+
+      if is_binary(database) do
+        assert name == "connect " <> database
+        assert attrs["db.namespace"] == database
+      else
+        assert name == "connect"
+        refute Map.has_key?(attrs, "db.namespace")
+      end
+    end
+  end
+
+  test "a database given as a map leaves the span name to the operation" do
+    metadata = %{database: %{path: "/data/app.db"}}
+
+    assert "connect" == Otel.span_name([:xqlite_ecto3, :connect, :start], metadata)
   end
 
   test "error results map error.type from the structured reason" do

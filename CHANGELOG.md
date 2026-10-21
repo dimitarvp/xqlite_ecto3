@@ -279,6 +279,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default limit, then went down, its log naming only the exception's
   module.
 
+- **The OpenTelemetry span name carries the database only when it is a
+  binary.** For any other `database` value,
+  `XqliteEcto3.Telemetry.OpenTelemetry.span_name/2` answers the
+  operation alone, `"connect"`, the way `attributes/3` already leaves
+  such a value out of `db.namespace`. The connect span's metadata
+  carries the repo's `database` option as it was given, before the
+  connect rejects it, so a map or a tuple made `span_name/2` raise
+  `Protocol.UndefinedError` inside the handler that called it, and
+  `:telemetry` detaches a handler that raises: one bad config value
+  ended that handler's tracing for the rest of the node's life.
+
 - **A column of UUIDs under `:binary` storage no longer holds two
   storage classes.** A plain binary parameter is stored as TEXT when its
   bytes happen to be valid UTF-8 and as a BLOB otherwise, and about one
