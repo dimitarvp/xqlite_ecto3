@@ -14,12 +14,14 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   an atom — booleans and atoms from a neighbouring setting, filtered down to
   the values that key really refuses.
 
-  Two options name no key, `database` and `custom_pragmas`: the adapter
-  hands both to the library as given. A custom pragma that fails comes back
-  under the library's own reason: a value no statement can carry — a
-  bitstring that is no whole number of bytes, bytes that are no UTF-8, text
-  holding a NUL byte — under the reason for its kind, and a name no PRAGMA
-  can have under `:invalid_pragma_name`, the name's bytes in `details`.
+  Two options reach the library as given and name no key when it refuses
+  them: a `database` binary, and `custom_pragmas`. A `database` that is not
+  a binary never gets that far: it is refused with its key like any other
+  option. A custom pragma that fails comes back under the library's own
+  reason: a value no statement can carry — a bitstring that is no whole
+  number of bytes, bytes that are no UTF-8, text holding a NUL byte — under
+  the reason for its kind, and a name no PRAGMA can have under
+  `:invalid_pragma_name`, the name's bytes in `details`.
 
   Whatever fails once the database is open, the connect closes it before
   it answers.
@@ -51,9 +53,43 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
     property "over generated values no validator accepts" do
       check all({key, tag, value} <- rejected_option(), max_runs: @law_runs) do
         assert {:error, %XqliteEcto3.Error{type: ^tag, details: details}} =
-                 Driver.connect([{:database, ":memory:"}, {key, value}])
+                 [database: ":memory:"] |> Keyword.put(key, value) |> Driver.connect()
 
         assert details == %{key: key, value: value}
+      end
+    end
+
+    property "a hooks list whose tail is not a list names the whole list" do
+      check all(
+              entries <- StreamData.list_of(hook_entry(), min_length: 1, max_length: 3),
+              tail <- StreamData.member_of(@stray_atoms),
+              max_runs: @law_runs
+            ) do
+        hooks = entries ++ tail
+
+        assert {:error, %XqliteEcto3.Error{type: :invalid_hooks_config, details: details}} =
+                 Driver.connect(database: ":memory:", hooks: hooks)
+
+        assert details == %{key: :hooks, value: hooks}
+      end
+    end
+
+    test "a hooks list ending in an atom names the whole list even when its listener is alive" do
+      Process.register(self(), :xq_connect_law_improper)
+      hooks = [{:update, :xq_connect_law_improper} | :tail]
+
+      assert {:error, %XqliteEcto3.Error{type: :invalid_hooks_config, details: details}} =
+               Driver.connect(database: ":memory:", hooks: hooks)
+
+      assert details == %{key: :hooks, value: hooks}
+    end
+
+    test "a database that is not a binary names the database key" do
+      for value <- [nil, :memory] do
+        assert {:error, %XqliteEcto3.Error{type: :invalid_database, details: details}} =
+                 Driver.connect(database: value)
+
+        assert details == %{key: :database, value: value}
       end
     end
 
@@ -194,6 +230,7 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   # value that key accepts — everything else is a refusal this law covers.
   defp validated_options do
     [
+      {:database, :invalid_database, &is_binary/1, []},
       {:mode, :invalid_connection_mode,
        &(&1 in [:readwrite, :readonly] or &1 in [:transaction, :savepoint | @transaction_modes]),
        [:readwrite, :readonly]},
@@ -214,6 +251,7 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
       {:mmap_size, :invalid_mmap_size, &(is_nil(&1) or &1 in 0..0x7FFF0000), []},
       {:rich_fk_diagnostics, :invalid_rich_fk_diagnostics, &is_boolean/1, [true, false]},
       {:diagnostics_budget_ms, :invalid_diagnostics_budget_ms, &(is_integer(&1) and &1 >= 0), []},
+      {:hooks, :invalid_hooks_config, &is_list/1, []},
       {:custom_pragmas, :invalid_custom_pragmas, &is_list/1, []}
     ]
   end
@@ -242,6 +280,13 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
     ]
     |> StreamData.one_of()
     |> StreamData.filter(fn value -> not accepted?.(value) end, 100)
+  end
+
+  defp hook_entry do
+    StreamData.tuple(
+      {StreamData.member_of([:update, :wal, :commit, :rollback, :progress, :frobnicate]),
+       StreamData.member_of(@stray_atoms)}
+    )
   end
 
   defp rejected_custom_pragma do

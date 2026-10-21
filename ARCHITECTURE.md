@@ -397,7 +397,7 @@ counter is `0` or `1`, not the test's nesting depth.
 | miss | prepare refuses (`:multiple_statements`, …) | that reason returned, nothing cached | `prepare_and_cache/2` |
 | hit | statement reused | key moved to head | `touch_stmt/2` |
 | over capacity | insert | tail key finalized | `evict_over_capacity/1` |
-| any | disconnect | all finalized | `disconnect/2` |
+| any | disconnect | all finalized | `NIF.close/1` from `disconnect/2` |
 
 Capacity is `statement_cache_size`, default 50; `0` bypasses the cache
 entirely (`run_statement/4`). Eviction takes the last key of

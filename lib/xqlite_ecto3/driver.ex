@@ -34,7 +34,7 @@ defmodule XqliteEcto3.Driver do
   # For local files, sqlite3_open returns near-instantly.
   @impl DBConnection
   def connect(opts) do
-    database = Keyword.fetch!(opts, :database)
+    database = Keyword.get(opts, :database)
     mode = Keyword.get(opts, :mode, :readwrite)
     busy_timeout = Keyword.get(opts, :busy_timeout, 5_000)
     journal_mode = Keyword.get(opts, :journal_mode, :wal)
@@ -56,7 +56,8 @@ defmodule XqliteEcto3.Driver do
 
     span_with_stop_metadata [:xqlite_ecto3, :connect], start_md do
       result =
-        with {:ok, mode} <- validate_connection_mode(mode),
+        with {:ok, database} <- validate_database(database),
+             {:ok, mode} <- validate_connection_mode(mode),
              {:ok, txn_mode} <- validate_transaction_mode(default_transaction_mode),
              {:ok, stmt_cache_size} <- validate_statement_cache_size(statement_cache_size),
              {:ok, busy_timeout_ms} <- validate_busy_timeout(busy_timeout),
@@ -71,6 +72,7 @@ defmodule XqliteEcto3.Driver do
              {:ok, rich_fk_diagnostics} <- validate_rich_fk_diagnostics(rich_fk_diagnostics),
              {:ok, diagnostics_budget_ms} <-
                validate_diagnostics_budget_ms(diagnostics_budget_ms),
+             {:ok, hooks} <- validate_hooks(hooks),
              {:ok, conn} <- open_database(database, mode) do
           # auto_vacuum only sticks while the database file has no pages;
           # journal_mode=wal below writes the header, so this must go first
@@ -119,6 +121,9 @@ defmodule XqliteEcto3.Driver do
       classify(result, start_md)
     end
   end
+
+  defp validate_database(database) when is_binary(database), do: {:ok, database}
+  defp validate_database(other), do: {:error, {:invalid_database, {:database, other}}}
 
   defp validate_statement_cache_size(size) when is_integer(size) and size >= 0 do
     {:ok, size}
@@ -209,15 +214,21 @@ defmodule XqliteEcto3.Driver do
     {:error, {:invalid_diagnostics_budget_ms, {:diagnostics_budget_ms, other}}}
   end
 
+  defp validate_hooks(hooks) do
+    if is_list(hooks) and not List.improper?(hooks) do
+      {:ok, hooks}
+    else
+      {:error, {:invalid_hooks_config, {:hooks, hooks}}}
+    end
+  end
+
   # Repo-config hook subscribers: registered NAMES (not pids — config
   # survives restarts, pids don't), resolved at connect time, installed
   # on every pooled connection. Handles are discarded — hooks live and
   # die with the connection.
   @config_hook_kinds [:update, :wal, :commit, :rollback]
 
-  defp register_config_hooks(_conn, []), do: :ok
-
-  defp register_config_hooks(conn, hooks) when is_list(hooks) do
+  defp register_config_hooks(conn, hooks) do
     Enum.reduce_while(hooks, :ok, fn entry, :ok ->
       case register_config_hook(conn, entry) do
         :ok -> {:cont, :ok}
@@ -225,8 +236,6 @@ defmodule XqliteEcto3.Driver do
       end
     end)
   end
-
-  defp register_config_hooks(_conn, other), do: {:error, {:invalid_hooks_config, {:hooks, other}}}
 
   defp register_config_hook(conn, {kind, name})
        when kind in @config_hook_kinds and is_atom(name) do
@@ -345,8 +354,6 @@ defmodule XqliteEcto3.Driver do
 
   @impl DBConnection
   def disconnect(err, state) do
-    Enum.each(state.stmt_cache, fn {_sql, stmt} -> NIF.stmt_finalize(stmt) end)
-
     NIF.close(state.conn)
 
     emit(

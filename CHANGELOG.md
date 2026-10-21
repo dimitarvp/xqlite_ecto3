@@ -267,6 +267,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection open until a garbage collection, and with it the database
   file and its WAL.
 
+- **A `database` that is not a binary and an improper `hooks` list are
+  connect errors naming their key.** `database: nil`, a missing
+  `database` and `database: :memory` answer `type: :invalid_database`
+  with `details: %{key: :database, value: value}`, and a `hooks` list
+  such as `[{:update, MyListener} | :tail]` answers
+  `:invalid_hooks_config` with the list as given, both before the
+  database is opened. Both used to raise inside the connect, the `hooks`
+  list after the open, which left the database open until a garbage
+  collection; the pool restarted the crashed connection three times, its
+  default limit, then went down, its log naming only the exception's
+  module.
+
 - **A column of UUIDs under `:binary` storage no longer holds two
   storage classes.** A plain binary parameter is stored as TEXT when its
   bytes happen to be valid UTF-8 and as a BLOB otherwise, and about one

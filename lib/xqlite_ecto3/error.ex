@@ -233,6 +233,7 @@ defmodule XqliteEcto3.Error do
   # `{key, value}` — the repo configuration key as the user wrote it and
   # the value it was given — so the exception can name both.
   @connect_refusal_tags [
+    :invalid_database,
     :transaction_mode_as_connection_mode,
     :invalid_connection_mode,
     :invalid_statement_cache_size,
