@@ -111,6 +111,18 @@ defmodule XqliteEcto3.URLTest do
       assert {:error, %URLError{reason: {:invalid_option, "busy_timeout", :out_of_range}}} =
                URL.parse("sqlite:///x?busy_timeout=2147483648")
     end
+
+    test "rejects a pragma number past what SQLite keeps — connect would reject it" do
+      for {key, value} <- [
+            {"cache_size", "2147483648"},
+            {"cache_size", "-2147483649"},
+            {"wal_autocheckpoint", "2147483648"},
+            {"mmap_size", "2147418113"}
+          ] do
+        assert {:error, %URLError{reason: {:invalid_option, ^key, :out_of_range}}} =
+                 URL.parse("sqlite:///x?#{key}=#{value}")
+      end
+    end
   end
 
   describe "parse/1 — pool and DBConnection tuning params" do

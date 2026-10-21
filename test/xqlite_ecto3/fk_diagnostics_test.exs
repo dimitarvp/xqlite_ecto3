@@ -342,7 +342,7 @@ defmodule XqliteEcto3.FkDiagnosticsTest do
           # BEGIN IMMEDIATE (the driver's transaction mode) holds the
           # write lock: the concurrent writer cannot commit anything
           # between our failure and the replay.
-          {:error, %Error{type: :database_busy_or_locked}} =
+          {:error, %Error{type: :database_busy}} =
             exec(writer, "INSERT INTO p VALUES (999)")
 
           case Conn.query(conn, "INSERT INTO ch VALUES (1, 999)", [], []) do

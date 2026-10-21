@@ -114,12 +114,13 @@ defmodule XqliteEcto3.UniqueIndexNames do
   schemas, so the lookup stops there, one read in.
 
   None of that bounds a single read: when another process holds a
-  write lock on a rollback-journal database, one read can block for up
-  to `busy_timeout` — the same worst case any statement pays under
-  that contention, and nothing cancels it. Neither the allowance nor
-  the reserve covers such a read, so the operation can outstay its own
-  `:timeout`; through a pool that means DBConnection's checkout
-  deadline drops the connection while the caller is told nothing about
+  write lock on a rollback-journal database, a read waits for it in the
+  calling process, through `Xqlite.retry_busy/3`, up to `busy_timeout`,
+  and no token ends that wait. The allowance is checked again only once
+  the read has answered, and the reserve does not cover the read, so
+  the operation can outstay its own `:timeout`; through a pool that
+  means DBConnection's checkout deadline drops the connection while
+  the caller is told nothing about
   it. WAL databases do not block these reads. Past the cap or the
   allowance the emitted name reverts to the conventional derived one,
   so a changeset that declares a custom index name on such a table
@@ -344,7 +345,7 @@ defmodule XqliteEcto3.UniqueIndexNames do
   end
 
   defp table_schema(conn, table, message) do
-    case NIF.query(conn, "SELECT schema FROM pragma_table_list WHERE name = ?", [table]) do
+    case read(conn, "SELECT schema FROM pragma_table_list WHERE name = ?", [table]) do
       {:ok, %{rows: rows}} -> one_schema(schema_names(rows), message)
       {:error, _reason} = err -> err
     end
@@ -492,7 +493,7 @@ defmodule XqliteEcto3.UniqueIndexNames do
   defp index_table(conn, index_name) do
     sql = "SELECT tbl_name FROM sqlite_schema WHERE type = 'index' AND name = ?"
 
-    case NIF.query(conn, sql, [index_name]) do
+    case read(conn, sql, [index_name]) do
       {:ok, %{rows: [[table | _rest] | _more]}} when is_binary(table) -> {:ok, table}
       {:ok, %{rows: _rows}} -> {:error, {:unknown_index, index_name}}
       {:error, _reason} = err -> err
@@ -533,7 +534,7 @@ defmodule XqliteEcto3.UniqueIndexNames do
   defp unique_indexes(conn, schema, table) do
     sql = "PRAGMA #{quote_ident(schema)}.index_list(#{quote_ident(table)})"
 
-    case NIF.query(conn, sql, []) do
+    case read(conn, sql, []) do
       {:ok, %{rows: rows}} -> {:ok, Enum.flat_map(rows, &unique_index/1)}
       {:error, _reason} = err -> err
     end
@@ -550,10 +551,14 @@ defmodule XqliteEcto3.UniqueIndexNames do
   defp index_columns(conn, schema, index_name) do
     sql = "PRAGMA #{quote_ident(schema)}.index_info(#{quote_ident(index_name)})"
 
-    case NIF.query(conn, sql, []) do
+    case read(conn, sql, []) do
       {:ok, %{rows: rows}} -> {:ok, ordered_columns(rows)}
       {:error, _reason} = err -> err
     end
+  end
+
+  defp read(conn, sql, params) do
+    Xqlite.retry_busy(conn, fn -> NIF.query(conn, sql, params) end)
   end
 
   # index_info columns: seqno, cid, name. An indexed expression has no

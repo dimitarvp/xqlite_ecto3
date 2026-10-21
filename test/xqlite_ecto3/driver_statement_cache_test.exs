@@ -223,6 +223,26 @@ defmodule XqliteEcto3.DriverStatementCacheTest do
       assert %{columns: ["x", "s", "y"]} = r2
     end
 
+    test "a cached statement whose column comes to have a name that is no UTF-8 answers an error" do
+      state = seeded!()
+      {_rows, state} = execute!(state, "SELECT * FROM t", [])
+      stored = Base.encode16(~s|CREATE TABLE t ("x\xFF" INTEGER, s TEXT)|)
+
+      :ok =
+        NIF.execute_batch(state.conn, """
+        PRAGMA writable_schema = ON;
+        UPDATE sqlite_schema SET sql = CAST(x'#{stored}' AS TEXT) WHERE name = 't'
+        """)
+
+      :ok = NIF.execute_batch(state.conn, "PRAGMA writable_schema = RESET")
+      query = %Query{statement: "SELECT * FROM t"}
+
+      assert {:error, %XqliteEcto3.Error{type: :column_name_not_utf8, details: details}, _state} =
+               Driver.handle_execute(query, [], [], state)
+
+      assert details == %{column: 0, name: "x\xFF"}
+    end
+
     test "two statements run neither of them, whatever the cache size" do
       state = seeded!()
       {:ok, _} = NIF.execute(state.conn, "CREATE TABLE pair (n INTEGER)", [])

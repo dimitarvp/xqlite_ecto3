@@ -44,7 +44,7 @@ defmodule XqliteEcto3.Telemetry.OpenTelemetry do
   inside that tuple, so those errors stay classified by what failed.
   Adapter errors are `%XqliteEcto3.Error{}` structs, and `error.type`
   carries the struct's typed `:type` atom (`"constraint_violation"`,
-  `"database_busy_or_locked"`, …) — never the bare struct name.
+  `"database_busy"`, …) — never the bare struct name.
 
   A callback that refused because of the connection's transaction
   status arrives as `error_reason: {:transaction_status, status}` and

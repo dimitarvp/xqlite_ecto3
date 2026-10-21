@@ -43,10 +43,12 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   The foreign-key replay's reads run under a cancel token fired at the
   allowance, so a `PRAGMA foreign_key_check` that scans a large
   database stops where it is and the diagnosis reports
-  `{:unavailable, :operation_cancelled}`. The one wait the token does
-  not shorten is another connection's write lock: SQLite's busy
-  handler never runs the progress handler a cancel signals, so the
-  read waits the lock out and only then reports the cancel.
+  `{:unavailable, :operation_cancelled}`. A read that meets another
+  connection's write lock waits for it in the calling process, between
+  attempts, and the token ends that wait too, so the replay reports the
+  cancel without waiting the lock out. The index lookup's reads carry
+  no token: each waits up to `busy_timeout`, and the allowance is
+  checked only once that read has answered.
 
   The contended properties run a real second connection that takes
   `BEGIN EXCLUSIVE` on the same rollback-journal database, holds it
@@ -214,9 +216,8 @@ defmodule XqliteEcto3.DiagnosticsBudgetLawTest do
   # The allowance is generous enough here that the clock reading before
   # the first read always passes and the read really starts; what it
   # meets is another connection's write lock. The token fires while the
-  # read sits in SQLite's busy handler, where the progress handler a
-  # cancel signals never runs, so the read still waits the lock out —
-  # and then reports the cancel rather than a spent allowance.
+  # read waits for that lock between attempts, which ends the wait, so
+  # the replay reports the cancel rather than a spent allowance.
   property "a contended foreign-key replay ends inside the lock hold plus its allowance",
            context do
     check all(budget <- integer(25..45), max_runs: @contended_runs) do

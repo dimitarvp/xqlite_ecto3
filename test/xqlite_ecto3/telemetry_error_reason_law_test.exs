@@ -34,7 +34,8 @@ defmodule XqliteEcto3.TelemetryErrorReasonLawTest do
 
   @error_types [
     :constraint_violation,
-    :database_busy_or_locked,
+    :database_busy,
+    :database_locked,
     :sqlite_failure,
     :invalid_transaction_mode,
     :savepoint_without_transaction,

@@ -934,8 +934,7 @@ defmodule XqliteEcto3.TableRebuildPreservationTest do
 
     # A connection from outside the pool has to be able to take the write
     # lock: a BEGIN IMMEDIATE stranded on one pooled connection blocks it.
-    {:ok, outside} = Xqlite.open(database)
-    {:ok, _} = Xqlite.set_pragma(outside, "busy_timeout", 1_000)
+    {:ok, outside} = Xqlite.open(database, busy_timeout: 1_000)
     assert {:ok, _} = Xqlite.execute(outside, "BEGIN IMMEDIATE")
     {:ok, _} = Xqlite.execute(outside, "ROLLBACK")
     :ok = Xqlite.close(outside)

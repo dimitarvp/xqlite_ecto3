@@ -127,8 +127,7 @@ defmodule XqliteEcto3.ConnectionLifecycleTest do
   # ---------------------------------------------------------------------------
 
   test "busy_timeout is set" do
-    result = Repo.query!("PRAGMA busy_timeout")
-    [[timeout]] = result.rows
-    assert timeout == 5000
+    assert XqliteEcto3.with_xqlite(Repo, &Xqlite.get_busy_timeout/1) == {:ok, 5000}
+    assert Repo.query!("PRAGMA busy_timeout").rows == [[0]]
   end
 end

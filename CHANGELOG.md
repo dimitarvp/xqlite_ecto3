@@ -74,18 +74,198 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing column once with the two statements in the README's custom
   types section. Under `:string` nothing changed, byte for byte.
 
-- **The xqlite dependency is pinned at `~> 0.12.2`**, whose
-  `%Xqlite.Blob{}` parameter is what makes a UUID reach SQLite as a BLOB
-  whatever its bytes are.
+- **The xqlite dependency is pinned at `~> 0.16.0`.** Its
+  `%Xqlite.Blob{}` parameter, there since 0.12.2, is what makes a UUID
+  reach SQLite as a BLOB whatever its bytes are. The entries that follow,
+  through the batch-size entry, are what xqlite 0.13 to 0.16 change for a
+  user of this adapter.
+
+- **A call that meets another connection's lock waits for it in the
+  calling process, and gives up with `type: :database_busy`.** xqlite
+  0.16 answers a lock at once and leaves the waiting to its caller, so
+  the adapter waits as `busy_timeout` says: a statement, a stream
+  fetch, a transaction start, a commit, a savepoint release, a prepare,
+  a stream's open and every PRAGMA the connect writes; a statement's or
+  a fetch's `:timeout` ends its wait too. The error that comes back once
+  the wait gives up is `%XqliteEcto3.Error{type: :database_busy}` with
+  SQLite's message and xqlite's map in `details` (`code`, `retry`,
+  `retries`, `elapsed_ms`), where it was `:database_busy_or_locked` with
+  the extended code alone. `retry: :transaction` comes back at once: the
+  transaction had already read, and another connection held the write
+  lock or, in WAL mode, had committed since that read; roll it back and
+  run it again. A table lock of the connection itself, such as a
+  `DROP TABLE` while a stream still reads the table, answers
+  `type: :database_locked` and is never waited for.
+
+- **`mix ecto.load` waits for another connection's lock.**
+  `structure_load/2` runs the dump through `Xqlite.execute_batch/3`,
+  which waits as the busy timeout of the connection it opens says (5 s)
+  and goes on from the statement that met the lock, where the raw batch
+  answered busy at once.
+
+- **A raw `PRAGMA busy_timeout = N` sets the wait, observers or not.**
+  xqlite holds the connection's busy slot from the open on, so neither a
+  busy observer nor a retry policy changes whether a call waits. Through
+  `Repo.query/3`, or on the handle inside `XqliteEcto3.with_xqlite/3`,
+  the write sets the wait as `Xqlite.put_busy_timeout/2` does and keeps
+  every observer, where it used to replace xqlite's busy callback and
+  silence them. `PRAGMA busy_timeout` read through SQL answers 0 on
+  every connection; `Xqlite.get_busy_timeout/1` reads the wait. An
+  authorizer denying `PRAGMA` no longer costs the connection its wait
+  when an observer registers. `Xqlite.busy_timeout/2` is
+  `Xqlite.put_busy_timeout/2` and keeps an installed retry policy. A raw
+  `XqliteNIF` call on the handle answers busy at once: call the `Xqlite`
+  function, or wrap the raw call in `Xqlite.retry_busy/3`.
+
+- **SQL holding no statement answers `type: :no_statement`**, where it
+  was `:cannot_execute`: whitespace or a comment alone through
+  `Repo.query/3`.
+
+- **`XqliteEcto3.connection_stats/1` reports `deferred_fks?`, a
+  boolean**, where it reported `deferred_fks`, an integer. The lookaside
+  hit and miss counters report SQLite's running totals (they read 0
+  before), and every counter is read as 64 bits.
+
+- **`XqliteEcto3.txn_state/2` answers `{:error, {:no_such_schema,
+  name}}` for a schema that is not attached**, and `{:error,
+  {:invalid_schema_name, ""}}` for `""`. `nil` no longer means every
+  attached database: it raises `ArgumentError`, and `:all` means every
+  attached database.
+
+- **A parameter SQLite cannot take is named by its kind.** A bitstring
+  that is no whole number of bytes is `type: :unsupported_data_type` and
+  an integer past 64 bits is `type: :integer_out_of_range`, where both
+  were `:cannot_convert_to_sqlite_value`. A TEXT or BLOB value longer
+  than the connection's length limit is `type: :value_too_large`,
+  answered before anything is bound; a value SQLite finds too big while
+  it steps (a row, a concatenation, a column read) is `type: :too_big`
+  with SQLite's message and `details: %{extended_code: 18}`, where it was
+  `:sqlite_failure` with code 18. SQL or a database path whose bytes are
+  not UTF-8 is `type: :invalid_utf8_in_string`, where it raised
+  `ArgumentError`.
+
+- **A keyword parameter list names every parameter exactly once.**
+  Through `Repo.query/3`, a list that leaves a parameter out answers
+  `type: :missing_parameter` instead of binding NULL to it, a key given
+  twice answers `type: :duplicate_parameter_name` with
+  `details: %{token: name}`, a list for a statement of more than 2 048
+  parameters answers `type: :too_many_named_parameters`, and a key
+  written with its `@` or `$` prefix binds that parameter.
+
+- **An element of a keyword parameter list that is not an `{atom,
+  value}` pair no longer puts your value into the error message.** The
+  `type` stays `:expected_keyword_tuple`; the error carries the
+  element's position and kind instead.
+
+- **An error whose payload is a map carries that map in `details`.**
+  `:missing_parameter`, `:value_too_large`, `:integer_out_of_range`,
+  `:too_many_named_parameters` and every other xqlite reason that sends
+  a map put it in `details`, where it was readable only inside the
+  message.
+
+- **A parameter list of the wrong length answers
+  `type: :invalid_parameter_count` on every path**, a stream and
+  `XqliteEcto3.explain_analyze/3` included, before anything is bound;
+  `provided` is the list's own length.
+
+- **A `custom_pragmas` value no statement can carry fails the
+  connect** under xqlite's reason for its kind: `:unsupported_data_type`,
+  `:invalid_utf8_in_string`, `:null_byte_in_string` or
+  `:integer_out_of_range`. A NUL byte used to cut the value short
+  silently, and a partial bitstring, bytes that are no UTF-8 and an
+  integer past 64 bits answered `:cannot_convert_to_sqlite_value`. A
+  `busy_timeout` that is not an integer from 0 to 2_147_483_647 answers
+  `:invalid_pragma_value` and keeps the wait in force, where SQLite read
+  a negative number, `:infinity`, a boolean or text that is no number as
+  no wait at all, and a number past 2_147_483_647 as 0. An atom value
+  goes into the PRAGMA as quoted text, which SQLite reads as it read the
+  bare atom, so it can no longer end the PRAGMA and add a statement; one
+  holding a NUL byte answers `:null_byte_in_string`, where the value was
+  cut at the NUL.
+
+- **A query `:timeout` answers only for work it stopped.** One that fires
+  before the statement's first step stops it before it runs, where a
+  one-row write used to commit and still answer the timeout, and one
+  that fires after the last step no longer turns a finished write into a
+  timeout.
+
+- **`mix ecto.create` and `mix ecto.load` report a failed close** of the
+  connection they open, where the result of the close was discarded.
+
+- **A commit with no transaction open answers `type: :no_transaction`**,
+  where it answered `type: :sqlite_failure` with SQLite's code 1: a
+  `Repo.transaction/2` whose function ended the transaction with a raw
+  `COMMIT` or `ROLLBACK` raises `%XqliteEcto3.Error{type:
+  :no_transaction}` at its own commit, and the connection is dropped as
+  before.
+
+- **A string holding a second statement changes nothing.** Through
+  `Repo.query/3` or a migration's `execute/1`, text after the first
+  statement that holds anything but whitespace, comments and semicolons
+  answers `type: :multiple_statements` before anything runs, where text
+  that did not compile answered its own compile error. A PRAGMA in such
+  a string no longer takes effect while SQLite compiles it:
+  `"PRAGMA foreign_keys = OFF; SELECT 1"` failed and still turned
+  foreign-key enforcement off on that pooled connection.
+
+- **A result column whose stored name is not UTF-8 is an error.** It
+  answers `type: :column_name_not_utf8` with `details: %{column: index,
+  name: bytes}`, where a cached statement and a stream read the name
+  with U+FFFD in place of each bad byte, so two names could read alike,
+  and a statement with the cache off left the connection unusable. With
+  the cache off (`statement_cache_size: 0`), or on a statement's first
+  run, the error comes before anything runs. A cached statement meets the
+  check only after it has run: once another connection changes its table
+  so that a column's name is not UTF-8, a cached `INSERT ... RETURNING *`
+  writes its row, committed outside a transaction, and then answers the
+  error, and each retry writes again. A CTE column list renames such a
+  column:
+  `WITH s(a) AS (SELECT * FROM t) SELECT a FROM s`. A stream whose table
+  another connection changes between its open and its first fetch
+  answers `type: :columns_changed`, where its rows came back under the
+  old column names.
+
+- **The `hooks:` update and WAL listeners hear every database and
+  table.** A write to a table whose stored name is not UTF-8, or to a
+  database attached under such a name, sent the update listener no
+  message, and the WAL listener got `""` for such a database. Both now
+  arrive with the names as the bytes SQLite stores, which need not be
+  UTF-8.
+
+- **`Xqlite.enable_load_extension(conn, false)`, which the
+  `XqliteEcto3.with_xqlite/3` docs advise before a callback returns, is
+  `Xqlite.disable_load_extension(conn)`**, and turning loading on is
+  `Xqlite.enable_load_extension(conn)`.
 
 - **A batch size SQLite refuses reports what was refused.**
   `Repo.stream/2` with a `:max_rows` that is not a positive integer
   raises `%XqliteEcto3.Error{type: :invalid_batch_size}` with
-  `details: %{provided: value, minimum: 1}`, where the value carries its
-  own type tag (`{:integer, 0}`, `{:string, "100"}`, …). The whole
-  payload used to be legible only inside the message text.
+  `details: %{provided: value, minimum: 1}`, the value exactly as it was
+  given. The whole payload used to be legible only inside the message
+  text.
 
 ### Fixed
+
+- **Four connect options are bounded where SQLite stops keeping the
+  value.** `cache_size` outside the 32-bit range and `wal_autocheckpoint`
+  above 2_147_483_647 were stored by SQLite as 0, and `mmap_size` above
+  2_147_418_112 as that ceiling; each is now a connect error naming its
+  key (`:invalid_cache_size`, `:invalid_wal_autocheckpoint`,
+  `:invalid_mmap_size`), and the URL parser answers `:out_of_range` for
+  the same values. A progress hook `every_n` above 4_294_967_295 raised
+  inside the connect and is now `:invalid_hook_option`.
+
+- **A `custom_pragmas` name no PRAGMA can have fails the connect with a
+  message in text.** `type: :invalid_pragma_name` carries the name as
+  text in `details: %{token: name}`: an atom's text (`:"foo-bar"` comes
+  back as `"foo-bar"`), `""` for `nil`, a binary's bytes as they are. The
+  message was the name itself, empty for `nil` and raw bytes for a name
+  that is no UTF-8.
+
+- **A connect that fails once the database is open closes it.** A
+  `custom_pragmas` or `hooks` entry the connect rejects left the
+  connection open until a garbage collection, and with it the database
+  file and its WAL.
 
 - **A column of UUIDs under `:binary` storage no longer holds two
   storage classes.** A plain binary parameter is stored as TEXT when its
@@ -707,9 +887,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stops mid-scan and reports `{:unavailable, :operation_cancelled}`.
   The replayed statement itself carries no token: it is the caller's
   own write, and SQLite rolls the whole transaction back when it
-  interrupts a write. One wait the token does not shorten is another
-  connection's lock, where the call ends on `busy_timeout` — the
-  wall-clock allowance is still what stops the chain there.
+  interrupts a write. A read waiting for another connection's lock stops
+  at the allowance or at `busy_timeout`, whichever comes first; the
+  replayed write and the savepoint release after it wait on
+  `busy_timeout` alone.
 
 - **A diagnosis that ends the transaction is reported as a
   disconnect.** The error path took its "is this connection's
@@ -969,14 +1150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A lock-contended `BEGIN` keeps its connection.** With the
   default `:immediate` mode a held write lock makes transaction
-  start fail with `:database_busy_or_locked` after `busy_timeout`,
-  and the driver disconnected a healthy connection on every such
-  failure — one reconnect per contended transaction, worst under
-  the multi-writer load the README's retry advice describes. The
-  busy error now returns like a busy statement does; other begin
-  failures still disconnect. The README says that transaction start
-  waits the full `busy_timeout` and that `:timeout` does not bound
-  it.
+  start fail with `type: :database_busy` once `busy_timeout` is
+  spent, and the driver disconnected a healthy connection on every
+  such failure — one reconnect per contended transaction, worst
+  under the multi-writer load the README's retry advice describes.
+  That error and a table lock's `type: :database_locked` now return
+  like a busy statement does; other begin failures still disconnect.
+  The README says that transaction start waits the full
+  `busy_timeout` and that `:timeout` does not bound it.
 
 - **`handle_begin`'s two refusals carry a typed error.** A savepoint
   begin with no enclosing transaction and an unknown transaction
@@ -1055,12 +1236,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A fresh database's first boot no longer logs a burst of failed
   connects.** Pool members racing each other to run
   `PRAGMA journal_mode = wal` on a not-yet-WAL file collided on most
-  first boots, and SQLite refuses the losing flip without consulting
-  the busy handler — so `busy_timeout` could not help (measured up to
-  120 s). The connect now retries the journal-mode write a bounded
-  number of times, milliseconds apart; the loser succeeds on the
-  first retry in practice. A genuinely held lock still fails with the
-  structured busy error. The README section that blamed boot-time
+  first boots, and SQLite failed the losing switch at once without
+  consulting the busy handler, so `busy_timeout` could not help
+  (measured up to 120 s). The losing switch now waits for the lock as
+  `busy_timeout` says and goes through once the winner is done. A lock
+  held past `busy_timeout` still fails the connect with
+  `type: :database_busy`. The README section that blamed boot-time
   migrations and recommended raising `busy_timeout` is rewritten.
 
 - **A vertical tab before a transaction keyword no longer desyncs the
@@ -1273,7 +1454,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Since connect errors joined the `%XqliteEcto3.Error{}` wrap, every
   adapter error mapped to the one value `"XqliteEcto3.Error"`. The
   mapper now emits the struct's typed `:type` atom
-  (`"constraint_violation"`, `"database_busy_or_locked"`, …), as the
+  (`"constraint_violation"`, `"database_busy"`, …), as the
   docs always claimed.
 
 - **Statement-cache telemetry events carry `:conn`.** The cache is
@@ -1546,12 +1727,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restores the timeout the slot displaced, and the one surprise left —
   `PRAGMA busy_timeout` reads 0 through SQL while the slot is held,
   although the connection still waits — is now written down, in the
-  README's busy section as well. Two ways to lose the wait are written
-  down with it: an authorizer denying `PRAGMA` leaves nothing to
-  remember when the slot is taken (that connection then fails contended
-  writes for the rest of its life in the pool), and a raw
-  `PRAGMA busy_timeout = N` takes the slot away from xqlite, silently
-  stopping every observer on that connection.
+  README's busy section as well. At 0.12 a raw `PRAGMA busy_timeout = N`
+  silenced every observer and an authorizer denying `PRAGMA` cost the
+  connection its wait once an observer registered; neither holds at
+  0.16 (see the raw `PRAGMA busy_timeout = N` entry above).
 
 ### Fixed
 

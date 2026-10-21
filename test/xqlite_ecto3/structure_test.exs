@@ -117,6 +117,36 @@ defmodule XqliteEcto3.StructureTest do
              XqliteEcto3.structure_load("priv", database: db, dump_path: dump_path)
   end
 
+  test "structure_load waits for another connection's write lock" do
+    db = unique_path("struct_load_locked") <> ".db"
+    dump_path = unique_path("struct_load_locked") <> ".sql"
+
+    on_exit(fn ->
+      File.rm(db)
+      File.rm(dump_path)
+    end)
+
+    File.write!(dump_path, "CREATE TABLE first (id);\nCREATE TABLE second (id);\n")
+    {:ok, control} = XqliteNIF.open(db)
+    test_pid = self()
+
+    spawn(fn ->
+      {:ok, _} = XqliteNIF.query(control, "BEGIN EXCLUSIVE", [])
+      send(test_pid, :locked)
+      Process.sleep(60)
+      {:ok, _} = XqliteNIF.query(control, "COMMIT", [])
+    end)
+
+    assert_receive :locked, 5_000
+
+    assert {:ok, ^dump_path} =
+             XqliteEcto3.structure_load("priv", database: db, dump_path: dump_path)
+
+    tables = "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+    assert {:ok, %{rows: [["first"], ["second"]]}} = XqliteNIF.query(control, tables, [])
+    XqliteNIF.close(control)
+  end
+
   # ---------------------------------------------------------------------------
   # structure_dump keeps its tuple contract whatever the machine has installed
   # ---------------------------------------------------------------------------

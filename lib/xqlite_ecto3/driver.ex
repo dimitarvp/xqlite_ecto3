@@ -71,34 +71,44 @@ defmodule XqliteEcto3.Driver do
              {:ok, rich_fk_diagnostics} <- validate_rich_fk_diagnostics(rich_fk_diagnostics),
              {:ok, diagnostics_budget_ms} <-
                validate_diagnostics_budget_ms(diagnostics_budget_ms),
-             {:ok, conn} <- open_database(database, mode),
-             # auto_vacuum only sticks while the database file has no pages;
-             # journal_mode=wal below writes the header, so this must go first
-             # (existing databases additionally need VACUUM — SQLite semantics).
-             {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", writable(auto_vacuum, mode)),
-             {:ok, _} <- NIF.set_pragma(conn, "busy_timeout", busy_timeout_ms),
-             {:ok, _} <- set_journal_mode(conn, to_string(journal_mode), mode),
-             {:ok, _} <- NIF.set_pragma(conn, "foreign_keys", foreign_keys),
-             {:ok, _} <- NIF.set_pragma(conn, "cache_size", cache_size),
-             {:ok, _} <- NIF.set_pragma(conn, "synchronous", to_string(synchronous)),
-             {:ok, _} <- NIF.set_pragma(conn, "temp_store", to_string(temp_store)),
-             {:ok, _} <-
-               set_optional_pragma(conn, "wal_autocheckpoint", writable(wal_autocheckpoint, mode)),
-             {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size),
-             # user pragmas go last so explicit config wins over every default
-             {:ok, _} <- apply_custom_pragmas(conn, custom_pragmas),
-             :ok <- register_config_hooks(conn, hooks) do
-          {:ok,
-           %__MODULE__{
-             conn: conn,
-             transaction_status: :idle,
-             path: database,
-             savepoint_prefix: random_savepoint_prefix(),
-             default_transaction_mode: txn_mode,
-             rich_fk_diagnostics: rich_fk_diagnostics,
-             diagnostics_budget_ms: diagnostics_budget_ms,
-             stmt_cache_size: stmt_cache_size
-           }}
+             {:ok, conn} <- open_database(database, mode) do
+          # auto_vacuum only sticks while the database file has no pages;
+          # journal_mode=wal below writes the header, so this must go first
+          # (existing databases additionally need VACUUM — SQLite semantics).
+          with {:ok, _} <- set_optional_pragma(conn, "auto_vacuum", writable(auto_vacuum, mode)),
+               {:ok, _} <- set_pragma(conn, "busy_timeout", busy_timeout_ms),
+               {:ok, _} <-
+                 set_optional_pragma(conn, "journal_mode", writable(journal_mode, mode)),
+               {:ok, _} <- set_pragma(conn, "foreign_keys", foreign_keys),
+               {:ok, _} <- set_pragma(conn, "cache_size", cache_size),
+               {:ok, _} <- set_pragma(conn, "synchronous", to_string(synchronous)),
+               {:ok, _} <- set_pragma(conn, "temp_store", to_string(temp_store)),
+               {:ok, _} <-
+                 set_optional_pragma(
+                   conn,
+                   "wal_autocheckpoint",
+                   writable(wal_autocheckpoint, mode)
+                 ),
+               {:ok, _} <- set_optional_pragma(conn, "mmap_size", mmap_size),
+               # user pragmas go last so explicit config wins over every default
+               {:ok, _} <- apply_custom_pragmas(conn, custom_pragmas),
+               :ok <- register_config_hooks(conn, hooks) do
+            {:ok,
+             %__MODULE__{
+               conn: conn,
+               transaction_status: :idle,
+               path: database,
+               savepoint_prefix: random_savepoint_prefix(),
+               default_transaction_mode: txn_mode,
+               rich_fk_diagnostics: rich_fk_diagnostics,
+               diagnostics_budget_ms: diagnostics_budget_ms,
+               stmt_cache_size: stmt_cache_size
+             }}
+          else
+            {:error, reason} ->
+              _ = NIF.close(conn)
+              {:error, XqliteEcto3.Error.wrap(reason)}
+          end
         else
           # DBConnection's connect contract wants {:error, Exception.t()}: with a
           # bare reason, `raise err` in its retry machinery becomes ArgumentError
@@ -118,10 +128,6 @@ defmodule XqliteEcto3.Driver do
     {:error, {:invalid_statement_cache_size, {:statement_cache_size, other}}}
   end
 
-  # SQLite stores busy_timeout as a C int: negatives and values past int32 max
-  # are clamped to 0 at the PRAGMA level, silently disabling the busy handler.
-  # Reject them (and :infinity, floats, strings) instead of letting the clamp
-  # decide; 2_147_483_647 ms (~24.8 days) is the accepted "wait forever".
   # DBConnection spells the transaction mode with the same :mode key this
   # config slot uses for the connection mode; without the dedicated refusal
   # a transaction mode here fails every connect and the caller only ever
@@ -167,8 +173,7 @@ defmodule XqliteEcto3.Driver do
   defp validate_foreign_keys(flag) when is_boolean(flag), do: {:ok, flag}
   defp validate_foreign_keys(other), do: {:error, {:invalid_foreign_keys, {:foreign_keys, other}}}
 
-  # Negative cache_size is meaningful (-N = N KiB), so any integer passes.
-  defp validate_cache_size(size) when is_integer(size), do: {:ok, size}
+  defp validate_cache_size(size) when size in -2_147_483_648..2_147_483_647, do: {:ok, size}
   defp validate_cache_size(other), do: {:error, {:invalid_cache_size, {:cache_size, other}}}
 
   defp validate_auto_vacuum(nil), do: {:ok, nil}
@@ -177,7 +182,7 @@ defmodule XqliteEcto3.Driver do
 
   defp validate_wal_autocheckpoint(nil), do: {:ok, nil}
 
-  defp validate_wal_autocheckpoint(pages) when is_integer(pages) and pages >= 0 do
+  defp validate_wal_autocheckpoint(pages) when pages in 0..2_147_483_647 do
     {:ok, pages}
   end
 
@@ -185,7 +190,7 @@ defmodule XqliteEcto3.Driver do
     do: {:error, {:invalid_wal_autocheckpoint, {:wal_autocheckpoint, other}}}
 
   defp validate_mmap_size(nil), do: {:ok, nil}
-  defp validate_mmap_size(bytes) when is_integer(bytes) and bytes >= 0, do: {:ok, bytes}
+  defp validate_mmap_size(bytes) when bytes in 0..0x7FFF0000, do: {:ok, bytes}
   defp validate_mmap_size(other), do: {:error, {:invalid_mmap_size, {:mmap_size, other}}}
 
   # Not a pragma — a struct pattern match consumes it, so any value other
@@ -274,7 +279,7 @@ defmodule XqliteEcto3.Driver do
   defp validate_progress_opts(opts) do
     if Keyword.keyword?(opts) do
       Enum.reduce_while(opts, :ok, fn
-        {:every_n, n}, :ok when is_integer(n) and n >= 1 -> {:cont, :ok}
+        {:every_n, n}, :ok when n in 1..4_294_967_295 -> {:cont, :ok}
         {:tag, t}, :ok when is_atom(t) -> {:cont, :ok}
         {key, value}, :ok -> {:halt, {:error, {:invalid_hook_option, {key, value}}}}
       end)
@@ -303,39 +308,14 @@ defmodule XqliteEcto3.Driver do
   defp writable(value, :readwrite), do: value
   defp writable(_value, :readonly), do: nil
 
-  # SQLite refuses a journal-mode conversion against a concurrently held
-  # write lock in ~1 ms WITHOUT consulting the busy handler, so a fresh
-  # pool racing itself to convert a new file lost a member on most first
-  # boots and busy_timeout could not help (measured up to 120 s). The
-  # loser succeeds ~1 ms later, so the driver does the waiting SQLite
-  # refuses to — the cap is generous against a measured need of one
-  # retry; a lock held longer than the cap still fails structurally.
-  @journal_mode_attempts 10
-
-  defp set_journal_mode(conn, value, mode) do
-    set_journal_mode(conn, value, mode, @journal_mode_attempts)
-  end
-
-  defp set_journal_mode(_conn, _value, :readonly, _attempts_left), do: {:ok, :skipped}
-
-  defp set_journal_mode(conn, value, :readwrite, attempts_left) do
-    case NIF.set_pragma(conn, "journal_mode", value) do
-      {:ok, _} = ok ->
-        ok
-
-      {:error, {:database_busy_or_locked, _code, _msg}} when attempts_left > 1 ->
-        Process.sleep(2)
-        set_journal_mode(conn, value, :readwrite, attempts_left - 1)
-
-      {:error, _} = err ->
-        err
-    end
+  defp set_pragma(conn, name, value) do
+    Xqlite.retry_busy(conn, fn -> NIF.set_pragma(conn, name, value) end)
   end
 
   defp apply_custom_pragmas(_conn, []), do: {:ok, :done}
 
   defp apply_custom_pragmas(conn, [{name, value} | rest]) when is_atom(name) or is_binary(name) do
-    case NIF.set_pragma(conn, to_string(name), value) do
+    case set_pragma(conn, to_string(name), value) do
       {:ok, _} -> apply_custom_pragmas(conn, rest)
       {:error, _} = err -> err
     end
@@ -352,10 +332,10 @@ defmodule XqliteEcto3.Driver do
   defp set_optional_pragma(_conn, _name, nil), do: {:ok, :skipped}
 
   defp set_optional_pragma(conn, name, value) when is_atom(value) and not is_boolean(value) do
-    NIF.set_pragma(conn, name, to_string(value))
+    set_pragma(conn, name, to_string(value))
   end
 
-  defp set_optional_pragma(conn, name, value), do: NIF.set_pragma(conn, name, value)
+  defp set_optional_pragma(conn, name, value), do: set_pragma(conn, name, value)
 
   defp random_savepoint_prefix do
     @savepoint_prefix_byte_count
@@ -365,8 +345,6 @@ defmodule XqliteEcto3.Driver do
 
   @impl DBConnection
   def disconnect(err, state) do
-    # Finalize every cached statement before closing: sqlite3_close with
-    # outstanding statements leaks the handle until process exit.
     Enum.each(state.stmt_cache, fn {_sql, stmt} -> NIF.stmt_finalize(stmt) end)
 
     NIF.close(state.conn)
@@ -480,13 +458,13 @@ defmodule XqliteEcto3.Driver do
           {_mode, _status} ->
             case begin_mode(mode, state) do
               {:ok, resolved} ->
-                case NIF.begin(state.conn, resolved) do
+                case Xqlite.retry_busy(state.conn, fn -> NIF.begin(state.conn, resolved) end) do
                   :ok ->
                     {:ok, nil, %{state | transaction_status: :transaction}}
 
                   # SQLite starts no transaction when BEGIN loses the lock race,
                   # so the connection is intact and worth keeping.
-                  {:error, {:database_busy_or_locked, _, _} = reason} ->
+                  {:error, {tag, _} = reason} when tag in [:database_busy, :database_locked] ->
                     {:error, XqliteEcto3.Error.wrap(reason), state}
 
                   {:error, reason} ->
@@ -533,7 +511,7 @@ defmodule XqliteEcto3.Driver do
             end
 
           _mode ->
-            case NIF.commit(state.conn) do
+            case Xqlite.retry_busy(state.conn, fn -> NIF.commit(state.conn) end) do
               :ok ->
                 {:ok, nil, %{state | transaction_status: :idle, savepoint: 0}}
 
@@ -547,7 +525,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp release_savepoint(name, state) do
-    case NIF.release_savepoint(state.conn, name) do
+    case Xqlite.retry_busy(state.conn, fn -> NIF.release_savepoint(state.conn, name) end) do
       :ok -> {:ok, nil, released_savepoint_state(state)}
       {:error, reason} -> {:disconnect, wrap_commit_error(reason, state), state}
     end
@@ -586,7 +564,7 @@ defmodule XqliteEcto3.Driver do
 
   defp rollback_savepoint(name, state) do
     with :ok <- NIF.rollback_to_savepoint(state.conn, name),
-         :ok <- NIF.release_savepoint(state.conn, name) do
+         :ok <- Xqlite.retry_busy(state.conn, fn -> NIF.release_savepoint(state.conn, name) end) do
       {:ok, nil, released_savepoint_state(state)}
     else
       {:error, reason} -> {:disconnect, XqliteEcto3.Error.wrap(reason), state}
@@ -740,8 +718,8 @@ defmodule XqliteEcto3.Driver do
   # will report failure. Disconnect at the point of damage instead, so
   # DBConnection tears the transaction down and no later statement can
   # run. One cheap status read, on the error path only, only while a
-  # transaction is supposed to be open — a cancelled write leaves the
-  # transaction open, so what SQLite did is read, never assumed. A failed
+  # transaction is supposed to be open — a cancelled write may leave the
+  # transaction rolled back and a cancelled read leaves it open. A failed
   # status read means the connection itself is unusable — disconnect, the
   # same disposition checkout/1 and ping/1 give that error.
   defp disconnect_if_rolled_back(wrapped, state) do
@@ -941,7 +919,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp prepare_and_cache(state, sql) do
-    case NIF.stmt_prepare(state.conn, sql) do
+    case Xqlite.retry_busy(state.conn, fn -> NIF.stmt_prepare(state.conn, sql) end) do
       {:ok, stmt} -> {:ok, stmt, insert_stmt(state, sql, stmt)}
       {:error, reason} -> {:error, reason, state}
     end
@@ -1010,7 +988,9 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp collect_rows(conn, stmt, total_before, tokens, acc) do
-    case NIF.stmt_multi_step_cancellable(stmt, @stmt_batch_size, tokens) do
+    step = fn -> NIF.stmt_multi_step_cancellable(stmt, @stmt_batch_size, tokens) end
+
+    case Xqlite.retry_busy(stmt, step, cancel_tokens: tokens) do
       {:ok, %{rows: rows, done: false}} ->
         collect_rows(conn, stmt, total_before, tokens, [rows | acc])
 
@@ -1024,12 +1004,14 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp finish_cached_stmt(conn, stmt, total_before, row_batches) do
-    rows = Enum.concat(row_batches)
-    {:ok, columns} = NIF.stmt_column_names(stmt)
+    names = NIF.stmt_column_names(stmt)
     changes = changes_since(conn, total_before)
     pristine_stmt(stmt)
 
-    {:ok, %{columns: columns, rows: rows, num_rows: length(rows), changes: changes}}
+    with {:ok, columns} <- names do
+      rows = Enum.concat(row_batches)
+      {:ok, %{columns: columns, rows: rows, num_rows: length(rows), changes: changes}}
+    end
   end
 
   # sqlite3_changes() is sticky — it keeps the last DML's count across
@@ -1144,7 +1126,7 @@ defmodule XqliteEcto3.Driver do
       # reports unique_index_lookup: :not_run — no changeset traverses
       # a stream, so the resolved names have no consumer on this path.
       result =
-        case NIF.stream_open(state.conn, sql, params) do
+        case Xqlite.retry_busy(state.conn, fn -> NIF.stream_open(state.conn, sql, params) end) do
           {:ok, handle} ->
             case NIF.stream_get_columns(handle) do
               {:ok, columns} ->
@@ -1202,11 +1184,11 @@ defmodule XqliteEcto3.Driver do
   end
 
   # A cancel token is spent once, so a batch cannot share one with the
-  # batch before it. xqlite closes the stream on a cancel, and the handle
+  # batch before it. A cancel inside the fetch closes the stream; the handle
   # it leaves answers `:done` on a further fetch and `:ok` on close, so
   # `handle_deallocate/4` still runs unchanged.
   defp fetch_with_cancel(handle, batch_size, :infinity) do
-    NIF.stream_fetch(handle, batch_size)
+    Xqlite.retry_busy(handle, fn -> NIF.stream_fetch(handle, batch_size) end)
   end
 
   defp fetch_with_cancel(handle, batch_size, timeout) when is_integer(timeout) do
@@ -1214,7 +1196,8 @@ defmodule XqliteEcto3.Driver do
     canceller = Cancellation.spawn_canceller(token, timeout)
 
     try do
-      NIF.stream_fetch_cancellable(handle, batch_size, [token])
+      fetch = fn -> NIF.stream_fetch_cancellable(handle, batch_size, [token]) end
+      Xqlite.retry_busy(handle, fetch, cancel_tokens: [token])
     after
       send(canceller, :stop)
     end
@@ -1259,7 +1242,7 @@ defmodule XqliteEcto3.Driver do
   end
 
   defp execute_with_cancel(conn, sql, params, :infinity) do
-    NIF.query_with_changes(conn, sql, params)
+    Xqlite.retry_busy(conn, fn -> NIF.query_with_changes(conn, sql, params) end)
   end
 
   defp execute_with_cancel(conn, sql, params, timeout) when is_integer(timeout) do
@@ -1267,7 +1250,8 @@ defmodule XqliteEcto3.Driver do
     canceller = Cancellation.spawn_canceller(token, timeout)
 
     try do
-      NIF.query_with_changes_cancellable(conn, sql, params, [token])
+      execute = fn -> NIF.query_with_changes_cancellable(conn, sql, params, [token]) end
+      Xqlite.retry_busy(conn, execute, cancel_tokens: [token])
     after
       send(canceller, :stop)
     end

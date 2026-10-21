@@ -13,6 +13,16 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   strings — including the string spelling of a value that would be valid as
   an atom — booleans and atoms from a neighbouring setting, filtered down to
   the values that key really refuses.
+
+  Two options name no key, `database` and `custom_pragmas`: the adapter
+  hands both to the library as given. A custom pragma that fails comes back
+  under the library's own reason: a value no statement can carry — a
+  bitstring that is no whole number of bytes, bytes that are no UTF-8, text
+  holding a NUL byte — under the reason for its kind, and a name no PRAGMA
+  can have under `:invalid_pragma_name`, the name's bytes in `details`.
+
+  Whatever fails once the database is open, the connect closes it before
+  it answers.
   """
   use ExUnit.Case, async: true
   use ExUnitProperties
@@ -34,6 +44,8 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   # Floats as a fixed set: StreamData's float/0 costs time quadratic in the
   # size parameter, and three awkward values cover the same ground here.
   @stray_floats [1.5, -0.5, 2.5e9]
+
+  @non_name_bytes Enum.reject(0..255, &(&1 in ?a..?z or &1 in ?A..?Z or &1 in ?0..?9 or &1 == ?_))
 
   describe "every rejected configuration value carries its key and value" do
     property "over generated values no validator accepts" do
@@ -74,6 +86,62 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
                Driver.connect(database: ":memory:", custom_pragmas: %{journal_size_limit: 1})
 
       assert details == %{key: :custom_pragmas, value: %{journal_size_limit: 1}}
+    end
+  end
+
+  describe "a custom pragma value no statement can carry" do
+    property "fails the connect under the library's reason for its kind" do
+      check all({value, type} <- uncarried_pragma_value(), max_runs: @law_runs) do
+        assert {:error, %XqliteEcto3.Error{type: ^type}} =
+                 Driver.connect(database: ":memory:", custom_pragmas: [{:user_version, value}])
+      end
+    end
+
+    test "a NUL byte fails the connect instead of cutting the value short" do
+      assert {:error, %XqliteEcto3.Error{type: :null_byte_in_string}} =
+               Driver.connect(database: ":memory:", custom_pragmas: [{:journal_mode, "wal\0x"}])
+    end
+  end
+
+  describe "a custom pragma name no PRAGMA can have" do
+    property "comes back as its bytes, under a message that is text" do
+      check all(name <- invalid_pragma_name(), max_runs: @law_runs) do
+        assert {:error, %XqliteEcto3.Error{type: :invalid_pragma_name} = error} =
+                 Driver.connect(database: ":memory:", custom_pragmas: [{name, 1}])
+
+        assert error.details == %{token: to_string(name)}
+        assert String.valid?(error.message) and error.message != ""
+      end
+    end
+
+    test "a name that is no UTF-8 keeps its bytes out of the message" do
+      assert {:error, %XqliteEcto3.Error{details: details} = error} =
+               Driver.connect(database: ":memory:", custom_pragmas: [{<<0xFF>>, 1}])
+
+      assert details == %{token: <<0xFF>>}
+      assert String.valid?(error.message)
+    end
+  end
+
+  describe "a connect that fails once the database is open" do
+    @tag :tmp_dir
+    property "closes the database before it answers", %{tmp_dir: dir} do
+      path = seeded_file!(dir)
+
+      check all(opts <- failing_after_open(), max_runs: @law_runs) do
+        assert {:error, %XqliteEcto3.Error{}} = Driver.connect([database: path] ++ opts)
+        refute File.exists?(path <> "-wal")
+      end
+    end
+
+    @tag :tmp_dir
+    test "a subscriber nobody registered leaves no connection open", %{tmp_dir: dir} do
+      path = seeded_file!(dir)
+
+      assert {:error, %XqliteEcto3.Error{type: :hook_subscriber_not_registered}} =
+               Driver.connect(database: path, hooks: [update: :xq_connect_law_absentee])
+
+      refute File.exists?(path <> "-wal")
     end
   end
 
@@ -138,12 +206,12 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
       {:synchronous, :invalid_synchronous, &(&1 in @synchronous_levels), @synchronous_levels},
       {:temp_store, :invalid_temp_store, &(&1 in @temp_stores), @temp_stores},
       {:foreign_keys, :invalid_foreign_keys, &is_boolean/1, [true, false]},
-      {:cache_size, :invalid_cache_size, &is_integer/1, []},
+      {:cache_size, :invalid_cache_size, &(&1 in -2_147_483_648..@int32_max), []},
       {:auto_vacuum, :invalid_auto_vacuum, &(is_nil(&1) or &1 in @auto_vacuum_modes),
        @auto_vacuum_modes},
-      {:wal_autocheckpoint, :invalid_wal_autocheckpoint,
-       &(is_nil(&1) or (is_integer(&1) and &1 >= 0)), []},
-      {:mmap_size, :invalid_mmap_size, &(is_nil(&1) or (is_integer(&1) and &1 >= 0)), []},
+      {:wal_autocheckpoint, :invalid_wal_autocheckpoint, &(is_nil(&1) or &1 in 0..@int32_max),
+       []},
+      {:mmap_size, :invalid_mmap_size, &(is_nil(&1) or &1 in 0..0x7FFF0000), []},
       {:rich_fk_diagnostics, :invalid_rich_fk_diagnostics, &is_boolean/1, [true, false]},
       {:diagnostics_budget_ms, :invalid_diagnostics_budget_ms, &(is_integer(&1) and &1 >= 0), []},
       {:custom_pragmas, :invalid_custom_pragmas, &is_list/1, []}
@@ -165,6 +233,7 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   defp refused_value(accepted?, spellable) do
     [
       StreamData.integer(),
+      StreamData.member_of([2_147_483_648, -2_147_483_649, 0x7FFF0001, 2 ** 64]),
       StreamData.member_of(@stray_floats),
       StreamData.string(:ascii, max_length: 8),
       StreamData.member_of(@stray_atoms),
@@ -191,6 +260,64 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
     ])
   end
 
+  defp uncarried_pragma_value do
+    StreamData.one_of([
+      gen all(
+            bytes <- StreamData.binary(max_length: 8),
+            bits <- StreamData.integer(1..7),
+            tail <- StreamData.integer(0..127)
+          ) do
+        {<<bytes::binary, tail::size(bits)>>, :unsupported_data_type}
+      end,
+      gen all(
+            text <- StreamData.string(:printable, max_length: 8),
+            bytes <- StreamData.list_of(StreamData.integer(1..255), max_length: 4)
+          ) do
+        {text <> <<0xFF>> <> :erlang.list_to_binary(bytes), :invalid_utf8_in_string}
+      end,
+      gen all(
+            left <- StreamData.string(:printable, max_length: 8),
+            right <- StreamData.string(:printable, max_length: 8)
+          ) do
+        {left <> <<0>> <> right, :null_byte_in_string}
+      end
+    ])
+  end
+
+  defp invalid_pragma_name do
+    StreamData.one_of([
+      StreamData.member_of([nil, ""]),
+      gen all(
+            head <- StreamData.string(:alphanumeric, max_length: 6),
+            byte <- StreamData.member_of(@non_name_bytes),
+            tail <- StreamData.binary(max_length: 4)
+          ) do
+        head <> <<byte>> <> tail
+      end
+    ])
+  end
+
+  defp failing_after_open do
+    StreamData.one_of([
+      StreamData.map(invalid_pragma_name(), &[custom_pragmas: [{&1, 1}]]),
+      StreamData.map(uncarried_pragma_value(), fn {value, _type} ->
+        [custom_pragmas: [{:user_version, value}]]
+      end),
+      StreamData.map(rejected_progress_option(), &[hooks: [progress: {:xq_absent, [&1]}]]),
+      StreamData.constant(hooks: [update: :xq_connect_law_absentee])
+    ])
+  end
+
+  # A table in WAL mode: every open of the file starts its -wal file, and
+  # only the close of the last connection on it removes that file.
+  defp seeded_file!(dir) do
+    path = Path.join(dir, "seeded.db")
+    {:ok, state} = Driver.connect(database: path)
+    {:ok, _} = XqliteNIF.query(state.conn, "CREATE TABLE t(x)", [])
+    :ok = Driver.disconnect(:seeded, state)
+    path
+  end
+
   defp rejected_progress_option do
     StreamData.one_of([
       StreamData.map(refused_every_n(), fn value -> {:every_n, value} end),
@@ -211,6 +338,7 @@ defmodule XqliteEcto3.ConnectRefusalLawTest do
   defp refused_every_n do
     [
       StreamData.integer(-50..0),
+      StreamData.member_of([4_294_967_296, 2 ** 64]),
       StreamData.member_of(@stray_floats),
       StreamData.string(:ascii, max_length: 8),
       StreamData.member_of([nil, :many, true, false])

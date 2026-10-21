@@ -69,12 +69,13 @@ defmodule XqliteEcto3.FkDiagnostics do
 
   Cost under write contention: the replay is a WRITE, so unlike the
   read-only unique-index-name lookup it contends for WAL's single
-  write lock. A step waiting on another connection's lock is the one
-  case the token does not bound — a blocked call sits inside SQLite's
-  busy handler, where the progress handler a cancel signals never
-  runs — so it waits up to a full `busy_timeout` (a read as well as a
-  write, on a rollback-journal database), the operation can outstay
-  its own `:timeout`, and through a pool DBConnection's checkout
+  write lock. A step that meets another connection's lock waits for it
+  in the calling process, through `Xqlite.retry_busy/3`. A read (only
+  a rollback-journal database makes one wait) stops waiting when the
+  token fires at the allowance or when `busy_timeout` gives up,
+  whichever comes first. The replayed write and the cleanup's savepoint
+  release carry no token and can wait a full `busy_timeout`, outstaying
+  the operation's own `:timeout`; through a pool DBConnection's checkout
   deadline then drops the connection with nothing said to the caller.
   Cost in table size: `foreign_key_check` scans every FK-bearing table
   in the database, and the replay runs it twice (the baseline and the
@@ -330,10 +331,9 @@ defmodule XqliteEcto3.FkDiagnostics do
       with :ok <- NIF.savepoint(conn, @diag_savepoint),
            {:ok, _} <- NIF.set_pragma(conn, "defer_foreign_keys", true),
            :ok <- within_budget(deadline),
-           {:ok, %{rows: baseline}} <-
-             NIF.query_cancellable(conn, "PRAGMA foreign_key_check", [], tokens),
+           {:ok, %{rows: baseline}} <- read(conn, "PRAGMA foreign_key_check", tokens),
            :ok <- within_budget(deadline),
-           {:ok, _} <- NIF.query_with_changes(conn, sql, params) do
+           {:ok, _} <- replay_write(conn, sql, params) do
         collect_violations(conn, deadline, baseline)
       end
 
@@ -347,17 +347,25 @@ defmodule XqliteEcto3.FkDiagnostics do
   # load-bearing inside a long-lived outer transaction.
   defp cleanup(conn) do
     _ = NIF.rollback_to_savepoint(conn, @diag_savepoint)
-    _ = NIF.release_savepoint(conn, @diag_savepoint)
+    _ = Xqlite.retry_busy(conn, fn -> NIF.release_savepoint(conn, @diag_savepoint) end)
     _ = NIF.set_pragma(conn, "defer_foreign_keys", false)
     :ok
+  end
+
+  defp replay_write(conn, sql, params) do
+    Xqlite.retry_busy(conn, fn -> NIF.query_with_changes(conn, sql, params) end)
+  end
+
+  defp read(conn, sql, tokens) do
+    query = fn -> NIF.query_cancellable(conn, sql, [], tokens) end
+    Xqlite.retry_busy(conn, query, cancel_tokens: tokens)
   end
 
   @violation_cap 24
 
   defp collect_violations(conn, {_started_at_ms, _budget_ms, tokens} = deadline, baseline \\ []) do
     with :ok <- within_budget(deadline),
-         {:ok, %{rows: check_rows}} <-
-           NIF.query_cancellable(conn, "PRAGMA foreign_key_check", [], tokens),
+         {:ok, %{rows: check_rows}} <- read(conn, "PRAGMA foreign_key_check", tokens),
          fresh = fresh_rows(check_rows, baseline),
          :ok <- unmasked(fresh, check_rows),
          {kept, status} = cap_rows(fresh),
@@ -446,7 +454,7 @@ defmodule XqliteEcto3.FkDiagnostics do
     sql = "PRAGMA foreign_key_list(#{quote_ident(child_table)})"
 
     with :ok <- within_budget(deadline),
-         {:ok, %{rows: rows}} <- NIF.query_cancellable(conn, sql, [], tokens) do
+         {:ok, %{rows: rows}} <- read(conn, sql, tokens) do
       group_fk_rows(rows)
     end
   end

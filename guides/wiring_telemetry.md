@@ -158,7 +158,7 @@ end
 ```
 
 `XqliteEcto3.Telemetry.OpenTelemetry` looks inside the disconnect tuple, so
-`error.type` carries the wrapped `%XqliteEcto3.Error{}`'s typed `:type` atom (`"constraint_violation"`, `"database_busy_or_locked"`, ...) either way — never the bare struct name. The status tuple gets one name per status: `"transaction_already_started"` and `"transaction_not_started"`.
+`error.type` carries the wrapped `%XqliteEcto3.Error{}`'s typed `:type` atom (`"constraint_violation"`, `"database_busy"`, ...) either way — never the bare struct name. The status tuple gets one name per status: `"transaction_already_started"` and `"transaction_not_started"`.
 
 ## Composing layers
 

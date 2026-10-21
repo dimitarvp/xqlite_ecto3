@@ -100,7 +100,7 @@ excludes = [
   # Because that happens inside the shared migration, un-excluding this
   # tag crashes the whole vendored suite, not one test. Plain :bitstring
   # and size: columns build fine; a bitstring PARAMETER fails with a
-  # structured {:cannot_convert_to_sqlite_value, ...}.
+  # structured {:unsupported_data_type, :bitstring}.
   :bitstring_type,
 
   # Ecto's :duration type dumps to a %Duration{} struct that our param
@@ -231,11 +231,6 @@ _ = XqliteEcto3.storage_down(TestRepo.config())
 _ = XqliteEcto3.storage_down(PoolRepo.config())
 :ok = XqliteEcto3.storage_up(PoolRepo.config())
 
-# Pre-set WAL mode so pool connections never write the WAL header. Two pool
-# members racing each other's "PRAGMA journal_mode = wal" on a fresh file is
-# enough to collide (no other writer needed), and SQLite refuses the losing
-# flip without consulting the busy handler. The driver retries that flip now,
-# so this is belt-and-braces over the retry, not load-bearing.
 for db <- [test_db, pool_db] do
   {:ok, conn} = XqliteNIF.open(db)
   {:ok, _} = XqliteNIF.set_pragma(conn, "journal_mode", "wal")

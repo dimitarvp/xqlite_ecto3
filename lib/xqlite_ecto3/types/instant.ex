@@ -63,8 +63,8 @@ defmodule XqliteEcto3.Types.Instant do
   int64 ns from Unix epoch covers **1677-09-21 to 2262-04-11**. The
   type itself passes any integer through; the driver refuses one that
   does not fit an int64 column
-  (`{:cannot_convert_to_sqlite_value, _}`). Every production Elixir
-  timestamp sits well inside.
+  (`%XqliteEcto3.Error{type: :integer_out_of_range}`). Every production
+  Elixir timestamp sits well inside.
   """
 
   use Ecto.Type

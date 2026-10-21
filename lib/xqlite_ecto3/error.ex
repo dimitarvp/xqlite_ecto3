@@ -16,6 +16,16 @@ defmodule XqliteEcto3.Error do
     * `type: :sql_input_error` → `details` is
       `XqliteEcto3.Error.Input` (code, message, offending SQL, byte
       offset).
+    * A lock of another connection that the wait gave up on
+      (`type: :database_busy`), or a table lock of the connection itself
+      (`type: :database_locked`) → `details` is xqlite's map as it was
+      sent: SQLite's `code` and `message`, which `message` repeats, and
+      for `:database_busy` also `retry`, `retries` and `elapsed_ms`.
+      `retry` tells a caller what is left: `:call`, the busy settings
+      gave up and nothing of the call remains; `:transaction`, roll the
+      transaction back and run it again, which a transaction in the
+      default `:immediate` mode never meets; `:none`, SQLite rolled back
+      a write that had already handed back rows.
     * A repo option refused at connect (`type: :invalid_journal_mode`,
       `:invalid_busy_timeout`, `:invalid_hook_option`, …) → `details` is
       `%{key: key, value: value}`: the configuration key as it was
@@ -33,19 +43,22 @@ defmodule XqliteEcto3.Error do
       `%{expected: n, provided: m}`: how many parameters the statement
       declares and how many were given.
     * A parameter SQLite would not take (`type: :unsupported_atom`,
-      `:invalid_parameter_name`) → `details` is `%{token: token}`: the
-      atom or the parameter name, as text, which the message repeats
-      inside a sentence naming what was wrong with it.
+      `:invalid_parameter_name`, `:duplicate_parameter_name`), or a
+      `custom_pragmas` name no PRAGMA can have (`:invalid_pragma_name`)
+      → `details` is `%{token: token}`: the atom, the parameter name or
+      the PRAGMA name's bytes, which the message repeats inside a
+      sentence naming what was wrong with it.
     * A `:max_rows` that is not a batch size
       (`type: :invalid_batch_size`) → `details` is
-      `%{provided: value, minimum: 1}`: the value as the library
-      reported it — tagged with its own type on the stream path
-      (`{:integer, 0}`, `{:string, "100"}`), bare on the statement
-      path — and the smallest batch size there is.
+      `%{provided: value, minimum: 1}`: the value as it was given and
+      the smallest batch size there is.
     * An `%Xqlite.Blob{}` parameter whose `bytes` is not a binary
       (`type: :invalid_blob_bytes`) → `details` is `%{position: n,
       type: t}`: the parameter's one-based position in the list and the
       type of what was found in `bytes`.
+    * A reason whose payload is a map (`:missing_parameter`,
+      `:value_too_large`, `:integer_out_of_range`, …) → `details`
+      is that map as the library sent it; `message` renders the reason.
     * Every other reason (`:connection_closed`, `:cannot_execute`,
       `:query_many_unsupported`, …) → `details` is `nil`; the tag
       reaches `type` and the reason's own payload, if it has one, is
@@ -206,6 +219,7 @@ defmodule XqliteEcto3.Error do
           | %{lock: String.t()}
           | %{provided: term(), minimum: pos_integer()}
           | %{position: pos_integer(), type: atom()}
+          | %{optional(atom()) => term()}
           | nil
 
   @type t :: %__MODULE__{
@@ -244,7 +258,12 @@ defmodule XqliteEcto3.Error do
 
   @name_tags [:no_such_table, :no_such_index, :table_exists, :index_exists]
 
-  @token_tags [:unsupported_atom, :invalid_parameter_name]
+  @token_tags [
+    :unsupported_atom,
+    :invalid_parameter_name,
+    :duplicate_parameter_name,
+    :invalid_pragma_name
+  ]
 
   @doc """
   Wraps an error reason into an `XqliteEcto3.Error` exception.
@@ -289,12 +308,8 @@ defmodule XqliteEcto3.Error do
   end
 
   def wrap({tag, extended_code, msg})
-      when tag in [
-             :database_busy_or_locked,
-             :read_only_database,
-             :schema_changed,
-             :authorization_denied
-           ] and is_integer(extended_code) and is_binary(msg) do
+      when tag in [:read_only_database, :schema_changed, :authorization_denied, :too_big] and
+             is_integer(extended_code) and is_binary(msg) do
     %__MODULE__{message: msg, type: tag, details: %{extended_code: extended_code}}
   end
 
@@ -322,10 +337,6 @@ defmodule XqliteEcto3.Error do
     %__MODULE__{message: name_message(tag, name), type: tag, details: %{name: name}}
   end
 
-  # These two carry the refused token alone — an atom's text, a parameter
-  # name — so the whole user-facing message used to be a bare `b` or
-  # `:foo`. The token stays available unparsed and the message says what
-  # was wrong with it.
   def wrap({tag, token}) when tag in @token_tags and is_binary(token) do
     %__MODULE__{message: token_message(tag, token), type: tag, details: %{token: token}}
   end
@@ -338,9 +349,6 @@ defmodule XqliteEcto3.Error do
     }
   end
 
-  # The refused value comes tagged with its own type from the stream path
-  # (`{:integer, 0}`) and bare from the statement path; both are kept as the
-  # library sent them, so a caller reads the value rather than the message.
   def wrap({:invalid_batch_size, %{provided: provided, minimum: minimum}}) do
     %__MODULE__{
       message: "batch size #{inspect(provided)} is not an integer of at least #{minimum}",
@@ -357,19 +365,24 @@ defmodule XqliteEcto3.Error do
     }
   end
 
-  # The binary payload of a NIF reason is SQLite's own message. A refused
-  # configuration value can be a binary too, and reading as a bare message
-  # was how `journal_mode: "wal"` came out as the error `wal` — so the
-  # family that carries a key is kept out of this clause.
   def wrap({tag, msg})
       when is_atom(tag) and is_binary(msg) and tag not in @connect_refusal_tags do
     %__MODULE__{message: msg, type: tag}
+  end
+
+  def wrap({tag, %{message: msg} = details})
+      when tag in [:database_busy, :database_locked] and is_binary(msg) do
+    %__MODULE__{message: msg, type: tag, details: details}
   end
 
   # A tagged reason whose payload is not a plain message (integers, atoms,
   # maps, nested tuples) still carries a meaningful tag — keep it as `type`
   # so callers can classify it, with the full shape preserved in the message.
   # Bounded to the arities the reason union actually uses (2–4 elements).
+  def wrap({tag, %{} = details} = reason) when is_atom(tag) do
+    %__MODULE__{message: inspect(reason), type: tag, details: details}
+  end
+
   def wrap({tag, _} = reason) when is_atom(tag) do
     %__MODULE__{message: inspect(reason), type: tag}
   end
@@ -403,4 +416,9 @@ defmodule XqliteEcto3.Error do
 
   defp token_message(:invalid_parameter_name, token),
     do: "the statement declares no parameter named " <> token
+
+  defp token_message(:duplicate_parameter_name, token),
+    do: "the parameter list names " <> token <> " twice"
+
+  defp token_message(:invalid_pragma_name, token), do: "no PRAGMA can be named " <> inspect(token)
 end

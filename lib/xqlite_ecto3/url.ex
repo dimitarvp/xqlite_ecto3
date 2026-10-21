@@ -35,9 +35,9 @@ defmodule XqliteEcto3.URL do
       auto_vacuum = none | full | incremental
       foreign_keys = true | false | on | off | 1 | 0
       busy_timeout = <non-negative integer ms>
-      cache_size = <integer, negative = KB>
-      wal_autocheckpoint = <non-negative integer pages>
-      mmap_size = <non-negative integer bytes>
+      cache_size = <32-bit integer, negative = KB>
+      wal_autocheckpoint = <non-negative 32-bit integer pages>
+      mmap_size = <integer bytes, 0 to 2147418112>
 
   ### Pool and DBConnection tuning
 
@@ -62,10 +62,10 @@ defmodule XqliteEcto3.URL do
     "foreign_keys" => {:foreign_keys, :boolean, nil},
     # not :timeout — busy_timeout is a SQLite-side C int; the driver refuses
     # :infinity and values past int32 max, so the parser must not produce them
-    "busy_timeout" => {:busy_timeout, :int32_ms, nil},
-    "cache_size" => {:cache_size, :integer, nil},
-    "wal_autocheckpoint" => {:wal_autocheckpoint, :non_neg_integer, nil},
-    "mmap_size" => {:mmap_size, :non_neg_integer, nil},
+    "busy_timeout" => {:busy_timeout, :non_neg_int32, nil},
+    "cache_size" => {:cache_size, :int32, nil},
+    "wal_autocheckpoint" => {:wal_autocheckpoint, :non_neg_int32, nil},
+    "mmap_size" => {:mmap_size, :mmap_bytes, nil},
     # Pool and DBConnection tuning
     "pool_size" => {:pool_size, :non_neg_integer, nil},
     "timeout" => {:timeout, :timeout, nil},
@@ -207,13 +207,23 @@ defmodule XqliteEcto3.URL do
   defp coerce("infinity", :timeout, _), do: {:ok, :infinity}
   defp coerce(value, :timeout, _), do: parse_non_neg_integer(value)
 
-  defp coerce(value, :int32_ms, _) do
+  defp coerce(value, :non_neg_int32, _) do
     with {:ok, n} <- parse_non_neg_integer(value) do
       if n <= 2_147_483_647, do: {:ok, n}, else: {:error, :out_of_range}
     end
   end
 
-  defp coerce(value, :integer, _), do: parse_integer(value)
+  defp coerce(value, :int32, _) do
+    with {:ok, n} <- parse_integer(value) do
+      if n in -2_147_483_648..2_147_483_647, do: {:ok, n}, else: {:error, :out_of_range}
+    end
+  end
+
+  defp coerce(value, :mmap_bytes, _) do
+    with {:ok, n} <- parse_non_neg_integer(value) do
+      if n <= 0x7FFF0000, do: {:ok, n}, else: {:error, :out_of_range}
+    end
+  end
 
   defp coerce(value, :non_neg_integer, _), do: parse_non_neg_integer(value)
 

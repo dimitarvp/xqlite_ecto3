@@ -15,6 +15,11 @@ defmodule XqliteEcto3.StoredValueInteropTest do
   non-finite values (NaN, Infinity) fail the load with Ecto's typed
   error naming field and value — Ecto's `:decimal` cannot hold them
   and its own exception names nothing.
+
+  Non-finite REALs: a REAL SQLite could not keep finite (`9e999`) reads
+  back as the library's `:positive_infinity` or `:negative_infinity`. A
+  raw row carries the atom; a `:float` or `:decimal` field fails the
+  load with Ecto's typed error, since no Elixir float holds infinity.
   """
   use XqliteEcto3.AdapterCase, async: true
 
@@ -54,6 +59,14 @@ defmodule XqliteEcto3.StoredValueInteropTest do
 
     schema "svi_prices" do
       field(:amount, :string)
+    end
+  end
+
+  defmodule PriceFloat do
+    use Ecto.Schema
+
+    schema "svi_prices" do
+      field(:amount, :float)
     end
   end
 
@@ -179,6 +192,20 @@ defmodule XqliteEcto3.StoredValueInteropTest do
 
       assert [price] = Repo.all(Price)
       assert Decimal.equal?(price.amount, Decimal.new("1.5"))
+    end
+  end
+
+  describe "non-finite REAL" do
+    test "a raw row keeps the atom; a :float or :decimal field fails the load" do
+      for {literal, atom} <- [{"9e999", :positive_infinity}, {"-9e999", :negative_infinity}] do
+        Repo.query!("INSERT INTO svi_prices (amount) VALUES (#{literal})")
+
+        assert %{rows: [[^atom]]} = Repo.query!("SELECT amount FROM svi_prices")
+        assert_raise ArgumentError, fn -> Repo.all(PriceFloat) end
+        assert_raise ArgumentError, fn -> Repo.all(Price) end
+
+        clear_table!("svi_prices")
+      end
     end
   end
 end

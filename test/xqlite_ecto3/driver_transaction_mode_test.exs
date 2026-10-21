@@ -10,7 +10,7 @@ defmodule XqliteEcto3.DriverTransactionModeTest do
   # statement (:none), while IMMEDIATE/EXCLUSIVE take the write lock at
   # BEGIN (:write) — the structural way to observe which mode ran.
   defp txn_state!(conn) do
-    assert {:ok, txn_state} = NIF.txn_state(conn)
+    assert {:ok, txn_state} = NIF.txn_state(conn, "main")
     txn_state
   end
 
@@ -60,7 +60,7 @@ defmodule XqliteEcto3.DriverTransactionModeTest do
 
     state = connect!(database: db_path, busy_timeout: 200)
 
-    assert {:error, %XqliteEcto3.Error{type: :database_busy_or_locked}, state} =
+    assert {:error, %XqliteEcto3.Error{type: :database_busy}, state} =
              Driver.handle_begin([], state)
 
     probe = %XqliteEcto3.Query{statement: "SELECT 1", ref: make_ref()}

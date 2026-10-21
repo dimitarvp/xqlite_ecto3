@@ -66,8 +66,8 @@ defmodule XqliteEcto3.ErrorPathsTest do
   end
 
   test "SQL with no statement is reported as such, not as API misuse" do
-    assert {:error, %XqliteEcto3.Error{type: :cannot_execute}} = Repo.query("-- nothing to do\n")
-    assert {:error, %XqliteEcto3.Error{type: :cannot_execute}} = Repo.query("   ")
+    assert {:error, %XqliteEcto3.Error{type: :no_statement}} = Repo.query("-- nothing to do\n")
+    assert {:error, %XqliteEcto3.Error{type: :no_statement}} = Repo.query("   ")
   end
 
   # ---------------------------------------------------------------------------
@@ -93,6 +93,31 @@ defmodule XqliteEcto3.ErrorPathsTest do
 
     assert error.type == :invalid_parameter_name
     assert error.details == %{token: ":foo"}
+  end
+
+  defmodule LimitRepo do
+    use Ecto.Repo, otp_app: :xqlite_ecto3, adapter: XqliteEcto3
+  end
+
+  test "each parameter and length error carries its payload in details" do
+    start_supervised!({LimitRepo, database: ":memory:", pool_size: 1})
+    {:ok, 100} = XqliteEcto3.with_xqlite(LimitRepo, &Xqlite.put_limit(&1, :length, 100))
+    names = Enum.map(1..2049, &{:"p#{&1}", &1})
+    in_list = Enum.map_join(1..2049, ", ", &":p#{&1}")
+
+    for {sql, params, type, details} <- [
+          {"SELECT zeroblob(500)", [], :too_big, %{extended_code: 18}},
+          {"SELECT ?", [String.duplicate("a", 200)], :value_too_large,
+           %{byte_size: 200, limit: 100}},
+          {"SELECT :a, :b", [a: 1], :missing_parameter, %{index: 2, name: ":b"}},
+          {"SELECT :a", [a: 1, a: 2], :duplicate_parameter_name, %{token: ":a"}},
+          {"SELECT 1 WHERE 1 IN (#{in_list})", names, :too_many_named_parameters,
+           %{count: 2049, limit: 2048}},
+          {"SELECT ?", [2 ** 64], :integer_out_of_range, %{position: 1}}
+        ] do
+      assert {:error, %XqliteEcto3.Error{type: ^type, details: ^details}} =
+               LimitRepo.query(sql, params)
+    end
   end
 
   # ---------------------------------------------------------------------------

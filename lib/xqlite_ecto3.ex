@@ -324,9 +324,10 @@ defmodule XqliteEcto3 do
   `with_xqlite/3` it needs a checkout while the transaction already
   holds one; there, call `XqliteNIF.txn_state/2` on the connection you
   already hold. `schema` names an attached database (default
-  `"main"`).
+  `"main"`); `:all` answers the highest state over every attached
+  database.
   """
-  @spec txn_state(module() | pid(), String.t()) ::
+  @spec txn_state(module() | pid(), String.t() | :all) ::
           {:ok, :none | :read | :write} | {:error, term()}
   def txn_state(repo, schema \\ "main") do
     with_xqlite(repo, fn conn -> XqliteNIF.txn_state(conn, schema) end)
@@ -335,7 +336,8 @@ defmodule XqliteEcto3 do
   @doc """
   Returns SQLite's per-connection counters (`sqlite3_db_status`) for a
   pooled connection as `{:ok, map}` of integers — cache
-  hits/misses/spills, schema and statement memory, lookaside stats.
+  hits/misses/spills, schema and statement memory, lookaside stats —
+  plus `deferred_fks?`, `true` while a foreign key violation is pending.
   """
   @spec connection_stats(module() | pid()) :: {:ok, map()} | {:error, term()}
   def connection_stats(repo) do
@@ -372,7 +374,7 @@ defmodule XqliteEcto3 do
 
       {:ok, columns} =
         XqliteEcto3.with_xqlite(MyApp.Repo, fn conn ->
-          XqliteNIF.schema_columns(conn, "users")
+          Xqlite.schema_columns(conn, "users")
         end)
 
   Returns whatever `fun` returns.
@@ -418,35 +420,26 @@ defmodule XqliteEcto3 do
   same connection see all of it, and nothing repairs it.
 
   The busy slot deserves its own warning. SQLite has ONE busy slot per
-  connection, and `Xqlite.register_busy_observer/2` (like
-  `Xqlite.set_busy_policy/2`) takes it from the plain `busy_timeout` the
-  adapter configured. The wait itself does not change: with no retry
-  policy installed, the connection keeps waiting out the `busy_timeout`
-  that was in effect when the slot was taken, and unregistering the last
-  observer puts that value back — the value the slot displaced, or the
-  last one passed to `Xqlite.busy_timeout/2` while the slot was held.
-  One surprise is left: while the slot is held, `PRAGMA busy_timeout`
-  read through SQL reports 0 although the connection still waits that
-  long, the same read-back caveat `PRAGMA wal_autocheckpoint` has.
+  connection, and xqlite holds it from the open on: whether a call waits
+  for another connection's lock depends on the call alone. Every
+  `Xqlite` function that runs SQL waits, in the calling process, as the
+  busy timeout says, or as a retry policy (`Xqlite.set_busy_policy/2`)
+  says while one is installed; a busy observer
+  (`Xqlite.register_busy_observer/2`) hears every wait and changes none
+  of it. `PRAGMA busy_timeout` read through SQL answers 0 on every
+  connection, the same read-back caveat `PRAGMA wal_autocheckpoint`
+  has; `Xqlite.get_busy_timeout/1` reads the wait the connection keeps.
+  `PRAGMA busy_timeout = N`, through `Repo.query/3` or on the handle,
+  sets that wait as `Xqlite.put_busy_timeout/2` does.
 
-  The remembered value has one hole. xqlite reads `PRAGMA busy_timeout`
-  as it takes the slot, so an authorizer denying `PRAGMA` — one `fun`
-  may have left on this connection — leaves it nothing to remember, and
-  that pooled connection then fails every contended write immediately,
-  for the rest of its life in the pool. Unregistering does not repair
-  it.
-
-  Change the wait with `Xqlite.busy_timeout/2`: it goes through the slot
-  and keeps your observers, though it does remove an installed retry
-  policy. A raw `PRAGMA busy_timeout = N`, including one run through
-  `Repo.query/3`, puts SQLite's own callback in xqlite's place instead —
-  observers on that connection stop receiving messages while their
-  handles still look registered, and unregistering the last one later
-  restores the value the slot displaced, discarding the one the PRAGMA
-  wrote.
+  A raw `XqliteNIF` call on the handle never waits: where the `Xqlite`
+  function would wait, it answers `{:error, {:database_busy, map}}`
+  with `retry: :call` at once. Call the `Xqlite` function, or wrap the
+  raw call in `Xqlite.retry_busy/3`, which waits the same way:
+  `Xqlite.retry_busy(conn, fn -> XqliteNIF.execute(conn, sql, []) end)`.
 
   A connection left failing immediately does more damage than its share
-  of the pool suggests, and `Xqlite.busy_timeout(conn, 0)` or a retry
+  of the pool suggests, and `Xqlite.put_busy_timeout(conn, 0)` or a retry
   policy with no retries is enough to leave one that way. Failing
   immediately instead of waiting is the fastest way to finish a
   statement, so that connection is idle — and therefore first in line —
@@ -456,13 +449,12 @@ defmodule XqliteEcto3 do
   way barely moves that number — one is enough.
 
   Extension loading needs the same care.
-  `Xqlite.enable_load_extension(conn, true)` does not only unlock the
+  `Xqlite.enable_load_extension(conn)` does not only unlock the
   C-API load you are about to do: it also makes the SQL function
   `load_extension()` callable on that connection, for the rest of that
   connection's life. Any later query on it — including one built from
   user input — can then load a shared library from disk. Call
-  `Xqlite.enable_load_extension(conn, false)` before the callback
-  returns.
+  `Xqlite.disable_load_extension(conn)` before the callback returns.
 
   ## Options
 
@@ -599,13 +591,8 @@ defmodule XqliteEcto3 do
   end
 
   defp create_empty_database(database) do
-    case XqliteNIF.open(database) do
-      {:ok, conn} ->
-        XqliteNIF.close(conn)
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, conn} <- XqliteNIF.open(database) do
+      XqliteNIF.close(conn)
     end
   end
 
@@ -713,11 +700,12 @@ defmodule XqliteEcto3 do
   end
 
   defp run_structure_batch(conn, path, sql) do
-    result = XqliteNIF.execute_batch(conn, sql)
-    XqliteNIF.close(conn)
+    result = Xqlite.execute_batch(conn, sql)
+    closed = XqliteNIF.close(conn)
 
-    case result do
-      :ok -> {:ok, path}
+    with :ok <- result, :ok <- closed do
+      {:ok, path}
+    else
       {:error, reason} -> {:error, inspect(reason)}
     end
   end

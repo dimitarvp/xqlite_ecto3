@@ -202,7 +202,7 @@ defmodule XqliteEcto3.ExclusionArtifactsTest do
         Repo.query!("INSERT INTO excl_bitstrings (id, bs) VALUES (1, ?1)", [<<2::3>>])
       end
 
-    assert bound.type == :cannot_convert_to_sqlite_value
+    assert bound.type == :unsupported_data_type
 
     assert :ok = Ecto.Migrator.down(Repo, 20_260_901_002, BitstringMigration, log: false)
   end

@@ -20,11 +20,12 @@ defmodule XqliteEcto3.ObservabilityTest do
       assert {:ok, :none} = XqliteEcto3.txn_state(ObsRepo)
     end
 
-    test "connection_stats returns integer counters" do
+    test "connection_stats returns integer counters and the pending-violation flag" do
       assert {:ok, stats} = XqliteEcto3.connection_stats(ObsRepo)
-      assert is_map(stats)
-      assert map_size(stats) > 0
-      assert Enum.all?(stats, fn {_k, v} -> is_integer(v) end)
+      {deferred_fks?, counters} = Map.pop!(stats, :deferred_fks?)
+      assert deferred_fks? == false
+      assert map_size(counters) > 0
+      assert Enum.all?(counters, fn {_k, v} -> is_integer(v) end)
     end
   end
 

@@ -166,20 +166,11 @@ defmodule XqliteEcto3.ErrorWrapTest do
     end
 
     test "a batch size that is not a batch size carries the value and the minimum" do
-      e = Error.wrap({:invalid_batch_size, %{provided: {:integer, 0}, minimum: 1}})
-
-      assert e.type == :invalid_batch_size
-      assert e.details == %{provided: {:integer, 0}, minimum: 1}
-      assert is_binary(e.message)
-    end
-
-    # The stream path tags the refused value with its type; the statement path
-    # takes an integer and reports it bare. One clause carries both shapes.
-    test "an untagged batch size carries its details too" do
       e = Error.wrap({:invalid_batch_size, %{provided: 0, minimum: 1}})
 
       assert e.type == :invalid_batch_size
       assert e.details == %{provided: 0, minimum: 1}
+      assert is_binary(e.message)
     end
 
     test "a blob parameter whose bytes are not a binary carries its position" do
@@ -190,7 +181,7 @@ defmodule XqliteEcto3.ErrorWrapTest do
       assert is_binary(e.message)
     end
 
-    test "an unsupported atom and an unknown parameter name carry their token" do
+    test "an unsupported atom, an unknown and a doubled parameter name carry their token" do
       atom = Error.wrap({:unsupported_atom, "b"})
 
       assert atom.type == :unsupported_atom
@@ -202,6 +193,11 @@ defmodule XqliteEcto3.ErrorWrapTest do
       assert name.type == :invalid_parameter_name
       assert name.details == %{token: ":foo"}
       assert is_binary(name.message)
+
+      doubled = Error.wrap({:duplicate_parameter_name, ":a"})
+
+      assert doubled.type == :duplicate_parameter_name
+      assert doubled.details == %{token: ":a"}
     end
   end
 
@@ -212,29 +208,22 @@ defmodule XqliteEcto3.ErrorWrapTest do
       assert e.message == "SQL contains no statement"
       assert e.details == nil
     end
-
-    test "works for any atom tag" do
-      e = Error.wrap({:database_busy_or_locked, "database is locked"})
-      assert e.type == :database_busy_or_locked
-      assert e.message == "database is locked"
-      assert e.details == nil
-    end
   end
 
   describe "wrap/1 on code-carrying {tag, extended_code, msg}" do
     test "preserves tag as type and carries the extended code" do
-      e = Error.wrap({:database_busy_or_locked, 5, "database is locked"})
-      assert e.type == :database_busy_or_locked
-      assert e.message == "database is locked"
-      assert e.details == %{extended_code: 5}
+      e = Error.wrap({:read_only_database, 8, "attempt to write a readonly database"})
+      assert e.type == :read_only_database
+      assert e.message == "attempt to write a readonly database"
+      assert e.details == %{extended_code: 8}
     end
 
     test "handles every code-carrying tag" do
       for tag <- [
-            :database_busy_or_locked,
             :read_only_database,
             :schema_changed,
-            :authorization_denied
+            :authorization_denied,
+            :too_big
           ] do
         e = Error.wrap({tag, 8, "m"})
         assert e.type == tag
@@ -268,11 +257,11 @@ defmodule XqliteEcto3.ErrorWrapTest do
   end
 
   describe "wrap/1 on tagged tuples with a non-binary payload" do
-    test "two-element tuple with a map payload keeps its tag as type" do
+    test "two-element tuple with a map payload keeps its tag as type and its map as details" do
       e = Error.wrap({:not_a_plain_table, %{table: "v", type: :view}})
       assert e.type == :not_a_plain_table
       assert is_binary(e.message)
-      assert e.details == nil
+      assert e.details == %{table: "v", type: :view}
     end
 
     test "two-element tuple with an atom payload keeps its tag as type" do
