@@ -9,13 +9,14 @@ Application.put_env(:ecto, :async_integration_tests, false)
 ecto = Mix.Project.deps_paths()[:ecto]
 ecto_sql = Mix.Project.deps_paths()[:ecto_sql]
 
-# -- Repo configuration -------------------------------------------------------
+# unique_integer/1 is unique within one VM only; the OS pid keeps concurrent VMs apart.
+vm_id = "#{System.pid()}_#{:erlang.unique_integer([:positive])}"
+test_db = Path.join(System.tmp_dir!(), "xqlite_ecto3_test_#{vm_id}.db")
+pool_db = Path.join(System.tmp_dir!(), "xqlite_ecto3_pool_#{vm_id}.db")
 
-test_db =
-  Path.join(System.tmp_dir!(), "xqlite_ecto3_test_#{:erlang.unique_integer([:positive])}.db")
-
-pool_db =
-  Path.join(System.tmp_dir!(), "xqlite_ecto3_pool_#{:erlang.unique_integer([:positive])}.db")
+System.at_exit(fn _status ->
+  for db <- [test_db, pool_db], suffix <- ["", "-wal", "-shm"], do: File.rm(db <> suffix)
+end)
 
 Application.put_env(:xqlite_ecto3, TestRepo,
   adapter: XqliteEcto3,
@@ -201,17 +202,13 @@ excludes = [
 
 # The vendored suite waits on ExUnit's default 100 ms window in sandbox.exs:174
 # and migrator.exs:118, and the 3-core macOS runners ran it out repeatedly. The
-# bump is global and deliberate for those vendored bare waits; our own 34 bare
-# `assert_receive` calls, in 7 files, inherit it, so a red one of those waits up
-# to 2 s before it reports. A green wait returns as soon as the message lands.
+# bump is global and deliberate for those vendored bare waits; our own bare
+# `assert_receive` calls inherit it, so a red one of those waits up to 2 s
+# before it reports. A green wait returns as soon as the message lands.
 ExUnit.configure(exclude: excludes, assert_receive_timeout: 2_000)
-
-# -- Load shared schemas and migration ----------------------------------------
 
 Code.require_file("#{ecto}/integration_test/support/schemas.exs")
 Code.require_file("#{ecto_sql}/integration_test/support/migration.exs")
-
-# -- Integration case template ------------------------------------------------
 
 defmodule Ecto.Integration.Case do
   use ExUnit.CaseTemplate
@@ -220,8 +217,6 @@ defmodule Ecto.Integration.Case do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(TestRepo)
   end
 end
-
-# -- Start repos ---------------------------------------------------------------
 
 {:ok, _} = XqliteEcto3.ensure_all_started(TestRepo.config(), :temporary)
 
@@ -240,8 +235,6 @@ end
 {:ok, _} = TestRepo.start_link()
 {:ok, _} = PoolRepo.start_link()
 
-# -- Run migrations ------------------------------------------------------------
-
 case Ecto.Migrator.migrated_versions(PoolRepo) do
   [] ->
     :ok = Ecto.Migrator.up(PoolRepo, 0, Ecto.Integration.Migration, log: false)
@@ -252,8 +245,6 @@ case Ecto.Migrator.migrated_versions(PoolRepo) do
 end
 
 :ok = Ecto.Migrator.up(TestRepo, 0, Ecto.Integration.Migration, log: false)
-
-# -- Sandbox -------------------------------------------------------------------
 
 Ecto.Adapters.SQL.Sandbox.mode(TestRepo, :manual)
 Process.flag(:trap_exit, true)
