@@ -46,10 +46,13 @@ Compatibility: each xqlite_ecto3 release pins exactly one xqlite minor
 series, because xqlite is pre-1.0 and its minor is the break slot. The
 current pairing is xqlite `~> 0.16.0` (pulled in automatically).
 
+A plain `mix new` project has no `config/` directory, so create it and `config/config.exs` before pasting.
 Then configure your repo:
 
 ```elixir
 # config/config.exs
+import Config
+
 config :my_app, ecto_repos: [MyApp.Repo]
 
 config :my_app, MyApp.Repo,
@@ -67,6 +70,8 @@ One database cannot be pooled at all: a private in-memory one. `":memory:"`, the
 
 ```elixir
 # config/runtime.exs
+import Config
+
 config :my_app, MyApp.Repo,
   url: System.fetch_env!("DATABASE_URL")
 ```
@@ -390,6 +395,8 @@ the transaction function, the transaction stays usable.
 
 ```elixir
 # config/config.exs
+import Config
+
 config :xqlite, :telemetry_enabled, true
 config :xqlite_ecto3, :telemetry_enabled, true
 ```
@@ -432,6 +439,8 @@ end
 
 ```elixir
 # config/config.exs
+import Config
+
 config :my_app, MyApp.Repo, support_alter_via_table_rebuild: true
 
 # migration
